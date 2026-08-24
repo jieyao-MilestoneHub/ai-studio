@@ -267,7 +267,11 @@ def line_capture_group(
     console.print("  1. add the official account to the group")
     console.print("  2. point the LINE console Webhook URL at "
                   f"{settings.public_base_url.rstrip('/')}/callback")
-    console.print("  3. say [cyan]生成 test[/cyan] in the group")
+    # Suggest the ASCII alias: a CJK trigger word printed to a cp950 console
+    # comes out as mojibake, which makes the instruction useless. /gen, /生成
+    # and 生成 all trigger, so tell them the one that survives the terminal.
+    console.print("  3. say [cyan]/gen test[/cyan] in the group "
+                  "(the CJK trigger also works, but may not print here)")
     console.print("  the group id will be printed here, and replied into the chat")
     console.print("")
     _run_server(host, port)
