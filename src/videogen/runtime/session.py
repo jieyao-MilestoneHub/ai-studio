@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -43,15 +44,71 @@ TERMINATE_BUFFER_MIN = 10
 """How far past window end `--terminate-after` is set. The buffer covers a clip
 that is mid-render at the bell; the flag is the backstop, not the mechanism."""
 
-# Placement ladder. Ordered by cost, filtered to datacenters the MiniMax H3
-# licence permits (it excludes the US, EU, UK and South Korea). Every 24GB entry
-# needs low_vram=True: a measured run peaked at 43.3GB in bypass mode.
-CANDIDATES: tuple[tuple[str, str, str], ...] = (
-    ("NVIDIA GeForce RTX 4090", "EUR-IS-2", "COMMUNITY"),
-    ("NVIDIA GeForce RTX 4090", "EUR-IS-2", "SECURE"),
-    ("NVIDIA GeForce RTX 5090", "EUR-IS-1", "SECURE"),
-    ("NVIDIA L40S", "EUR-IS-2", "COMMUNITY"),
+
+@dataclass(frozen=True)
+class Tier:
+    """One rung of the placement ladder."""
+
+    gpu: str
+    datacenter: str
+    cloud: str
+    vram_gb: int
+    usd_per_hr: float
+    wait: bool = False
+    """Whether to retry this rung until capacity appears, rather than moving on."""
+
+    @property
+    def low_vram(self) -> bool:
+        """True when the card cannot hold the model in the sharpest LoRA mode.
+
+        A measured run peaked at **43.3GB**, so anything under 48GB must run the
+        turbo node's `low_vram=True`, which its own docs describe as *softer on
+        quantized bases*. This is why falling down the ladder is a quality
+        change and not only a price change.
+        """
+        return self.vram_gb < 48
+
+    @property
+    def label(self) -> str:
+        short = self.gpu.replace("NVIDIA GeForce ", "").replace("NVIDIA ", "")
+        return f"{short}/{self.cloud}"
+
+    @property
+    def quantisation(self) -> str:
+        """fp8 on Ada and newer with room to spare; int8 where VRAM is tight."""
+        return "int8" if self.low_vram else "fp8"
+
+
+# The ladder, price strictly descending. Only licence-permitted datacenters:
+# MiniMax H3's licence excludes the US, EU, UK and South Korea, and Iceland is
+# EEA but not EU.
+#
+# Descending on purpose. Grab the best card available *now* and move on
+# immediately if it is gone — wall-clock inside a two-hour window is worth more
+# than the price difference. Only the cheapest rung is worth waiting for: what
+# you eventually get is the least expensive option, and a softer clip beats no
+# clip at all.
+#
+# Prices include the ~$0.014/hr our disk configuration adds, which is measured:
+# a pod listed at $0.44/hr reported currentSpendPerHr 0.454.
+CANDIDATES: tuple[Tier, ...] = (
+    Tier("NVIDIA L40S", "EUR-IS-2", "SECURE", vram_gb=48, usd_per_hr=1.004),
+    Tier("NVIDIA L40S", "EUR-IS-2", "COMMUNITY", vram_gb=48, usd_per_hr=0.804),
+    Tier("NVIDIA GeForce RTX 4090", "EUR-IS-2", "SECURE", vram_gb=24, usd_per_hr=0.754),
+    Tier(
+        "NVIDIA GeForce RTX 4090", "EUR-IS-2", "COMMUNITY",
+        vram_gb=24, usd_per_hr=0.354, wait=True,
+    ),
 )
+
+WAIT_RETRY_INTERVAL_S = 30.0
+WAIT_MAX_S = 45 * 60
+"""How long the cheapest rung is retried before the window is given up.
+
+Retrying is done here, in our own loop. It is emphatically **not** done by
+leaving a request with RunPod: an order that fills when capacity appears would
+start billing unattended, including overnight.
+"""
 
 STATE_FILE = Path("runs/.session.json")
 
@@ -67,6 +124,12 @@ class Session:
     cost_per_hr: float
     opened_at: str
     window_end: str
+    tier_label: str = ""
+    vram_gb: int = 0
+    low_vram: bool = False
+    """True when this rung forces the softer LoRA mode. Recorded so a
+    disappointing clip can be traced to the card it was rendered on."""
+    quantisation: str = "int8"
     ssh: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -135,7 +198,7 @@ def open_session(
     *,
     name: str = "videogen-window",
     volume_gb: int = 80,
-    candidates: tuple[tuple[str, str, str], ...] = CANDIDATES,
+    candidates: tuple[Tier, ...] = CANDIDATES,
 ) -> Session:
     """Deploy a pod for this window, or raise if nothing is available.
 
@@ -153,48 +216,64 @@ def open_session(
     stamp = terminate_at.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     failures: list[str] = []
-    for gpu, datacenter, cloud in candidates:
-        try:
-            created = _runpodctl(
-                "pod", "create",
-                "--name", name,
-                "--template-id", TEMPLATE_COMFYUI_CUDA13,
-                "--gpu-id", gpu,
-                "--data-center-ids", datacenter,
-                "--cloud-type", cloud,
-                "--volume-in-gb", str(volume_gb),
-                "--ports", "8188/http,8888/http,22/tcp",
-                "--ssh",
-                "--min-cuda-version", "13.0",
-                # The backstop. If this process dies, the pod still terminates.
-                "--terminate-after", stamp,
-                timeout_s=300.0,
+    for tier in candidates:
+        deadline = time.time() + (min(WAIT_MAX_S, _seconds_left(window_end) / 2) if tier.wait else 0)
+
+        while True:
+            try:
+                created = _runpodctl(
+                    "pod", "create",
+                    "--name", name,
+                    "--template-id", TEMPLATE_COMFYUI_CUDA13,
+                    "--gpu-id", tier.gpu,
+                    "--data-center-ids", tier.datacenter,
+                    "--cloud-type", tier.cloud,
+                    "--volume-in-gb", str(volume_gb),
+                    "--ports", "8188/http,8888/http,22/tcp",
+                    "--ssh",
+                    "--min-cuda-version", "13.0",
+                    # The backstop. If this process dies, the pod still terminates.
+                    "--terminate-after", stamp,
+                    timeout_s=300.0,
+                )
+            except PodError as exc:
+                # Only the cheapest rung is worth waiting on; the others give way
+                # immediately so the window is not spent queueing.
+                if tier.wait and time.time() < deadline:
+                    time.sleep(WAIT_RETRY_INTERVAL_S)
+                    continue
+                failures.append(f"{tier.label} @ {tier.datacenter}: {exc}")
+                break
+
+            pod_id = str(created.get("id") or "")
+            if not pod_id:
+                failures.append(f"{tier.label}: no id in response")
+                break
+
+            session = Session(
+                pod_id=pod_id,
+                gpu=tier.gpu,
+                datacenter=tier.datacenter,
+                cloud=tier.cloud,
+                cost_per_hr=float(created.get("costPerHr") or tier.usd_per_hr),
+                opened_at=datetime.now(timezone.utc).isoformat(),
+                window_end=window_end.astimezone(timezone.utc).isoformat(),
+                tier_label=tier.label,
+                vram_gb=tier.vram_gb,
+                low_vram=tier.low_vram,
+                quantisation=tier.quantisation,
             )
-        except PodError as exc:
-            failures.append(f"{gpu} @ {datacenter}/{cloud}: {exc}")
-            continue
-
-        pod_id = str(created.get("id") or "")
-        if not pod_id:
-            failures.append(f"{gpu} @ {datacenter}/{cloud}: no id in response")
-            continue
-
-        session = Session(
-            pod_id=pod_id,
-            gpu=gpu,
-            datacenter=datacenter,
-            cloud=cloud,
-            cost_per_hr=float(created.get("costPerHr") or 0.0),
-            opened_at=datetime.now(timezone.utc).isoformat(),
-            window_end=window_end.astimezone(timezone.utc).isoformat(),
-        )
-        save_state(session)
-        return session
+            save_state(session)
+            return session
 
     raise PodError(
-        "no licence-safe capacity for any candidate GPU. Nothing was created and "
-        "nothing is billing. Tried:\n  - " + "\n  - ".join(failures)
+        "no licence-safe capacity on any rung. Nothing was created and nothing "
+        "is billing. Tried:\n  - " + "\n  - ".join(failures)
     )
+
+
+def _seconds_left(window_end: datetime) -> float:
+    return max(0.0, (window_end.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds())
 
 
 # ----------------------------------------------------------------------- close

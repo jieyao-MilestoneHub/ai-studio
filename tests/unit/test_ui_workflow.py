@@ -137,3 +137,63 @@ def test_set_literal_does_not_mutate_the_input() -> None:
 def test_pruning_without_an_output_node_raises() -> None:
     with pytest.raises(ValueError, match="no output node"):
         prune_unreachable({"1": {"class_type": "UNETLoader", "inputs": {}}})
+
+
+# ------------------------------------------------- the shipped workflow pair
+
+
+def _shipped(name: str) -> dict[str, Any]:
+    import json
+    from pathlib import Path
+
+    return json.loads(
+        (Path(__file__).resolve().parents[2] / "workflows" / name).read_text(encoding="utf-8")
+    )
+
+
+def _node(graph: dict[str, Any], class_type: str) -> dict[str, Any]:
+    return next(
+        n["inputs"] for k, n in graph.items()
+        if not k.startswith("_") and n.get("class_type") == class_type
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "unet_fragment", "low_vram"),
+    [
+        # 48GB rungs: fp8 is native on Ada and newer, and bypass fits.
+        ("h3_fl2va_turbo_fp8.json", "fp8_scaled", False),
+        # 24GB rungs: fp8 would be emulated and bypass would not fit at all.
+        ("h3_fl2va_turbo.json", "int8_convrot", True),
+    ],
+)
+def test_each_shipped_workflow_matches_the_tier_it_serves(
+    name: str, unet_fragment: str, low_vram: bool
+) -> None:
+    """Quantisation and LoRA mode are properties of the card, not preferences.
+
+    A measured run peaked at 43.3GB, so anything under 48GB must merge the LoRA
+    (`low_vram=True`) rather than bypass it.
+    """
+    graph = _shipped(name)
+    assert unet_fragment in _node(graph, "UNETLoader")["unet_name"]
+    assert _node(graph, "MiniMaxH3TurboLoRA")["low_vram"] is low_vram
+
+
+@pytest.mark.parametrize("name", ["h3_fl2va_turbo.json", "h3_fl2va_turbo_fp8.json"])
+def test_both_shipped_workflows_pass_the_turbo_guard(name: str) -> None:
+    from videogen.comfy.validate import validate_graph
+
+    graph = {k: v for k, v in _shipped(name).items() if not k.startswith("_")}
+    validate_graph(graph, expect_turbo=True)
+
+
+@pytest.mark.parametrize("name", ["h3_fl2va_turbo.json", "h3_fl2va_turbo_fp8.json"])
+def test_both_shipped_workflows_load_with_the_required_bindings(name: str) -> None:
+    from pathlib import Path
+
+    from videogen.comfy.graph import REQUIRED_BINDINGS, Workflow
+
+    wf = Workflow.load(Path(__file__).resolve().parents[2] / "workflows" / name)
+    assert wf.bindings.keys() >= REQUIRED_BINDINGS
+    assert wf.expect_turbo is True

@@ -71,9 +71,9 @@ def test_terminate_after_is_past_the_window_end(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_open_walks_the_candidate_ladder(monkeypatch: pytest.MonkeyPatch) -> None:
-    """4090 stock is thin; one refusal must not end the window."""
+    """L40S stock is thin; one refusal must not end the window."""
     seen, fake = _calls_recorder(
-        [{"items": []}, PodError("no instances"), {"id": "pod2", "costPerHr": 0.74}]
+        [{"items": []}, PodError("no instances"), {"id": "pod2", "costPerHr": 0.804}]
     )
     monkeypatch.setattr(sess, "_runpodctl", fake)
 
@@ -82,16 +82,53 @@ def test_open_walks_the_candidate_ladder(monkeypatch: pytest.MonkeyPatch) -> Non
     assert len([c for c in seen if c[:2] == ["pod", "create"]]) == 2
 
 
+def test_the_ladder_is_strictly_price_descending() -> None:
+    """Grab the best card available now; only the cheapest is worth waiting for."""
+    rates = [t.usd_per_hr for t in sess.CANDIDATES]
+    assert rates == sorted(rates, reverse=True)
+    assert len(sess.CANDIDATES) == 4
+
+
+def test_only_the_cheapest_rung_waits() -> None:
+    assert [t.wait for t in sess.CANDIDATES] == [False, False, False, True]
+
+
+def test_the_ladder_only_uses_licence_permitted_datacenters() -> None:
+    """H3's licence excludes the US, EU, UK and South Korea."""
+    from videogen.runtime.pod import LICENCE_SAFE_DATACENTERS
+
+    assert all(t.datacenter in LICENCE_SAFE_DATACENTERS for t in sess.CANDIDATES)
+
+
+def test_quality_mode_follows_vram_not_preference() -> None:
+    """A measured run peaked at 43.3GB, so under 48GB must go soft."""
+    for tier in sess.CANDIDATES:
+        assert tier.low_vram == (tier.vram_gb < 48)
+        assert tier.quantisation == ("int8" if tier.low_vram else "fp8")
+
+
+def test_the_serving_tier_is_recorded_on_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, fake = _calls_recorder([{"items": []}, {"id": "p", "costPerHr": 1.004}])
+    monkeypatch.setattr(sess, "_runpodctl", fake)
+
+    s = sess.open_session(_end(), name="w")
+    assert s.tier_label == "L40S/SECURE"
+    assert s.vram_gb == 48 and s.low_vram is False and s.quantisation == "fp8"
+
+
 def test_open_raises_rather_than_queueing_when_nothing_is_available(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Asking for absent capacity can leave a billing reservation. Refuse instead."""
-    responses: list[Any] = [{"items": []}] + [PodError("no instances")] * len(sess.CANDIDATES)
+    responses: list[Any] = [{"items": []}] + [PodError("no instances")] * 40
     _, fake = _calls_recorder(responses)
     monkeypatch.setattr(sess, "_runpodctl", fake)
+    monkeypatch.setattr(sess.time, "sleep", lambda _s: None)
+    # A window ending now means the waiting rung gets no wait budget.
+    monkeypatch.setattr(sess, "WAIT_MAX_S", 0)
 
     with pytest.raises(PodError, match="nothing is billing"):
-        sess.open_session(_end(), name="w")
+        sess.open_session(_end(0), name="w")
 
 
 def test_open_refuses_to_double_book(monkeypatch: pytest.MonkeyPatch) -> None:

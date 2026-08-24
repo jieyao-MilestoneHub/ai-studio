@@ -75,6 +75,20 @@ class Settings(BaseSettings):
 
     # ---------------------------------------------------------- LINE (phase 2)
 
+    public_base_url: str = Field(
+        default="http://localhost:8000",
+        alias="VIDEOGEN_PUBLIC_BASE_URL",
+        description=(
+            "The externally reachable HTTPS origin of the always-on service. It "
+            "goes into every link the bot replies with, so it must be the public "
+            "hostname, not localhost, in production."
+        ),
+    )
+    files_dir: Path = Field(default=Path("files"), alias="VIDEOGEN_FILES_DIR")
+
+    llm_endpoint_id: str | None = Field(default=None, alias="VIDEOGEN_LLM_ENDPOINT_ID")
+    llm_model: str = Field(default="Qwen/Qwen2.5-7B-Instruct", alias="VIDEOGEN_LLM_MODEL")
+
     line_channel_secret: SecretStr | None = Field(default=None, alias="LINE_CHANNEL_SECRET")
     line_channel_access_token: SecretStr | None = Field(
         default=None, alias="LINE_CHANNEL_ACCESS_TOKEN"

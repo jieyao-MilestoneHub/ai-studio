@@ -18,6 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 s3 = ["boto3>=1.34"]
+# The always-on side: LINE webhook, status page, file serving. Kept optional so
+# the generation pipeline installs without a web stack.
+line = ["fastapi>=0.115", "uvicorn[standard]>=0.30"]
 
 [project.scripts]
 videogen = "videogen.cli.main:app"
@@ -86,10 +89,26 @@ layers = [
     "videogen.pipeline",
     "videogen.providers",
     "videogen.comfy",
+    "videogen.llm",
     "videogen.storage",
     "videogen.media",
     "videogen.config",
     "videogen.core",
+]
+
+[[tool.importlinter.contracts]]
+# The prompt builder must stay testable with no network. It takes an `LlmClient`
+# by protocol; the concrete client lives higher up and is injected.
+name = "Prompt building does no I/O"
+type = "forbidden"
+source_modules = ["videogen.prompts"]
+forbidden_modules = [
+    "videogen.llm",
+    "videogen.providers",
+    "videogen.comfy",
+    "videogen.pipeline",
+    "videogen.runtime",
+    "videogen.storage",
 ]
 
 [[tool.importlinter.contracts]]
@@ -124,6 +143,12 @@ source_modules = ["videogen.render"]
 forbidden_modules = ["videogen.providers", "videogen.comfy"]
 
 [[tool.importlinter.contracts]]
+# No library layer may depend on the LINE/web side, so that side stays a leaf
+# and can be changed or dropped without touching the pipeline.
+#
+# `videogen.cli` is deliberately absent from the source list: it is the
+# composition root. Wiring the pieces together is its entire job, and it has to
+# import the app to be able to serve it. Every *library* module is still bound.
 name = "Phase-2 packages stay leaves"
 type = "forbidden"
 source_modules = [
@@ -133,6 +158,7 @@ source_modules = [
     "videogen.editing",
     "videogen.storage",
     "videogen.media",
+    "videogen.llm",
     "videogen.gates",
     "videogen.providers",
     "videogen.comfy",
@@ -140,6 +166,5 @@ source_modules = [
     "videogen.render",
     "videogen.pipeline",
     "videogen.runtime",
-    "videogen.cli",
 ]
 forbidden_modules = ["videogen.api", "videogen.bots"]

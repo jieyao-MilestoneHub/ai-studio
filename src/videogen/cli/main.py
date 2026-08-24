@@ -205,6 +205,74 @@ async def _generate(
     )
 
 
+line_app = typer.Typer(help="LINE bot: serve the webhook, or discover a group id.")
+app.add_typer(line_app, name="line")
+
+
+def _run_server(host: str, port: int, reload: bool = False) -> None:
+    import uvicorn
+
+    from videogen.api.main import create_app
+
+    uvicorn.run(create_app(), host=host, port=port, reload=reload, access_log=False)
+
+
+@line_app.command("serve")
+def line_serve(
+    host: str = typer.Option("0.0.0.0", help="Bind address."),
+    port: int = typer.Option(8000),
+) -> None:
+    """Run the always-on service: webhook, status pages, file downloads."""
+    settings = get_settings()
+    if settings.line_channel_secret is None:
+        console.print("[red]LINE_CHANNEL_SECRET is unset.[/red] Every webhook will 400.")
+        raise typer.Exit(1)
+
+    group = settings.line_allowed_group_id
+    console.print(f"[bold]videogen[/bold] on {host}:{port}")
+    console.print(f"  public base  {settings.public_base_url}")
+    console.print(f"  webhook      {settings.public_base_url.rstrip('/')}/callback")
+    if group:
+        console.print(f"  serving group {group}")
+    else:
+        console.print(
+            "  [yellow]capture mode[/yellow]: no LINE_ALLOWED_GROUP_ID set, so no "
+            "work is accepted. Say the trigger word in the group and the id "
+            "will be printed here."
+        )
+    _run_server(host, port)
+
+
+@line_app.command("capture-group")
+def line_capture_group(
+    port: int = typer.Option(8000),
+    host: str = typer.Option("0.0.0.0"),
+) -> None:
+    """Discover a group's id, which no API exposes.
+
+    LINE documents that a bot cannot list the groups it belongs to, so the id
+    has to be read off a live webhook event. This runs the service in capture
+    mode: it answers the trigger word with the group id and accepts no work.
+    """
+    settings = get_settings()
+    if settings.line_allowed_group_id:
+        console.print(
+            f"[yellow]LINE_ALLOWED_GROUP_ID is already set[/yellow] "
+            f"({settings.line_allowed_group_id}). "
+            "Clear it in .env first, or you will not see capture output."
+        )
+        raise typer.Exit(1)
+
+    console.print("[bold]capture mode[/bold] - waiting for a group message")
+    console.print("  1. add the official account to the group")
+    console.print("  2. point the LINE console Webhook URL at "
+                  f"{settings.public_base_url.rstrip('/')}/callback")
+    console.print("  3. say [cyan]生成 test[/cyan] in the group")
+    console.print("  the group id will be printed here, and replied into the chat")
+    console.print("")
+    _run_server(host, port)
+
+
 session_app = typer.Typer(
     help="Service windows. `open` at the window start, `close` at the end — schedule both."
 )
