@@ -91,8 +91,10 @@ mkdir -p "$M"/{diffusion_models,text_encoders,vae,loras} /workspace/dl-logs
 # this wrong: 5 MB/s instead of ~75 MB/s, which turns 51GB from 11 minutes into
 # nearly three hours of billed pod time.
 # --break-system-packages is required: the image's python is externally managed.
-python3 -c 'import hf_transfer' 2>/dev/null \n  || pip install -q --break-system-packages hf_transfer 2>&1 | tail -1
-python3 -c 'import hf_transfer' 2>/dev/null \n  || log 'WARNING: hf_transfer unavailable, downloads will run at ~5MB/s'
+python3 -c 'import hf_transfer' 2>/dev/null ||
+  pip install -q --break-system-packages hf_transfer 2>&1 | tail -1
+python3 -c 'import hf_transfer' 2>/dev/null ||
+  log 'WARNING: hf_transfer unavailable, downloads will run at ~5MB/s'
 export HF_XET_HIGH_PERFORMANCE=1 HF_HUB_ENABLE_HF_TRANSFER=1 HF_HOME=/workspace/.hf
 command -v hf >/dev/null || pip install -q --break-system-packages -U huggingface_hub
 
@@ -122,9 +124,29 @@ pkill -f 'main.py --listen'; sleep 3
 PY="$CU/.venv-cu128/bin/python"
 [ -x "$PY" ] || PY=$(command -v python3)
 cd "$CU" || die "cannot cd $CU"
+# Ask which flags exist rather than assuming. This script upgrades ComfyUI a
+# few steps earlier, so the flag set is whatever that version supports -- and
+# an unrecognised flag is not a warning, it is argparse exiting and no ComfyUI
+# at all, discovered only after the weights have been paid for.
+#
+# --fast-disk matters more than it looks: ComfyUI does not release the 32B
+# text encoder, and without it RSS climbs until the second model load hits
+# swap. Same problem as the 31GB host crash, and a plausible cause of the
+# "Using RAM pressure cache" line that puts the second clip timing in doubt.
+HELP="$("$PY" main.py --help 2>&1 || true)"
+EXTRA=""
+for flag in --fast-disk --use-sage-attention; do
+  case "$HELP" in
+    *"$flag"*) EXTRA="$EXTRA $flag" ;;
+    *)         log "  $flag not supported by this ComfyUI, skipping" ;;
+  esac
+done
+log "  launch flags:${EXTRA} --reserve-vram 0.7"
+
 # --reserve-vram leaves headroom so a long clip does not OOM at the VAE stage.
+# shellcheck disable=SC2086
 nohup "$PY" main.py --listen 0.0.0.0 --port 8188 --enable-cors-header \
-  --reserve-vram 0.7 > /workspace/comfy.log 2>&1 &
+  $EXTRA --reserve-vram 0.7 > /workspace/comfy.log 2>&1 &
 
 for i in $(seq 1 60); do
   sleep 5
@@ -139,7 +161,7 @@ info = json.load(sys.stdin)
 need = ["MiniMaxH3TurboLoRA", "MiniMaxH3TurboSampler", "MiniMaxH3ImageToVideo"]
 missing = [n for n in need if n not in info]
 for n in need:
-    print(f"[setup]   {\"OK  \" if n in info else \"MISS\"} {n}")
+    print("[setup]   " + ("OK  " if n in info else "MISS") + " " + n)
 sys.exit(1 if missing else 0)
 ' || die "required H3 nodes are not registered"
 

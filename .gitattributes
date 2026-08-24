@@ -1,0 +1,13 @@
+# Shell scripts MUST be LF. Always.
+#
+# deploy/pod_setup.sh was committed from Windows and sat in the tree with CRLF
+# endings. That is not untidiness: bash on Linux treats the CR as part of each
+# token, so the script dies on its first line with `$'\r': command not found`.
+# These scripts are piped straight into a billing GPU pod over ssh, so a CRLF
+# checkout does not fail cheaply -- it fails after the pod is already running.
+*.sh text eol=lf
+
+# Same reasoning for everything else a Linux host executes verbatim.
+*.service text eol=lf
+*.timer   text eol=lf
+Caddyfile text eol=lf
