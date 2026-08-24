@@ -55,3 +55,6 @@ Thumbs.db
 
 # --- local reference material, not part of the repo -----------------------
 runpot-suggestion.md
+
+# --- flash SDK local state ------------------------------------------------
+.flash/
