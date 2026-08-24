@@ -18,7 +18,11 @@
 #    ComfyUI runs from .venv-cu128; installing requirements with system pip puts
 #    them where ComfyUI cannot see them.
 #
-# A third trap lives on the *calling* side, not here: under Git Bash, MSYS
+# 3. When driving this remotely, never `pkill -f 'hf download'` from inside an
+#    ssh one-liner: the pattern matches the shell running that very command,
+#    so it kills the session. Kill by pid, or put the script in a file first.
+#
+# A fourth trap lives on the *calling* side, not here: under Git Bash, MSYS
 # rewrites a bare `/workspace` argument into `C:/Program Files/Git/workspace`,
 # which also crash-loops the container. Export MSYS2_ARG_CONV_EXCL='*' before
 # calling runpodctl by hand. (`runtime/session.py` is immune — subprocess with
@@ -56,24 +60,10 @@ for i in $(seq 1 60); do
 done
 [ -d "$CU/custom_nodes" ] || die "ComfyUI never appeared at $CU"
 
-# ── 2. weights, in the background: this is the long pole ──────────────────
-mkdir -p "$M"/{diffusion_models,text_encoders,vae,loras} /workspace/dl-logs
-export HF_HUB_ENABLE_HF_TRANSFER=1 HF_HOME=/workspace/.hf
-command -v hf >/dev/null || pip install -q -U 'huggingface_hub[hf_transfer]'
-
-dl() {  # repo file destdir
-  nohup hf download "$1" "$2" --local-dir "$3" \
-    > "/workspace/dl-logs/$(basename "$2").log" 2>&1 &
-  log "  downloading $(basename "$2")"
-}
-log "starting weight downloads (~51GB)"
-dl Comfy-Org/MiniMax-H3 "$DIT" "$M"
-dl Comfy-Org/MiniMax-H3 text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors "$M"
-dl Comfy-Org/MiniMax-H3 vae/minimax_h3_video_vae_fp16.safetensors "$M"
-dl Comfy-Org/MiniMax-H3 vae/minimax_h3_audio_vae_fp32.safetensors "$M"
-dl larryvrh/MiniMax-H3-Turbo-Lora minimax_h3_turbo_v4_step600_ema.safetensors "$M/loras"
-
-# ── 3. upgrade ComfyUI and install the turbo nodes, while that runs ───────
+# ── 2. upgrade ComfyUI FIRST, before the network is saturated ─────────────
+# Learned the hard way: starting the 51GB download first left `git fetch`
+# hanging behind it for over eight minutes, and the upgrade never happened.
+# The upgrade is small, so do it while the link is still free.
 cd "$CU" || die "cannot cd $CU"
 [ -x .venv-cu128/bin/pip ] || die ".venv-cu128 is missing — see trap 1 in this file's header"
 
@@ -92,6 +82,31 @@ cd custom_nodes || die "no custom_nodes"
 rm -rf ComfyUI-MiniMax-H3-Turbo
 git clone --depth 1 --quiet "$TURBO_REPO" || die "clone failed"
 [ -f ComfyUI-MiniMax-H3-Turbo/__init__.py ] || die "turbo pack looks empty"
+
+# ── 3. weights, in the background: this is the long pole ─────────────────
+mkdir -p "$M"/{diffusion_models,text_encoders,vae,loras} /workspace/dl-logs
+# hf_transfer is NOT preinstalled on the image, and on its huggingface_hub the
+# old switch is a no-op: it warns "HF_HUB_ENABLE_HF_TRANSFER is not used anymore.
+# Please use HF_XET_HIGH_PERFORMANCE instead". Measured consequence of getting
+# this wrong: 5 MB/s instead of ~75 MB/s, which turns 51GB from 11 minutes into
+# nearly three hours of billed pod time.
+# --break-system-packages is required: the image's python is externally managed.
+python3 -c 'import hf_transfer' 2>/dev/null \n  || pip install -q --break-system-packages hf_transfer 2>&1 | tail -1
+python3 -c 'import hf_transfer' 2>/dev/null \n  || log 'WARNING: hf_transfer unavailable, downloads will run at ~5MB/s'
+export HF_XET_HIGH_PERFORMANCE=1 HF_HUB_ENABLE_HF_TRANSFER=1 HF_HOME=/workspace/.hf
+command -v hf >/dev/null || pip install -q --break-system-packages -U huggingface_hub
+
+dl() {  # repo file destdir
+  nohup hf download "$1" "$2" --local-dir "$3" \
+    > "/workspace/dl-logs/$(basename "$2").log" 2>&1 &
+  log "  downloading $(basename "$2")"
+}
+log "starting weight downloads (~51GB)"
+dl Comfy-Org/MiniMax-H3 "$DIT" "$M"
+dl Comfy-Org/MiniMax-H3 text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors "$M"
+dl Comfy-Org/MiniMax-H3 vae/minimax_h3_video_vae_fp16.safetensors "$M"
+dl Comfy-Org/MiniMax-H3 vae/minimax_h3_audio_vae_fp32.safetensors "$M"
+dl larryvrh/MiniMax-H3-Turbo-Lora minimax_h3_turbo_v4_step600_ema.safetensors "$M/loras"
 
 # ── 4. wait for the weights, then restart ComfyUI ─────────────────────────
 while pgrep -f 'hf download' >/dev/null; do

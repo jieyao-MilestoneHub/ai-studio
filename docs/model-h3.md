@@ -94,6 +94,52 @@ Enforced in `comfy/validate.py` and tested in
 `tests/unit/test_graph_validate.py`. If anyone reports suspiciously fast H3
 numbers, ask which sampler they used.
 
+## What we have measured ourselves, and what we have not
+
+📏 **Measured on our own account**
+
+| | |
+|---|---|
+| Peak VRAM, 864×480 / 124 frames, int8 + bypass, A40 | **43.3 GB** |
+| Sampling, 6-step turbo, same settings, A40 | **125 s** (87 → 40 → 25 → 18 s/iter; the first step carries the warm-up) |
+| Submit → mp4 on disk, same run | **300 s** |
+| Output | 864×480, 24fps, 124 frames, 5.17 s, h264 High + AAC stereo 32kHz, 0.99 MB |
+| Pod disk overhead, 80GB volume + 20GB container | **$0.014/hr** (a $0.44/hr pod bills 0.454; a $0.74/hr pod bills 0.754) |
+| Weight set actually needed, int8 path | **54.7 GB** across five files |
+
+⛔ **Still unmeasured — do not treat the numbers elsewhere in this file as ours**
+
+- **Generation time on a 48GB Ada card with fp8.** The `1.38×` fp8 advantage is
+  `[reported]` from someone else's 4090. Our only timing is A40 + int8.
+- **Whether 43.3GB fits in 24GB with `low_vram=True`.** Rungs 3 and 4 of the
+  ladder assume it does, on the node pack's word. An attempt on a 4090 was cut
+  short before generation (see below), so this is still an assumption.
+- **Whether the second clip in a window is faster.** This decides whether a
+  window amortises its setup at all. ComfyUI logs `Using RAM pressure cache`,
+  which suggests it may evict the model between jobs.
+
+### Why the 4090 attempt did not finish
+
+Worth recording, because two of the three causes were bugs in our own tooling
+and are now fixed in `deploy/pod_setup.sh`:
+
+1. **`hf_transfer` is not preinstalled on the image**, and on its version of
+   `huggingface_hub` the `HF_HUB_ENABLE_HF_TRANSFER` switch is a no-op that
+   warns *"not used anymore, please use HF_XET_HIGH_PERFORMANCE instead"*.
+   Downloads ran at **~5 MB/s instead of ~75 MB/s** — 51GB goes from 11 minutes
+   to nearly three hours of billed pod time. Installing it also needs
+   `--break-system-packages`, since the image's python is externally managed.
+2. **Starting the download before the ComfyUI upgrade saturates the link**, and
+   `git fetch` then hung behind it for over eight minutes. The upgrade is small;
+   it now runs first.
+3. Placement itself: the ladder fell through L40S Secure and L40S Community
+   (both refused) and landed on **RTX 4090 Secure**, a 24GB rung — so the run
+   would have measured the `low_vram` path rather than the fp8 one anyway.
+
+The run was terminated rather than pushed through, at a cost of $0.44 for the
+whole session. The measurement is worth redoing; it is not worth paying for a
+run that was not going to finish inside its window.
+
 ## Prompting is the quality lever, not resolution
 
 Same seed, same 1344×768, same scene, changing only the prompt:

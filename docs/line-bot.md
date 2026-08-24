@@ -187,6 +187,55 @@ asking costs nothing.
 - **`--terminate-after` is set on every pod.** It is the backstop for the case
   where this host dies mid-window.
 
+## Measured: the conversion endpoint
+
+Deployed as `runpod-workers/worker-vllm` on `ADA_24` with
+`--model-reference https://huggingface.co/Qwen/Qwen2.5-7B-Instruct:main`,
+`workers-min 0`, `idle-timeout 120`. RunPod pinned `:main` to a specific commit
+(`a09a3545…`) at create time, so the endpoint is reproducible.
+
+| | 📏 measured |
+|---|---|
+| **Cold call, total** | **182.9 s** |
+| — of which `delayTime` (queue + model load) | 173.9 s |
+| — of which `executionTime` | 2.7 s |
+| **Warm call, total** | **6.0 s** |
+| — `delayTime` warm | 0.1 s |
+| Cost per cold call, at $1.10/hr | ≈ $0.054 |
+| Cost per warm call | ≈ $0.001 |
+
+**The plan's assumption was wrong and this corrects it.** RunPod's documentation
+says host-side caching makes cold starts "drop to seconds", and the golden path
+that measured it used a **0.92GB** model. Ours is a 7B at roughly 15GB, and it
+takes about **three minutes** to come up. `--model-reference` is still doing its
+job — the weights are not downloaded and download time is not billed — but the
+load into VRAM is real work.
+
+Consequences worth designing around:
+
+- A user waits up to three minutes to see how their sentence was parsed. That is
+  acceptable here only because the clip itself does not arrive until the next
+  window; it would not be acceptable if conversion were on the critical path to
+  an immediate answer.
+- `idle-timeout 120` means a burst of messages in a group pays **one** cold start,
+  not one each. At 50 requests a month all landing cold, the endpoint costs about
+  $2.70/month; clustered, far less.
+- Creating the endpoint is free. With `workers-min 0` nothing bills until a
+  request arrives.
+
+### On the model's schema adherence
+
+The measured conversion of *"一隻橘毛走在下雨天的路上，然後我只看到類似梵谷畫的
+像素貓"* produced a valid prompt, but Qwen2.5-7B followed the schema loosely: it
+returned **one** shot rather than splitting the style change into a second one as
+instructed, and used the mood word *"melancholic"* in `non_diegetic_music`, which
+the schema explicitly forbids.
+
+So the validation layer is earning its place — the output is schema-*valid*
+because `prompts/h3.py` enforces structure — but the *instructions* are only
+partly obeyed. A larger model, or a few-shot example in the system prompt, is the
+obvious next lever if shot splitting matters.
+
 ## Cost
 
 | | per month |
