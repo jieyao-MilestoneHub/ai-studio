@@ -124,36 +124,49 @@ arriving while it sleeps are lost, and the 11:00 `session open` will not fire
 either — `--terminate-after` guarantees a pod gets closed, never that one gets
 opened.
 
-### A small VPS
+### A small VPS — the chosen setup
 
-Anything with 1 vCPU and 512MB is ample; the process is a web server, a SQLite
-file and ~50MB of clips.
+**Hetzner CAX11** (2 vCPU ARM, 4GB, 40GB) is the cheapest thing that works,
+around EUR 3-4/month. Location **Singapore**: closest to LINE's servers for the
+two-second budget, and closest to the people downloading the clips. ARM is fine —
+the always-on side is pure Python and SQLite with no compiled wheels of
+consequence.
+
+One command on a fresh Ubuntu box:
 
 ```bash
-uv sync --extra line
-uv run videogen line serve --host 0.0.0.0 --port 8000
+sudo bash deploy/vps_setup.sh vg.example.com
 ```
 
-Put nginx or Caddy in front for TLS, or run cloudflared on the box. Keep it up
-with systemd:
+It installs uv, ffmpeg (for the `ffprobe` the provider uses to check what it
+actually fetched), Caddy for automatic TLS, a systemd service for the webhook,
+and three systemd timers for the window.
 
-```ini
-[Unit]
-Description=videogen
-After=network-online.target
+**No domain?** Pass the box's IP with dots as dashes plus `.sslip.io`:
 
-[Service]
-WorkingDirectory=/srv/video-gen
-ExecStart=/usr/local/bin/uv run videogen line serve --port 8000
-Restart=always
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo bash deploy/vps_setup.sh 203-0-113-7.sslip.io
 ```
 
-Put the window scheduler on this host too — see
-[schedule.md](schedule.md) — so it does not depend on a laptop being awake.
+sslip.io resolves that to the IP with no account and no DNS to manage, and Let's
+Encrypt issues a real certificate for it. That matters because LINE requires
+HTTPS from a normally trusted CA — a bare IP or a self-signed cert is refused.
+
+Two deliberate choices in the generated units:
+
+- The web service is **not** socket-activated and never scales to zero. A cold
+  start does not reliably fit LINE's two-second budget.
+- The window timers use `Persistent=false`. A missed `open` must **not** fire
+  late: booting a GPU pod at 3am because the box was down at 11:00 is exactly
+  the unattended spend this project exists to avoid. `--terminate-after` on the
+  pod still guarantees that a pod which *did* open gets closed, even if this box
+  dies mid-window.
+
+The window scheduler lives on this host rather than on a laptop, so it does not
+depend on someone's machine being awake — see [schedule.md](schedule.md).
+
+Credentials are not written by the script. Put them in `/srv/video-gen/.env`
+yourself (`chmod 600`), then `systemctl restart videogen`.
 
 ## The flow, end to end
 
