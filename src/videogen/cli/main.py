@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import typer
@@ -202,6 +203,108 @@ async def _generate(
         f"audio={'yes' if asset.has_audio else 'no'}, "
         f"{asset.size_bytes / 1_048_576:.1f} MB, cost ${asset.cost_usd:.4f}"
     )
+
+
+session_app = typer.Typer(
+    help="Service windows. `open` at the window start, `close` at the end — schedule both."
+)
+app.add_typer(session_app, name="session")
+
+WINDOW_TZ = "Asia/Taipei"
+
+
+def _window_end(clock: str, tz_name: str) -> datetime:
+    """Parse ``HH:MM`` in `tz_name` into today's (or tomorrow's) instant."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(tz_name)
+    hour, _, minute = clock.partition(":")
+    now = datetime.now(tz)
+    end = now.replace(hour=int(hour), minute=int(minute), second=0, microsecond=0)
+    if end <= now:
+        end += timedelta(days=1)  # a window that has already passed means tomorrow's
+    return end
+
+
+@session_app.command("open")
+def session_open(
+    until: str = typer.Option(..., "--until", help="Window end as HH:MM, e.g. 14:48."),
+    tz: str = typer.Option(WINDOW_TZ, "--tz", help="Timezone for --until."),
+    name: str = typer.Option("videogen-window"),
+) -> None:
+    """Deploy the window's pod. Sets --terminate-after as a backstop."""
+    from videogen.runtime import session as sess
+
+    end = _window_end(until, tz)
+    try:
+        s = sess.open_session(end, name=name)
+    except VideogenError as exc:
+        console.print(f"[red]window did not open:[/red] {exc}")
+        raise typer.Exit(1) from None
+
+    console.print(
+        f"[green]window open[/green]  pod={s.pod_id}  {s.gpu.replace('NVIDIA ', '')}"
+        f"  {s.datacenter}/{s.cloud}  ${s.cost_per_hr:.2f}/hr"
+    )
+    console.print(f"  closes {end.isoformat(timespec='minutes')} (self-terminates ~10min later)")
+    console.print(f"  export [cyan]VIDEOGEN_COMFY_URL={s.comfy_url}[/cyan]")
+    console.print("  ComfyUI answers 502 for ~4 min while it copies itself to /workspace.")
+
+
+@session_app.command("close")
+def session_close(name: str = typer.Option("videogen-window")) -> None:
+    """Terminate the window's pod. Idempotent; safe to schedule unconditionally."""
+    from videogen.runtime import session as sess
+
+    terminated = sess.close_session(name=name)
+    if not terminated:
+        console.print("nothing to close. [dim]Nothing is billing.[/dim]")
+        return
+    for pod_id in terminated:
+        console.print(f"[green]terminated[/green] {pod_id}")
+
+
+@session_app.command("status")
+def session_status() -> None:
+    """Show the live window, what it has cost so far, and how long is left."""
+    from videogen.runtime import session as sess
+
+    s = sess.load_state()
+    if s is None:
+        console.print("no window open.")
+        pods = sess.list_pods()
+        if pods:
+            console.print(f"[yellow]! {len(pods)} pod(s) running with no session state[/yellow]")
+            for p in pods:
+                console.print(f"    {p.get('id')} {p.get('name')} ${p.get('costPerHr')}/hr")
+        return
+
+    table = Table(title=f"window {s.pod_id}")
+    table.add_column("field")
+    table.add_column("value")
+    table.add_row("gpu", f"{s.gpu.replace('NVIDIA ', '')} ({s.datacenter}/{s.cloud})")
+    table.add_row("rate", f"${s.cost_per_hr:.2f}/hr")
+    table.add_row("elapsed", f"{s.elapsed_hours():.2f} h")
+    table.add_row("spent", f"${s.spent_usd():.2f}")
+    table.add_row("closes", s.window_end)
+    table.add_row("past window", "yes" if s.past_window() else "no")
+    table.add_row("comfy", s.comfy_url)
+    console.print(table)
+
+
+@session_app.command("reap")
+def session_reap(
+    idle_minutes: int = typer.Option(20, help="Close early after this much idle time."),
+) -> None:
+    """Close the window early if it has gone quiet. Schedule this every 5 minutes.
+
+    A window sized for peak demand is mostly idle at low volume, and idle
+    minutes cost the same as working ones.
+    """
+    from videogen.runtime import session as sess
+
+    console.print(sess.close_if_idle(idle_minutes))
 
 
 pod_app = typer.Typer(help="RunPod pod lifecycle. `down` terminates — stopping still bills.")
