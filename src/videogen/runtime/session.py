@@ -363,6 +363,11 @@ def _read_state_raw() -> dict[str, Any]:
     if not STATE_FILE.is_file():
         return {}
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
+    if not isinstance(data, dict):
+        # This file is how `session close` finds a running pod. Guessing at a
+        # shape we do not recognise risks reporting "nothing is billing".
+        raise PodError(f"{STATE_FILE} is not a JSON object: {type(data).__name__}")
+    return data

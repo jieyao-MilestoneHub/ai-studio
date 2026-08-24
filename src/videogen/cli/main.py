@@ -210,11 +210,30 @@ app.add_typer(line_app, name="line")
 
 
 def _run_server(host: str, port: int, reload: bool = False) -> None:
+    import logging
+
     import uvicorn
 
     from videogen.api.main import create_app
 
-    uvicorn.run(create_app(), host=host, port=port, reload=reload, access_log=False)
+    # log_config=None keeps uvicorn from calling dictConfig, which clears every
+    # existing handler and defines no root logger - so a basicConfig set up here
+    # would be silently discarded and videogen's own lines would never appear.
+    # Owning the config instead means our INFO lines and uvicorn's both show up,
+    # here and under journalctl on the VPS.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    uvicorn.run(
+        create_app(),
+        host=host,
+        port=port,
+        reload=reload,
+        access_log=False,
+        log_config=None,
+    )
 
 
 @line_app.command("serve")
@@ -234,6 +253,16 @@ def line_serve(
     console.print(f"  webhook      {settings.public_base_url.rstrip('/')}/callback")
     if group:
         console.print(f"  serving group {group}")
+        users = settings.allowed_users
+        if users:
+            console.print(f"  authorised    {len(users)} user(s)")
+        else:
+            # Not a warning about a misconfiguration - a warning about a choice.
+            console.print(
+                "  [yellow]any group member can spend GPU time[/yellow]: "
+                "LINE_ALLOWED_USER_IDS is unset, so whoever is invited to the "
+                "group next can trigger a render."
+            )
     else:
         console.print(
             "  [yellow]capture mode[/yellow]: no LINE_ALLOWED_GROUP_ID set, so no "

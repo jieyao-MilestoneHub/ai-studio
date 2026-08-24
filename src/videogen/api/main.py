@@ -16,11 +16,18 @@ file route has none of the constraints a video message object imposes — no HTT
 range-request support, no 200MB ceiling, no matching-aspect poster, no codec
 requirements. A 5-second clip measured 0.99MB, so ~50 a month is ~50MB and a
 directory on this box is the whole storage layer.
+
+Uvicorn's own access log is off (`access_log=False` in the CLI) and replaced by
+one structured line per callback, because an access log answers "was there a
+request" while the only operational question worth asking is "what did we decide
+about it". A rejected signature is logged at WARNING: repeated 400s mean the
+channel secret is wrong, and LINE suspends delivery to a bot that keeps failing.
 """
 
 from __future__ import annotations
 
 import html
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +38,8 @@ from videogen.bots.line.reply import LineReplyClient, NullReplyClient
 from videogen.bots.line.webhook import InvalidSignature, WebhookHandler
 from videogen.config.settings import get_settings
 from videogen.pipeline.queue import Job, JobQueue, JobState
+
+_log = logging.getLogger("videogen.webhook")
 
 
 def create_app(
@@ -58,6 +67,7 @@ def create_app(
             replier,
             channel_secret=secret.get_secret_value() if secret else "",
             allowed_group_id=settings.line_allowed_group_id,
+            allowed_user_ids=settings.allowed_users,
             base_url=settings.public_base_url,
         )
     app.state.handler = handler
@@ -74,13 +84,30 @@ def create_app(
         try:
             outcomes = await app.state.handler.handle(body, signature)
         except InvalidSignature as exc:
+            # Loud on purpose. LINE stops delivering to a bot that keeps
+            # rejecting, so a silent 400 is the one failure you must not miss.
+            _log.warning("callback REJECTED: %s (%d bytes)", exc, len(body))
             raise HTTPException(status_code=400, detail=str(exc)) from None
+
+        if not outcomes:
+            # The console's Verify button sends {"destination":..,"events":[]}.
+            _log.info("callback ok: no events (verify ping or non-message)")
+        else:
+            _log.info("callback ok: %s", ", ".join(_summarise(o) for o in outcomes))
 
         # Conversion runs after the response goes out, so it cannot eat the
         # two-second budget however slow the LLM endpoint's cold start is.
         for outcome in outcomes:
             if outcome.action == "accepted" and outcome.job is not None:
                 background.add_task(_convert_later, app, outcome.job.id)
+            elif outcome.action == "memberJoined":
+                # The set of people who can spend GPU time just changed.
+                # Nothing here polls the roster, so this is the only notice.
+                _log.warning("member(s) JOINED the group: %s", outcome.detail)
+                if not app.state.handler.allowed_user_ids:
+                    _log.warning(
+                        "  no LINE_ALLOWED_USER_IDS set: they can trigger a render now"
+                    )
             elif outcome.action == "capture" and outcome.detail.startswith("C"):
                 # There is no API to list a bot's groups, so this line is the
                 # only way to learn the id. Make it impossible to miss.
@@ -119,6 +146,20 @@ def create_app(
         return {"ok": True, "queue": app.state.queue.counts()}
 
     return app
+
+
+def _summarise(outcome: Any) -> str:
+    """One outcome as a short ASCII phrase. The Windows console is cp950 and
+    throws on anything else, so this stays ASCII even though prompts are not."""
+    parts = [outcome.action]
+    if outcome.job is not None:
+        parts.append(f"job={outcome.job.id} token={outcome.job.token}")
+        # The id is here so the log alone is enough to build
+        # LINE_ALLOWED_USER_IDS from people who have actually used the bot.
+        parts.append(f"user={outcome.job.user_id}")
+    if outcome.detail:
+        parts.append(f"({outcome.detail})")
+    return " ".join(parts)
 
 
 async def _convert_later(app: FastAPI, job_id: int) -> None:

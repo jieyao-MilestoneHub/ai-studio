@@ -94,6 +94,15 @@ class Settings(BaseSettings):
         default=None, alias="LINE_CHANNEL_ACCESS_TOKEN"
     )
     line_allowed_group_id: str | None = Field(default=None, alias="LINE_ALLOWED_GROUP_ID")
+    # Optional second gate, inside the group. Group membership is not ours to
+    # control: anyone an existing member invites can otherwise spend GPU time.
+    line_allowed_user_ids: str | None = Field(default=None, alias="LINE_ALLOWED_USER_IDS")
+
+    @property
+    def allowed_users(self) -> frozenset[str]:
+        """The user allowlist, or empty meaning "any member of the group"."""
+        raw = self.line_allowed_user_ids or ""
+        return frozenset(u.strip() for u in raw.replace(";", ",").split(",") if u.strip())
 
     def run_dir(self, run_id: str) -> Path:
         return self.runs_dir / run_id

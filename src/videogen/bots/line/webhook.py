@@ -15,6 +15,7 @@ Reference: https://developers.line.biz/en/docs/messaging-api/receiving-messages/
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -42,7 +43,8 @@ class InvalidSignature(Exception):
 class Outcome:
     """What the handler did with one event, for logging and for tests."""
 
-    action: str  # accepted | duplicate | status | ignored | standby | wrong_group
+    action: str  # accepted | duplicate | status | ignored | standby | capture
+    #             | wrong_group | wrong_user | memberJoined | memberLeft
     job: Job | None = None
     detail: str = ""
 
@@ -56,12 +58,14 @@ class WebhookHandler:
         channel_secret: str,
         allowed_group_id: str | None,
         base_url: str,
+        allowed_user_ids: Iterable[str] = (),
         trigger: str = DEFAULT_TRIGGER,
     ) -> None:
         self.queue = queue
         self.replier = replier
         self.channel_secret = channel_secret
         self.allowed_group_id = allowed_group_id
+        self.allowed_user_ids = frozenset(allowed_user_ids)
         self.base_url = base_url.rstrip("/")
         self.trigger = trigger
 
@@ -93,6 +97,11 @@ class WebhookHandler:
         # explicit that a bot must not send anything in that mode.
         if event.get("mode") == "standby":
             return Outcome("standby")
+
+        # Who is in the group is who can spend money, so a membership change
+        # is not something to drop on the floor with the other event types.
+        if event.get("type") in ("memberJoined", "memberLeft"):
+            return self._membership(event)
 
         if event.get("type") != "message":
             return Outcome("ignored", detail=f"event type {event.get('type')}")
@@ -128,7 +137,37 @@ class WebhookHandler:
             await self._safe_reply(reply_token, f"用法:{self.trigger} <想看的畫面>")
             return Outcome("ignored", detail="empty prompt")
 
-        return await self._accept(event, group_id or "", source.get("userId"), prompt, reply_token)
+        user_id = source.get("userId")
+        if self.allowed_user_ids and user_id not in self.allowed_user_ids:
+            # Fail closed. LINE omits `source.userId` for a user who has not
+            # accepted the Official Account terms, so "we could not tell who
+            # this was" arrives as None -- and it must not resolve to "let them
+            # spend a GPU-hour". The id is put in the detail so the log line is
+            # enough to add someone deliberately.
+            await self._safe_reply(reply_token, "這個 BOT 只回應已授權的成員。")
+            return Outcome("wrong_user", detail=str(user_id))
+
+        return await self._accept(event, group_id or "", user_id, prompt, reply_token)
+
+    def _membership(self, event: dict[str, Any]) -> Outcome:
+        """Report a membership change. Deliberately does not reply.
+
+        A join is the moment the set of people who can spend GPU time changes,
+        and nothing here polls the roster -- so this event is the only notice a
+        change produces. If the user allowlist is empty the newcomer can trigger
+        a render immediately, which is why the report is worth a log line even
+        though there is nothing to reply to.
+        """
+        kind = str(event.get("type"))
+        # Any account can add this bot to any group. Only the roster of the
+        # group we actually serve is worth a line in the log.
+        group_id = (event.get("source") or {}).get("groupId")
+        if self.allowed_group_id and group_id != self.allowed_group_id:
+            return Outcome("ignored", detail=f"{kind} in {group_id}")
+
+        members = (event.get("joined") or event.get("left") or {}).get("members") or []
+        ids = [str(m.get("userId")) for m in members if isinstance(m, dict)]
+        return Outcome(kind, detail=" ".join(ids) or "unknown")
 
     # -------------------------------------------------------------- actions
 

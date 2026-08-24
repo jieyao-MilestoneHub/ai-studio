@@ -93,7 +93,59 @@ must never mean "serve everyone".
 Add the account to the group, say `生成 test`, and the id is printed to the
 console and replied into the chat. Put it in `.env` and restart.
 
-### 4. Serve
+### 4. Decide who inside the group may spend money
+
+The group allowlist answers *which chat*, not *which people*. Those are
+different questions, and the second one is the expensive one: **group membership
+is not yours to control.** Any existing member can invite someone, and from the
+moment that person joins they can trigger a render — at roughly 5 minutes of GPU
+time each.
+
+```bash
+LINE_ALLOWED_USER_IDS=Uabc...,Udef...
+```
+
+Empty means *any member of the group*. That is a legitimate choice for a group
+whose roster you trust, and it is the default because requiring a user list up
+front would make the bot unusable before anyone had ever spoken to it. But it is
+a choice, so `videogen line serve` prints it in yellow at startup rather than
+letting it pass as a default.
+
+With the list set, the gate **fails closed**: LINE does not always include
+`source.userId` on an event, and "we could not tell who this was" must not
+resolve to "let them spend a GPU-hour".
+
+Collecting the ids needs no extra tooling. Every accepted request logs
+`user=<id>` and every refusal logs the id it refused, so the log is enough to
+authorise someone:
+
+```
+2026-08-25 11:03:22 INFO    videogen.webhook | callback ok: wrong_user (U7d3...)
+```
+
+Two deliberate limits on the gate:
+
+- It sits in front of the **paid action only**. Ordinary chat from a stranger is
+  ignored in silence — a bot that answered every message in a group it barely
+  serves would be intolerable.
+- A refusal costs nothing to send, because replies are free, so the person is
+  told rather than left wondering.
+
+**Joins and leaves are reported.** Nothing polls the roster, so `memberJoined` is
+the only notice a change produces; it is logged at WARNING, with a second line
+if no user allowlist is set:
+
+```
+WARNING videogen.webhook | member(s) JOINED the group: U7d3...
+WARNING videogen.webhook |   no LINE_ALLOWED_USER_IDS set: they can trigger a render now
+```
+
+> Not verified: LINE has a *Get group chat member user IDs* endpoint, which would
+> let the roster be read directly instead of watched. I could not confirm from
+> the docs whether it is limited to verified or premium accounts, so nothing here
+> depends on it. Worth checking if you ever want a real roster sync.
+
+### 5. Serve
 
 ```bash
 uv run videogen line serve --port 8000

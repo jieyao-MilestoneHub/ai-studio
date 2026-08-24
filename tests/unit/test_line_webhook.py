@@ -329,3 +329,160 @@ async def test_capture_mode_explains_itself_in_a_one_to_one_chat(capture_mode) -
     (outcome,) = await handler.handle(body, sign(body, SECRET))
     assert outcome.action == "capture"
     assert "群組" in replier.sent[-1][1][0]
+
+
+# ----------------------------------------------------- the user allowlist
+
+MEMBER = "U" + "1" * 32
+STRANGER = "U" + "7" * 32
+
+
+def _gated(tmp_path: Path, *, users):
+    queue = JobQueue(tmp_path / "gated.sqlite3")
+    replier = NullReplyClient()
+    handler = WebhookHandler(
+        queue,
+        replier,
+        channel_secret=SECRET,
+        allowed_group_id=GROUP,
+        allowed_user_ids=users,
+        base_url="https://vg.example.com/",
+    )
+    return handler, queue, replier
+
+
+async def _send(handler, event):
+    body = _body([event])
+    return await handler.handle(body, sign(body, SECRET))
+
+
+@pytest.mark.asyncio
+async def test_an_empty_user_allowlist_lets_any_group_member_through(tmp_path: Path) -> None:
+    """The documented default. Group membership is the only boundary."""
+    handler, queue, _ = _gated(tmp_path, users=())
+    event = _text_event("生成 一隻貓")
+    del event["source"]["userId"]  # and even an unidentifiable one, by design
+
+    outcomes = await _send(handler, event)
+
+    assert outcomes[0].action == "accepted"
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_a_stranger_in_the_right_group_is_refused(tmp_path: Path) -> None:
+    """The whole point: being in the group is not the same as being allowed.
+
+    Anyone an existing member invites lands in the group without us doing
+    anything, and a render costs real GPU time.
+    """
+    handler, queue, replier = _gated(tmp_path, users=[MEMBER])
+    event = _text_event("生成 一隻貓")
+    event["source"]["userId"] = STRANGER
+
+    outcomes = await _send(handler, event)
+
+    assert outcomes[0].action == "wrong_user"
+    assert STRANGER in outcomes[0].detail  # so the log alone can authorise them
+    assert queue.counts() == {}, "a refused request must not reach the queue"
+    assert replier.sent, "a refused trigger gets one free reply, not silence"
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_user_id_fails_closed(tmp_path: Path) -> None:
+    """LINE omits source.userId for a user who has not accepted the Official
+    Account terms. "We could not tell who this was" must never resolve to
+    "let them spend a GPU-hour"."""
+    handler, queue, _ = _gated(tmp_path, users=[MEMBER])
+    event = _text_event("生成 一隻貓")
+    del event["source"]["userId"]
+
+    outcomes = await _send(handler, event)
+
+    assert outcomes[0].action == "wrong_user"
+    assert queue.counts() == {}
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_an_allowed_member_still_gets_through(tmp_path: Path) -> None:
+    handler, queue, _ = _gated(tmp_path, users=[MEMBER, STRANGER])
+    outcomes = await _send(handler, _text_event("生成 一隻貓"))
+    assert outcomes[0].action == "accepted"
+    assert queue.counts() == {"queued": 1}
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_chit_chat_from_a_stranger_is_ignored_not_refused(tmp_path: Path) -> None:
+    """The gate sits in front of the paid action only. Refusing every ordinary
+    message would make the bot talk constantly in a group it barely serves."""
+    handler, queue, replier = _gated(tmp_path, users=[MEMBER])
+    event = _text_event("今天天氣真好")
+    event["source"]["userId"] = STRANGER
+
+    outcomes = await _send(handler, event)
+
+    assert outcomes[0].action == "ignored"
+    assert not replier.sent
+    queue.close()
+
+
+# ------------------------------------------------------- membership events
+
+
+@pytest.mark.asyncio
+async def test_a_join_is_reported_with_the_new_user_ids(tmp_path: Path) -> None:
+    """A join changes who can spend money, and LINE gives an unverified account
+    no API to list a group's members - so this event is the only notice."""
+    handler, queue, replier = _gated(tmp_path, users=[MEMBER])
+    event = {
+        "type": "memberJoined",
+        "mode": "active",
+        "webhookEventId": "evt-join",
+        "timestamp": 1700000000000,
+        "replyToken": "rt-join",
+        "source": {"type": "group", "groupId": GROUP},
+        "joined": {"members": [{"type": "user", "userId": STRANGER}]},
+    }
+
+    outcomes = await _send(handler, event)
+
+    assert outcomes[0].action == "memberJoined"
+    assert STRANGER in outcomes[0].detail
+    assert not replier.sent, "a join is reported to the operator, not to the group"
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_a_leave_is_reported_too(tmp_path: Path) -> None:
+    handler, queue, _ = _gated(tmp_path, users=[MEMBER])
+    event = {
+        "type": "memberLeft",
+        "mode": "active",
+        "webhookEventId": "evt-left",
+        "timestamp": 1700000000000,
+        "source": {"type": "group", "groupId": GROUP},
+        "left": {"members": [{"type": "user", "userId": STRANGER}]},
+    }
+    outcomes = await _send(handler, event)
+    assert outcomes[0].action == "memberLeft"
+    assert STRANGER in outcomes[0].detail
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_a_join_in_another_group_is_not_reported(tmp_path: Path) -> None:
+    """Only the served group's roster is our business. Any account can add this
+    bot to any group, and each of those would otherwise write to our log."""
+    handler, queue, _ = _gated(tmp_path, users=[MEMBER])
+    event = {
+        "type": "memberJoined",
+        "mode": "active",
+        "source": {"type": "group", "groupId": OTHER_GROUP},
+        "joined": {"members": [{"type": "user", "userId": STRANGER}]},
+    }
+    outcomes = await _send(handler, event)
+    assert outcomes[0].action == "ignored"
+    queue.close()

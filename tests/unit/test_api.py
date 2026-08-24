@@ -6,6 +6,7 @@ Dependencies are injected so these run with no LINE credentials and no network.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -198,3 +199,47 @@ def test_capture_mode_reports_the_group_id_and_queues_nothing(tmp_path: Path) ->
     assert queue.counts() == {}
     assert GROUP in replier.sent[-1][1][0]
     queue.close()
+
+
+# ----------------------------------------------------------------- logging
+
+
+def test_a_rejected_signature_is_logged_at_warning(client, caplog) -> None:
+    """The one failure that must never be silent.
+
+    LINE suspends delivery to a bot that keeps failing, so a wrong channel
+    secret has to be visible in `journalctl -u videogen` without a debugger.
+    """
+    c, _, _ = client
+    with caplog.at_level(logging.WARNING, logger="videogen.webhook"):
+        assert c.post(
+            "/callback",
+            content=b'{"events":[]}',
+            headers={"x-line-signature": "wrong"},
+        ).status_code == 400
+    assert any("REJECTED" in r.message for r in caplog.records)
+
+
+def test_an_accepted_event_logs_its_token(client, caplog) -> None:
+    """The status-page token is the only handle on a request, so the log line
+    has to carry it: without it a support question cannot be traced to a job."""
+    c, _, replier = client
+    with caplog.at_level(logging.INFO, logger="videogen.webhook"):
+        _post(c, [_event("生成 一隻貓")])
+
+    # The reply carries the status URL, so the token it ends with is the same
+    # handle the user holds -- the log line has to name that exact one.
+    token = replier.sent[-1][1][0].rstrip("/").rsplit("/", 1)[-1]
+    line = " ".join(r.getMessage() for r in caplog.records)
+    assert "accepted" in line
+    assert token and token in line
+    # documented in docs/line-bot.md as the way to build LINE_ALLOWED_USER_IDS
+    assert "user=" in line
+
+
+def test_the_verify_ping_is_logged_as_such(client, caplog) -> None:
+    """`events: []` is the console's Verify button, not an error."""
+    c, _, _ = client
+    with caplog.at_level(logging.INFO, logger="videogen.webhook"):
+        _post(c, [])
+    assert any("no events" in r.getMessage() for r in caplog.records)

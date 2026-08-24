@@ -149,6 +149,8 @@ class RunpodLlmClient:
                 raise LlmError(f"status poll failed: {exc}") from exc
 
             body = response.json()
+            if not isinstance(body, dict):
+                raise LlmError(f"status was not a JSON object: {str(body)[:200]}")
             status = str(body.get("status", "")).upper()
             if status == "COMPLETED":
                 return body

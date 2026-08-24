@@ -47,7 +47,7 @@ class GateContext:
 
     def __init__(self, run_dir: Path | str) -> None:
         self.run_dir = Path(run_dir)
-        self._cache: dict[str, Any] = {}
+        self._cache: dict[str, dict[str, Any]] = {}
 
     def artifact(self, name: str) -> dict[str, Any]:
         """Load `runs/<id>/<name>`, cached. Raises if it is missing."""
@@ -57,7 +57,10 @@ class GateContext:
                 raise GateFailure(
                     f"{path} is missing — the stage that produces it has not run"
                 )
-            self._cache[name] = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise GateFailure(f"{path} is not a JSON object: {type(data).__name__}")
+            self._cache[name] = data
         return self._cache[name]
 
     def has(self, name: str) -> bool:
