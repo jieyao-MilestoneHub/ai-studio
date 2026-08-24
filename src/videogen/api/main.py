@@ -53,7 +53,10 @@ def create_app(
     app = FastAPI(title="videogen", docs_url=None, redoc_url=None)
 
     app.state.queue = queue or JobQueue()
-    app.state.files_dir = Path(files_dir or "files")
+    # settings.files_dir, not a literal: drain writes the finished mp4 to
+    # settings.files_dir, and if these two disagree the clip renders fine and
+    # then 404s at the moment of delivery. VIDEOGEN_FILES_DIR must move both.
+    app.state.files_dir = Path(files_dir or settings.files_dir)
     app.state.files_dir.mkdir(parents=True, exist_ok=True)
 
     if handler is None:

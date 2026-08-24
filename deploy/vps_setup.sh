@@ -103,9 +103,15 @@ UNIT
 say "window timers"
 # One unit per phase. --terminate-after on the pod is still the backstop: it
 # guarantees a pod gets closed even if this box dies mid-window.
-for phase in open reap close; do
+for phase in open drain reap close; do
   case "$phase" in
     open)  cmd="session open --until 13:00 --tz Asia/Taipei"; when="03:00" ;;
+    # The one that actually makes videos. It exits immediately and successfully
+    # when no window is open, so firing every 5 minutes all day is a no-op
+    # outside the window -- and if a drain dies mid-window the next tick picks
+    # the queue back up. systemd will not start a second instance while one is
+    # still running, so the long render is not interrupted by the next tick.
+    drain) cmd="session drain";                               when="*:0/5" ;;
     reap)  cmd="session reap";                                when="*:0/5" ;;
     close) cmd="session close";                               when="05:00" ;;
   esac
@@ -139,7 +145,7 @@ done
 
 systemctl daemon-reload
 systemctl enable --now videogen.service >/dev/null 2>&1 || true
-for phase in open reap close; do
+for phase in open drain reap close; do
   systemctl enable --now videogen-${phase}.timer >/dev/null 2>&1 || true
 done
 

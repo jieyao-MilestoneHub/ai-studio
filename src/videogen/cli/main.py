@@ -408,6 +408,74 @@ def session_reap(
     console.print(sess.close_if_idle(idle_minutes))
 
 
+@session_app.command("drain")
+def session_drain(
+    max_clips: int | None = typer.Option(None, help="Stop after N clips."),
+    poll_seconds: float = typer.Option(15.0, help="How often to poll ComfyUI."),
+) -> None:
+    """Render queued requests on the open window's pod.
+
+    This is what turns an open window into videos. Schedule it alongside `reap`:
+    it exits immediately and successfully when no window is open, so a timer
+    firing outside the window is a no-op rather than a failure, and if a drain
+    dies mid-window the next tick picks the queue back up.
+
+    Which workflow runs is decided by the rung that answered, not by preference.
+    A 48GB card takes the fp8 graph and applies the LoRA in bypass; a 24GB card
+    takes int8 with the LoRA merged, which the node pack itself calls softer.
+    """
+    from videogen.pipeline.drain import drain_window
+    from videogen.pipeline.queue import JobQueue
+    from videogen.runtime import session as sess
+
+    settings = get_settings()
+    session = sess.load_state()
+    if session is None:
+        console.print("no window is open; nothing to drain")
+        return
+    if session.past_window():
+        console.print("the window has already ended; not claiming new work")
+        return
+
+    workflow = Path("workflows") / (
+        "h3_fl2va_turbo.json" if session.low_vram else "h3_fl2va_turbo_fp8.json"
+    )
+    if not workflow.is_file():
+        console.print(f"[red]missing workflow {workflow}[/red] (run from the repo root)")
+        raise typer.Exit(1)
+
+    console.print(
+        f"draining on {session.tier_label} ({session.vram_gb}GB, {session.quantisation}, "
+        f"lora={'merged' if session.low_vram else 'bypass'}) until {session.window_end}"
+    )
+
+    backend = get_provider(
+        "comfyui",
+        workflow=workflow,
+        base_url=session.comfy_url,
+        hourly_usd=session.cost_per_hr,
+    )
+    queue = JobQueue()
+    try:
+        report = asyncio.run(
+            drain_window(
+                queue,
+                backend,
+                window_end=datetime.fromisoformat(session.window_end),
+                files_dir=settings.files_dir,
+                gpu_tier=session.tier_label,
+                poll_interval_s=poll_seconds,
+                max_clips=max_clips,
+                # Without this a long render looks like idleness and the reaper
+                # closes the window out from under the clip being rendered.
+                on_activity=sess.touch_activity,
+            )
+        )
+    finally:
+        queue.close()
+    console.print(str(report))
+
+
 pod_app = typer.Typer(help="RunPod pod lifecycle. `down` terminates — stopping still bills.")
 app.add_typer(pod_app, name="pod")
 
