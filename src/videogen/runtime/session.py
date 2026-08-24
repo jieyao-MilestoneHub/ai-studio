@@ -91,9 +91,20 @@ class Tier:
 #
 # Prices include the ~$0.014/hr our disk configuration adds, which is measured:
 # a pod listed at $0.44/hr reported currentSpendPerHr 0.454.
+# The datacenter is not decoration and it is not the same for every rung.
+#
+# 📏 Checked against /catalog/gpus on 2026-08-25: L40S secure stock exists only
+# in EU-NL-1, OC-AU-1, US-NC-1, US-TX-3 and US-TX-4. Of those, H3's licence
+# permits only OC-AU-1 -- the Netherlands is EU, the rest are US. There is no
+# L40S in Iceland at all, so the earlier reading that "L40S was refused twice"
+# was geography, not stock: those two rungs could never have been filled.
+#
+# The 4090 rungs stay in Iceland (EUR-IS-2), which is where 4090 secure stock
+# actually is among licence-safe datacenters (the alternatives the catalog
+# offers, EU-CZ-1 and EU-RO-1, are both EU).
 CANDIDATES: tuple[Tier, ...] = (
-    Tier("NVIDIA L40S", "EUR-IS-2", "SECURE", vram_gb=48, usd_per_hr=1.004),
-    Tier("NVIDIA L40S", "EUR-IS-2", "COMMUNITY", vram_gb=48, usd_per_hr=0.804),
+    Tier("NVIDIA L40S", "OC-AU-1", "SECURE", vram_gb=48, usd_per_hr=1.004),
+    Tier("NVIDIA L40S", "OC-AU-1", "COMMUNITY", vram_gb=48, usd_per_hr=0.804),
     Tier("NVIDIA GeForce RTX 4090", "EUR-IS-2", "SECURE", vram_gb=24, usd_per_hr=0.754),
     Tier(
         "NVIDIA GeForce RTX 4090", "EUR-IS-2", "COMMUNITY",

@@ -110,7 +110,9 @@ numbers, ask which sampler they used.
 ⛔ **Still unmeasured — do not treat the numbers elsewhere in this file as ours**
 
 - **Generation time on a 48GB Ada card with fp8.** The `1.38×` fp8 advantage is
-  `[reported]` from someone else's 4090. Our only timing is A40 + int8.
+  `[reported]` from someone else's 4090. Our only timing is A40 + int8. Note
+  that until 2026-08-25 this was not merely unmeasured but *unreachable*: the
+  48GB rungs pointed at a datacenter with no L40S in it.
 - **Whether 43.3GB fits in 24GB with `low_vram=True`.** Rungs 3 and 4 of the
   ladder assume it does, on the node pack's word. An attempt on a 4090 was cut
   short before generation (see below), so this is still an assumption.
@@ -133,8 +135,23 @@ and are now fixed in `deploy/pod_setup.sh`:
    `git fetch` then hung behind it for over eight minutes. The upgrade is small;
    it now runs first.
 3. Placement itself: the ladder fell through L40S Secure and L40S Community
-   (both refused) and landed on **RTX 4090 Secure**, a 24GB rung — so the run
-   would have measured the `low_vram` path rather than the fp8 one anyway.
+   and landed on **RTX 4090 Secure**, a 24GB rung — so the run would have
+   measured the `low_vram` path rather than the fp8 one anyway.
+
+   **That third cause was misdiagnosed here, and the correction matters more
+   than the original note.** Both L40S rungs were recorded as "refused", i.e.
+   out of stock. They were not: 📏 checked against `/catalog/gpus` on
+   2026-08-25, **L40S is not offered in Iceland at all**. Its secure stock sits
+   in EU-NL-1, OC-AU-1, US-NC-1, US-TX-3 and US-TX-4, and every ladder rung
+   pinned `EUR-IS-2`. Those two rungs could never have been filled, on any day,
+   at any price.
+
+   A deploy refusal looks identical whether the datacenter is empty or has
+   never had that card, which is why this survived a live run. The ladder now
+   places L40S in **OC-AU-1** — the only one of those five that H3's licence
+   permits, the Netherlands being EU and the rest US — and `videogen pod
+   placement` checks every rung against the catalog so a dead rung is loud
+   instead of looking like bad luck.
 
 The run was terminated rather than pushed through, at a cost of $0.44 for the
 whole session. The measurement is worth redoing; it is not worth paying for a

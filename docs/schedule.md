@@ -22,12 +22,16 @@ Placement is not a preference; it is whatever is available in a licence-permitte
 datacenter at 11:00. Four rungs, price **strictly descending**, and only the
 cheapest one waits:
 
-| # | GPU | VRAM | $/hr | 2h×30 | LoRA mode | on refusal |
-|---|---|---|---|---|---|---|
-| 1 | L40S Secure | 48 | $1.004 | $60.2 | **bypass** (sharpest) | next rung |
-| 2 | L40S Community | 48 | $0.804 | $48.2 | **bypass** | next rung |
-| 3 | RTX 4090 Secure | 24 | $0.754 | $45.2 | low_vram (softer) | next rung |
-| 4 | RTX 4090 Community | 24 | $0.354 | $21.2 | low_vram (softer) | **retry and wait** |
+| # | GPU | where | VRAM | $/hr | 2h×30 | LoRA mode | on refusal |
+|---|---|---|---|---|---|---|---|
+| 1 | L40S Secure | `OC-AU-1` | 48 | $1.004 | $60.2 | **bypass** (sharpest) | next rung |
+| 2 | L40S Community | `OC-AU-1` | 48 | $0.804 | $48.2 | **bypass** | next rung |
+| 3 | RTX 4090 Secure | `EUR-IS-2` | 24 | $0.754 | $45.2 | low_vram (softer) | next rung |
+| 4 | RTX 4090 Community | `EUR-IS-2` | 24 | $0.354 | $21.2 | low_vram (softer) | **retry and wait** |
+
+**The datacenter column is load-bearing and it is not the same for every rung.**
+L40S and the 4090 are not offered in the same places, and only some of those
+places H3's licence permits.
 
 Descending on purpose: take the best card available *now*, and if it is gone move
 on immediately, because wall-clock inside a two-hour window is worth more than
@@ -45,17 +49,49 @@ bill.**
 Expected monthly cost lands in **$21–60**, around $48, depending on which rung
 answers each day.
 
-### `LOW` means "probably none"
+### A refusal does not tell you why
 
-The catalogue reported `LOW` for both L40S and 4090 while every rung refused —
-ten consecutive refusals in one earlier session, and all four rungs refusing on
-another. On the run that finally succeeded, rungs 1 and 2 were both gone and it
-landed on rung 3.
+This is the trap that already cost this project its best quality tier for weeks.
+
+Every rung used to pin `EUR-IS-2`. 📏 Checked against `/catalog/gpus` on
+2026-08-25, **L40S is not offered in Iceland at all** — its secure stock is in
+EU-NL-1, OC-AU-1, US-NC-1, US-TX-3 and US-TX-4. So rungs 1 and 2 were asking for
+a card that was never there, and RunPod refused them exactly the way it refuses
+a datacenter that is merely empty. Read from the outside, "sold out" and "we
+don't stock that here" are the same event.
+
+The consequence was invisible and expensive in quality rather than money: the
+window fell through to a 24GB rung **every single time**, so the sharpest
+`bypass` path — the reason 48GB was chosen at all — was never once used, and the
+logs looked like ordinary bad luck.
+
+Two things now prevent a repeat:
+
+```bash
+videogen pod placement     # every rung vs the catalog; exits 1 on a dead rung
+```
+
+and a test (`test_pod_placement.py`) that fails if any rung's datacenter does not
+offer its card. Both distinguish **`not-offered`** (never going to work) from
+**`empty`** (try again later) from **`unverifiable`** (community cloud publishes
+no per-datacenter breakdown, so we cannot know before trying).
+
+### `LOW` still means "probably none"
+
+Genuine scarcity is real on top of that: the catalogue reported `LOW` while ten
+consecutive attempts refused in one session. `LOW` is not a promise.
 
 So the ladder is not defensive over-engineering; it is the normal path. And
 critically: **waiting is done in our own retry loop, never by leaving a request
 with RunPod.** A standing order that fills when capacity appears would start
 billing unattended, including overnight.
+
+### One consequence for latency
+
+`OC-AU-1` is Sydney; `EUR-IS-2` is Iceland. Both are fine for driving ComfyUI
+over the proxy, and Sydney is materially closer to Taiwan than Iceland — but the
+pod's own downloads (54.7GB of weights 📏) come from Hugging Face, so setup time
+depends on the host's link rather than on distance from us.
 
 ## Three scheduled tasks
 

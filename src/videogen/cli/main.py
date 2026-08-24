@@ -426,6 +426,50 @@ def pod_capacity() -> None:
     console.print(f"[green]available:[/green] {gpu_id} in {dc_id}")
 
 
+@pod_app.command("placement")
+def pod_placement() -> None:
+    """Check every ladder rung against the catalog, before a window needs it.
+
+    A rung whose datacenter does not offer that card is refused on deploy just
+    like one that is merely out of stock -- so without this the ladder can fall
+    through to a softer GPU for months and look like bad luck.
+    """
+    from videogen.runtime.pod import LICENCE_SAFE_DATACENTERS, PodManager
+    from videogen.runtime.session import CANDIDATES
+
+    verdicts = {
+        "stock": ("green", "has stock"),
+        "empty": ("yellow", "no stock right now"),
+        "not-offered": ("red", "NOT OFFERED HERE - this rung can never fill"),
+        "unverifiable": ("cyan", "community cloud reports no per-dc breakdown"),
+    }
+    dead = 0
+    with PodManager() as manager:
+        for i, tier in enumerate(CANDIDATES, 1):
+            if tier.datacenter not in LICENCE_SAFE_DATACENTERS:
+                console.print(f"  {i}. [red]{tier.label}: outside H3's licence[/red]")
+                dead += 1
+                continue
+            verdict = manager.verify_placement(
+                tier.gpu, tier.datacenter, cloud=tier.cloud
+            )
+            colour, text = verdicts[verdict]
+            console.print(
+                f"  {i}. {tier.gpu} {tier.datacenter} {tier.cloud} "
+                f"${tier.usd_per_hr:.3f}/hr  [{colour}]{text}[/{colour}]"
+            )
+            dead += verdict == "not-offered"
+
+    if dead:
+        console.print(
+            f"\n[red]{dead} rung(s) can never be filled.[/red] The window will "
+            "fall through to a lower rung every time, which is a quality "
+            "downgrade, not just a price one."
+        )
+        raise typer.Exit(1)
+    console.print("\n[green]every rung is licence-safe and actually offered[/green]")
+
+
 @pod_app.command("up")
 def pod_up(
     template_id: str = typer.Option(..., help="Official RunPod ComfyUI template id (CUDA 13)."),

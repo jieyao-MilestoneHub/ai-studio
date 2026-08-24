@@ -107,7 +107,13 @@ class PodStatus:
 class PodManager:
     """Create, inspect, and terminate the ComfyUI pod."""
 
-    def __init__(self, api_key: str | None = None, *, timeout_s: float = 60.0) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        *,
+        timeout_s: float = 60.0,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
         settings = get_settings()
         key = api_key or (
             settings.runpod_api_key.get_secret_value() if settings.runpod_api_key else None
@@ -121,6 +127,7 @@ class PodManager:
             base_url=API_BASE,
             timeout=httpx.Timeout(timeout_s),
             headers={"Authorization": f"Bearer {key}"},
+            transport=transport,
         )
 
     def __enter__(self) -> PodManager:
@@ -134,11 +141,57 @@ class PodManager:
 
     # ------------------------------------------------------------ capacity
 
+    def gpu_datacenters(
+        self, gpu_id: str, *, cloud: str = "SECURE"
+    ) -> dict[str, str] | None:
+        """Per-datacenter availability for one GPU, or None if not broken down.
+
+        The path is `/catalog/gpus/{id}`, and the availability block is opt-in:
+        `include=AVAILABILITY` (uppercase, at most one value) with a `product`
+        that is *required* alongside it. Without them the response carries price
+        and VRAM but no stock at all -- which is how a wrong path and a missing
+        expansion both look like "no capacity" rather than like a mistake.
+
+        Returns None for community cloud, which reports one overall figure and
+        no per-datacenter breakdown. None means "cannot tell from here", never
+        "nothing there"; the caller has to keep those apart.
+        """
+        payload = self._get(
+            f"/catalog/gpus/{_quote(gpu_id)}",
+            params={"include": "AVAILABILITY", "product": "POD", "cloud": cloud},
+        )
+        entries = payload.get("dataCenters")
+        if not isinstance(entries, list):
+            return None
+        return {
+            str(e.get("id", "")): str(e.get("availability", "NONE")).upper()
+            for e in entries
+            if isinstance(e, dict)
+        }
+
+    def verify_placement(
+        self, gpu_id: str, datacenter_id: str, *, cloud: str = "SECURE"
+    ) -> str:
+        """Classify one (gpu, datacenter) pair. The point is `not-offered`.
+
+        "This datacenter has no stock right now" and "this datacenter has never
+        had that card" both come back from a deploy attempt as a refusal, and
+        the second one will still be refused tomorrow. Telling them apart is the
+        difference between a ladder rung that is unlucky and one that is dead.
+        """
+        per_dc = self.gpu_datacenters(gpu_id, cloud=cloud)
+        if per_dc is None:
+            return "unverifiable"
+        if datacenter_id not in per_dc:
+            return "not-offered"
+        return "empty" if per_dc[datacenter_id] in {"NONE", ""} else "stock"
+
     def find_capacity(
         self,
         *,
         gpus: tuple[str, ...] = PREFERRED_GPUS,
         datacenters: tuple[str, ...] = LICENCE_SAFE_DATACENTERS,
+        cloud: str = "SECURE",
     ) -> tuple[str, str]:
         """Return the first `(gpu_id, datacenter_id)` with reported stock.
 
@@ -146,10 +199,8 @@ class PodManager:
         can become a standing order that bills the moment stock appears.
         """
         for gpu_id in gpus:
-            payload = self._get(f"/catalog/gpu-types/{_quote(gpu_id)}", params={"product": "POD"})
-            for entry in payload.get("dataCenters", []) or []:
-                dc_id = str(entry.get("id", ""))
-                availability = str(entry.get("availability", "NONE")).upper()
+            per_dc = self.gpu_datacenters(gpu_id, cloud=cloud) or {}
+            for dc_id, availability in per_dc.items():
                 if dc_id in datacenters and availability not in {"NONE", ""}:
                     return gpu_id, dc_id
 
