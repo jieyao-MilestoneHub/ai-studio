@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "PATH": "C:\\ffmpeg\\ffmpeg-master-latest-win64-gpl\\bin;C:\\Program Files\\Git\\usr\\bin;$PATH"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(uv run pytest:*)",
+      "Bash(uv run ruff:*)",
+      "Bash(uv run lint-imports)",
+      "Bash(uv run mypy:*)",
+      "Bash(uv run videogen doctor)",
+      "Bash(uv run videogen format:*)",
+      "Bash(uv run videogen pod status:*)",
+      "Bash(uv run videogen pod capacity)",
+      "Bash(uv run python:*)",
+      "Bash(uv sync:*)",
+      "Bash(uv lock:*)",
+      "Bash(ffprobe:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)"
+    ],
+    "ask": [
+      "Bash(uv run videogen pod up:*)",
+      "Bash(uv run videogen pod down:*)",
+      "Bash(uv run videogen generate:*)",
+      "Bash(git push:*)"
+    ]
+  }
+}

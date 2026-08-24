@@ -1,0 +1,53 @@
+video-gen
+Copyright (c) 2026 video-gen contributors
+
+================================================================================
+Derived work notice
+================================================================================
+
+The editing grammar implemented in `src/videogen/editing/` and the gate
+discipline in `src/videogen/gates/` are derived from:
+
+    Hao0321/video-autopilot-kit
+    https://github.com/Hao0321/video-autopilot-kit
+    MIT License, Copyright (c) 2026 Hao0321 Studio
+
+Specifically inherited: the semantic transition table and its frequency caps,
+the sub-pixel Ken Burns approach (and the permanent ban on ffmpeg `zoompan`),
+the dual-mode rhythm wave, segment-index caption binding, the white-first
+caption colour system, the four-layer dB ladder with sidechain ducking and
+two-pass loudness normalisation, and the shared gate shell pattern.
+
+Deliberately NOT inherited: the upstream evidence/proof layer
+(`src/longform_maker/proof_stage.py`, the risky-claim regex gate, and the
+"real screenshots only" rules). Upstream targets proof-driven tutorials built
+from real footage; this project's source material is generative by design, so
+those rules are a category error here rather than a standard being failed.
+
+See docs/attribution.md for the per-module derivation map.
+
+The full text of the upstream licence follows.
+
+--------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2026 Hao0321 Studio
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

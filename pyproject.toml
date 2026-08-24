@@ -1,0 +1,145 @@
+[project]
+name = "video-gen"
+version = "0.1.0"
+description = "AI video generation on RunPod — MiniMax H3 clips assembled with a rigorous editing grammar"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10,<3.14"
+keywords = ["runpod", "comfyui", "video-generation", "minimax-h3", "ffmpeg"]
+
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "httpx>=0.27",
+    "typer>=0.12",
+    "rich>=13.7",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.34"]
+
+[project.scripts]
+videogen = "videogen.cli.main:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "import-linter>=2.0",
+    "types-pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/videogen"]
+
+# ---------------------------------------------------------------- tooling
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer's whole API is call-in-default (`= typer.Option(...)`). B008 is correct
+# advice in general and wrong for this one library.
+"src/videogen/cli/*.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src/videogen"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "ffmpeg: requires a working ffmpeg on PATH",
+    "runpod: requires RunPod credentials and spends money",
+]
+
+# ---------------------------------------------------------------- layering
+# These contracts are the architecture. They exist from day 1 on purpose:
+# retrofitting layering onto a grown codebase is how this design would die.
+# See docs/architecture.md.
+
+[tool.importlinter]
+root_package = "videogen"
+
+[[tool.importlinter.contracts]]
+name = "Layered spine"
+type = "layers"
+layers = [
+    "videogen.cli",
+    "videogen.runtime",
+    "videogen.pipeline",
+    "videogen.providers",
+    "videogen.comfy",
+    "videogen.storage",
+    "videogen.media",
+    "videogen.config",
+    "videogen.core",
+]
+
+[[tool.importlinter.contracts]]
+name = "Editing grammar stays infrastructure-free"
+type = "forbidden"
+source_modules = ["videogen.editing"]
+forbidden_modules = [
+    "videogen.providers",
+    "videogen.comfy",
+    "videogen.render",
+    "videogen.runtime",
+    "videogen.pipeline",
+    "videogen.storage",
+    "videogen.media",
+]
+
+[[tool.importlinter.contracts]]
+name = "Gates are pure functions of on-disk artifacts"
+type = "forbidden"
+source_modules = ["videogen.gates"]
+forbidden_modules = [
+    "videogen.providers",
+    "videogen.comfy",
+    "videogen.render",
+    "videogen.runtime",
+]
+
+[[tool.importlinter.contracts]]
+name = "Swapping the model cannot touch editing"
+type = "forbidden"
+source_modules = ["videogen.render"]
+forbidden_modules = ["videogen.providers", "videogen.comfy"]
+
+[[tool.importlinter.contracts]]
+name = "Phase-2 packages stay leaves"
+type = "forbidden"
+source_modules = [
+    "videogen.core",
+    "videogen.config",
+    "videogen.prompts",
+    "videogen.editing",
+    "videogen.storage",
+    "videogen.media",
+    "videogen.gates",
+    "videogen.providers",
+    "videogen.comfy",
+    "videogen.planner",
+    "videogen.render",
+    "videogen.pipeline",
+    "videogen.runtime",
+    "videogen.cli",
+]
+forbidden_modules = ["videogen.api", "videogen.bots"]

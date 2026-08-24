@@ -1,0 +1,57 @@
+# --- run artifacts & media -------------------------------------------------
+# Never commit generated media or run directories. A CI test asserts these
+# patterns actually work (tests/unit/test_gitignore.py) — the classic way an
+# OSS repo leaks material is a .gitignore that was edited and never verified.
+runs/
+out/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.wav
+*.mp3
+*.m4a
+
+# --- model weights ---------------------------------------------------------
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.gguf
+models/
+
+# --- fonts (not redistributable) -------------------------------------------
+assets/fonts/*
+!assets/fonts/README.md
+
+# --- secrets ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.local.toml
+*.pem
+*.key
+
+# --- python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.import_linter_cache/
+.coverage
+htmlcov/
+
+# --- editors / os ----------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- local reference material, not part of the repo -----------------------
+runpot-suggestion.md
