@@ -1,6 +1,6 @@
 ---
 name: architecture-reviewer
-description: Review a change against this repo's specific structural invariants — layering, the single-source-of-truth for time, fail-loud lookups, and the doc/gate/fixture rule for editing grammar. Use before committing anything that touches src/videogen/, or when asked to review a change here. Complements `lint-imports`, which catches import direction but not the rest.
+description: Review a change against this repo's specific structural invariants — layering, the single-source-of-truth for time, fail-loud lookups, and the doc/gate/fixture rule for editing grammar. Use before committing anything that touches src/ai_studio/, or when asked to review a change here. Complements `lint-imports`, which catches import direction but not the rest.
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---

@@ -82,7 +82,7 @@ logs looked like ordinary bad luck.
 Two things now prevent a repeat:
 
 ```bash
-videogen pod placement     # every rung vs the catalog; exits 1 on a dead rung
+ai-studio pod placement     # every rung vs the catalog; exits 1 on a dead rung
 ```
 
 and a test (`test_pod_placement.py`) that fails if any rung's datacenter does not
@@ -111,13 +111,13 @@ depends on the host's link rather than on distance from us.
 
 ```bash
 # 11:00 — open. Walks the ladder; raises having created nothing if all four fail.
-videogen session open --until 13:00
+ai-studio session open --until 13:00
 
 # every 5 min — close early if the window has gone quiet
-videogen session reap --idle-minutes 20
+ai-studio session reap --idle-minutes 20
 
 # 13:00 — close, unconditionally. Idempotent and safe when nothing is up.
-videogen session close
+ai-studio session close
 ```
 
 `session open` also passes `--terminate-after` set to window end + 10 minutes.
@@ -142,7 +142,7 @@ tension:
    with zero LINE messages now costs $0, not one ladder rung's worth of an
    empty window.
 2. **Monthly budget guard.** `runtime.budget.MonthlyBudgetGuard` reads
-   `VIDEOGEN_MAX_MONTH_USD` (default $50) and `VIDEOGEN_VPS_MONTHLY_USD`
+   `AI_STUDIO_MAX_MONTH_USD` (default $50) and `AI_STUDIO_VPS_MONTHLY_USD`
    (default $5, reserved off the top) against a running ledger
    (`runs/.spend_ledger.json`, rolled over on the Asia/Taipei calendar month).
    If what's left this month can't cover even a ~20-minute session at the
@@ -178,14 +178,14 @@ regardless of which one happened to fire.
 $repo = "C:\Users\USER\Desktop\Develop\ai-studio"
 $uv   = (Get-Command uv).Source
 
-schtasks /Create /TN "videogen-open"  /SC DAILY /ST 11:00 /F `
-  /TR "cmd /c cd /d $repo && `"$uv`" run videogen session open --until 13:00"
+schtasks /Create /TN "ai-studio-open"  /SC DAILY /ST 11:00 /F `
+  /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session open --until 13:00"
 
-schtasks /Create /TN "videogen-reap"  /SC MINUTE /MO 5 /F `
-  /TR "cmd /c cd /d $repo && `"$uv`" run videogen session reap"
+schtasks /Create /TN "ai-studio-reap"  /SC MINUTE /MO 5 /F `
+  /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session reap"
 
-schtasks /Create /TN "videogen-close" /SC DAILY /ST 13:00 /F `
-  /TR "cmd /c cd /d $repo && `"$uv`" run videogen session close"
+schtasks /Create /TN "ai-studio-close" /SC DAILY /ST 13:00 /F `
+  /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session close"
 ```
 
 ⚠️ Task Scheduler does not run while the machine is asleep. `--terminate-after`
@@ -196,15 +196,15 @@ is unreliable, put the scheduler on whatever host serves the LINE webhook.
 
 ```cron
 # UTC. 11:00 Asia/Taipei = 03:00 UTC.
-0  3 * * *  cd /srv/ai-studio && uv run videogen session open --until 13:00 --tz Asia/Taipei
-*/5 * * * * cd /srv/ai-studio && uv run videogen session reap
-0  5 * * *  cd /srv/ai-studio && uv run videogen session close
+0  3 * * *  cd /srv/ai-studio && uv run ai-studio session open --until 13:00 --tz Asia/Taipei
+*/5 * * * * cd /srv/ai-studio && uv run ai-studio session reap
+0  5 * * *  cd /srv/ai-studio && uv run ai-studio session close
 ```
 
 ## Checking on it
 
 ```bash
-videogen session status     # rung, rate, elapsed, spent so far, when it closes
+ai-studio session status     # rung, rate, elapsed, spent so far, when it closes
 ```
 
 With no state file it also lists any running pods, because the failure that costs

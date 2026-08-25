@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from videogen.bots.line.reply import NullReplyClient
-from videogen.bots.line.verify import sign, verify
-from videogen.bots.line.webhook import InvalidSignature, WebhookHandler
-from videogen.core.enums import MediaKind
-from videogen.pipeline.queue import JobQueue, JobState
+from ai_studio.bots.line.reply import NullReplyClient
+from ai_studio.bots.line.verify import sign, verify
+from ai_studio.bots.line.webhook import InvalidSignature, WebhookHandler
+from ai_studio.core.enums import MediaKind
+from ai_studio.pipeline.queue import JobQueue, JobState
 
 SECRET = "test-channel-secret"
 GROUP = "Cae56f94637c1234567890abcdef12345"

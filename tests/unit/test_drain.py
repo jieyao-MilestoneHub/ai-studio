@@ -14,12 +14,12 @@ from typing import Any
 
 import pytest
 
-from videogen.core.enums import GenMode, MediaKind
-from videogen.core.enums import JobState as ClipState
-from videogen.core.image_provider_spec import ImageAsset, ImageProviderCapabilities
-from videogen.core.provider_spec import ClipAsset, ClipJob, ProviderCapabilities
-from videogen.pipeline.drain import STOP_CLAIMING_BEFORE_S, drain_window
-from videogen.pipeline.queue import JobQueue
+from ai_studio.core.enums import GenMode, MediaKind
+from ai_studio.core.enums import JobState as ClipState
+from ai_studio.core.image_provider_spec import ImageAsset, ImageProviderCapabilities
+from ai_studio.core.provider_spec import ClipAsset, ClipJob, ProviderCapabilities
+from ai_studio.pipeline.drain import STOP_CLAIMING_BEFORE_S, drain_window
+from ai_studio.pipeline.queue import JobQueue
 
 CAPS = ProviderCapabilities(
     provider="fake",
@@ -244,7 +244,7 @@ async def test_a_clip_still_running_at_the_bell_is_cancelled_and_requeued(ready)
 @pytest.mark.asyncio
 async def test_a_provider_failure_requeues_rather_than_losing_the_request(ready) -> None:
     """The machine's fault is not the requester's fault."""
-    from videogen.core.errors import ProviderError
+    from ai_studio.core.errors import ProviderError
 
     q, files = ready
     report = await drain_window(
@@ -341,8 +341,8 @@ def test_the_prompt_payload_shape_the_drainer_expects(ready) -> None:
 @pytest.mark.asyncio
 async def test_requeue_is_capped_so_a_broken_pod_cannot_loop_forever(tmp_path: Path) -> None:
     """Without a cap, requeue is an infinite loop: fail, requeue, reclaim, fail."""
-    from videogen.core.errors import ProviderError
-    from videogen.pipeline.drain import MAX_ATTEMPTS
+    from ai_studio.core.errors import ProviderError
+    from ai_studio.pipeline.drain import MAX_ATTEMPTS
 
     with JobQueue(tmp_path / "q.sqlite3") as q:
         job, _ = q.enqueue("evt-loop", "Cgroup", "貓")
@@ -368,7 +368,7 @@ async def test_the_breaker_stops_the_window_after_three_failures_in_a_row(
     tmp_path: Path,
 ) -> None:
     """Three in a row is a broken pod, not bad luck. Stop paying."""
-    from videogen.pipeline.drain import MAX_CONSECUTIVE_FAILURES
+    from ai_studio.pipeline.drain import MAX_CONSECUTIVE_FAILURES
 
     with JobQueue(tmp_path / "q.sqlite3") as q:
         for i in range(6):

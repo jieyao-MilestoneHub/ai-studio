@@ -130,7 +130,7 @@
     "130",
     0
    ],
-   "filename_prefix": "videogen/h3_864x480",
+   "filename_prefix": "ai_studio/h3_864x480",
    "format": "auto",
    "codec": "auto"
   }
@@ -168,7 +168,7 @@
   "class_type": "MiniMaxH3TurboSampler",
   "inputs": {}
  },
- "_videogen": {
+ "_ai_studio": {
   "expect_turbo": true,
   "bindings": {
    "prompt": [

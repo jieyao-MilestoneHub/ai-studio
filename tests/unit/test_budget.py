@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from videogen.core.errors import CostCeilingExceeded, VideogenError
-from videogen.runtime.budget import MonthlyBudgetGuard, SpendLedger
+from ai_studio.core.errors import AIStudioError, CostCeilingExceeded
+from ai_studio.runtime.budget import MonthlyBudgetGuard, SpendLedger
 
 
 @dataclass(frozen=True)
@@ -76,14 +76,14 @@ def test_a_corrupted_ledger_file_raises_rather_than_silently_resetting_to_zero(
     re-grant budget that may already be gone."""
     path = tmp_path / "ledger.json"
     path.write_text("not json at all", encoding="utf-8")
-    with pytest.raises(VideogenError):
+    with pytest.raises(AIStudioError):
         SpendLedger(path).spent_this_month_usd()
 
 
 def test_a_ledger_missing_the_month_key_raises_too(tmp_path: Path) -> None:
     path = tmp_path / "ledger.json"
     path.write_text('{"sessions": []}', encoding="utf-8")
-    with pytest.raises(VideogenError):
+    with pytest.raises(AIStudioError):
         SpendLedger(path).spent_this_month_usd()
 
 

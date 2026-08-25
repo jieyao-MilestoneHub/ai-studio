@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from videogen.llm.endpoint import ScriptedLlmClient
-from videogen.pipeline.convert_worker import DEFAULT_DURATION_S, convert_job, convert_pending
-from videogen.pipeline.queue import JobQueue, JobState
-from videogen.prompts.convert import (
+from ai_studio.llm.endpoint import ScriptedLlmClient
+from ai_studio.pipeline.convert_worker import DEFAULT_DURATION_S, convert_job, convert_pending
+from ai_studio.pipeline.queue import JobQueue, JobState
+from ai_studio.prompts.convert import (
     ConversionError,
     build_prompt,
     convert,

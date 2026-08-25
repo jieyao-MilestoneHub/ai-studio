@@ -13,9 +13,9 @@ from typing import Any
 
 import pytest
 
-from videogen.comfy.graph import IMAGE_REQUIRED_BINDINGS, REQUIRED_BINDINGS, Workflow
-from videogen.comfy.validate import uses_turbo_lora, validate_graph
-from videogen.core.errors import GraphValidationError, UnknownKeyError
+from ai_studio.comfy.graph import IMAGE_REQUIRED_BINDINGS, REQUIRED_BINDINGS, Workflow
+from ai_studio.comfy.validate import uses_turbo_lora, validate_graph
+from ai_studio.core.errors import GraphValidationError, UnknownKeyError
 
 
 def _turbo_graph(lora_node: str = "MiniMaxH3TurboLoRA", sampler: str = "MiniMaxH3TurboSampler"):
@@ -24,7 +24,7 @@ def _turbo_graph(lora_node: str = "MiniMaxH3TurboLoRA", sampler: str = "MiniMaxH
         "2": {"class_type": lora_node, "inputs": {"lora_name": "h3_turbo_4step.safetensors", "model": ["1", 0]}},
         "3": {"class_type": "CLIPTextEncode", "inputs": {"text": ""}},
         "4": {"class_type": sampler, "inputs": {"steps": 12, "model": ["2", 0], "positive": ["3", 0]}},
-        "5": {"class_type": "SaveVideo", "inputs": {"filename_prefix": "videogen", "images": ["4", 0]}},
+        "5": {"class_type": "SaveVideo", "inputs": {"filename_prefix": "ai_studio", "images": ["4", 0]}},
     }
 
 
@@ -33,7 +33,7 @@ def _base_graph() -> dict[str, Any]:
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "h3_fl2va.safetensors"}},
         "3": {"class_type": "CLIPTextEncode", "inputs": {"text": ""}},
         "4": {"class_type": "KSampler", "inputs": {"steps": 20, "model": ["1", 0]}},
-        "5": {"class_type": "SaveVideo", "inputs": {"filename_prefix": "videogen", "images": ["4", 0]}},
+        "5": {"class_type": "SaveVideo", "inputs": {"filename_prefix": "ai_studio", "images": ["4", 0]}},
     }
 
 
@@ -93,7 +93,7 @@ def test_a_clean_non_h3_graph_with_stock_nodes_passes_untouched() -> None:
 
 def _image_workflow_dict() -> dict[str, Any]:
     return {
-        "_videogen": {
+        "_ai_studio": {
             "bindings": {
                 "prompt": ["2", "text"],
                 "width": ["3", "width"],
@@ -143,7 +143,7 @@ def test_empty_graph_is_rejected() -> None:
 
 def _workflow_dict() -> dict[str, Any]:
     graph = _turbo_graph()
-    graph["_videogen"] = {
+    graph["_ai_studio"] = {
         "expect_turbo": True,
         "bindings": {
             "prompt": ["3", "text"],
@@ -164,7 +164,7 @@ def test_bindings_inject_and_do_not_mutate_the_source() -> None:
 
 def test_metadata_block_is_stripped_before_submission() -> None:
     out = Workflow(_workflow_dict()).with_values({})
-    assert "_videogen" not in out
+    assert "_ai_studio" not in out
 
 
 def test_a_value_with_no_binding_raises_rather_than_being_dropped() -> None:
@@ -175,14 +175,14 @@ def test_a_value_with_no_binding_raises_rather_than_being_dropped() -> None:
 
 def test_binding_to_a_missing_node_fails_at_load_not_at_submit() -> None:
     graph = _workflow_dict()
-    graph["_videogen"]["bindings"]["prompt"] = ["404", "text"]
+    graph["_ai_studio"]["bindings"]["prompt"] = ["404", "text"]
     with pytest.raises(GraphValidationError, match="does not exist"):
         Workflow(graph)
 
 
 def test_missing_required_bindings_are_reported() -> None:
     graph = _workflow_dict()
-    del graph["_videogen"]["bindings"]["width"]
+    del graph["_ai_studio"]["bindings"]["width"]
     with pytest.raises(GraphValidationError, match="missing required bindings"):
         Workflow(graph)
 

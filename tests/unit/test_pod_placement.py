@@ -13,9 +13,9 @@ import json
 import httpx
 import pytest
 
-from videogen.core.errors import PodError
-from videogen.runtime.pod import LICENCE_SAFE_DATACENTERS, PodManager
-from videogen.runtime.session import CANDIDATES
+from ai_studio.core.errors import PodError
+from ai_studio.runtime.pod import LICENCE_SAFE_DATACENTERS, PodManager
+from ai_studio.runtime.session import CANDIDATES
 
 # What /catalog/gpus returned on 2026-08-25, trimmed to the fields we read.
 CATALOG = {

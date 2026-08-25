@@ -34,10 +34,10 @@ uv run ruff check --no-cache src tests examples
 uv run lint-imports                                                # the layering contracts
 uv run mypy
 
-uv run videogen doctor                                             # python, ffmpeg + filters, credentials
-uv run videogen generate "a test clip" --provider stub             # offline end-to-end
-uv run videogen format yt_longform_1080p                           # inspect the delivery transform
-uv run videogen pod capacity | up | status | down
+uv run ai-studio doctor                                             # python, ffmpeg + filters, credentials
+uv run ai-studio generate "a test clip" --provider stub             # offline end-to-end
+uv run ai-studio format yt_longform_1080p                           # inspect the delivery transform
+uv run ai-studio pod capacity | up | status | down
 ```
 
 Python is pinned to **3.13** (`.python-version`); runpod-flash and several deps
@@ -125,8 +125,8 @@ Every expensive mistake here is a quiet one.
   Romania and Sweden are EU).
 - Host RAM must be ≥60 GB and is not selectable via API; `pod up` verifies and
   terminates a short host.
-- `VIDEOGEN_MAX_COST_USD` is checked before submission — a **per-run** ceiling.
-- `VIDEOGEN_MAX_MONTH_USD` (default $50) is a **calendar-month** ceiling,
+- `AI_STUDIO_MAX_COST_USD` is checked before submission — a **per-run** ceiling.
+- `AI_STUDIO_MAX_MONTH_USD` (default $50) is a **calendar-month** ceiling,
   enforced by `runtime.budget.MonthlyBudgetGuard` before `session open` creates
   a pod — necessary because the capacity ladder's own worst case already
   exceeds $50/month on GPU alone. It refuses the window outright if the
@@ -148,7 +148,7 @@ sampler they used.
 
 **Resolution is not the quality lever.** Same seed and scene, changing only the
 prompt: free prose 26.0 → structured schema 367.6. Same prose at 5× the pixels:
-no change. A blurry result is a prompt problem — use `videogen.prompts.h3`.
+no change. A blurry result is a prompt problem — use `ai_studio.prompts.h3`.
 
 ## Platform traps
 

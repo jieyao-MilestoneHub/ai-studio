@@ -23,7 +23,7 @@ s3 = ["boto3>=1.34"]
 line = ["fastapi>=0.115", "uvicorn[standard]>=0.30"]
 
 [project.scripts]
-videogen = "videogen.cli.main:app"
+ai-studio = "ai_studio.cli.main:app"
 
 [dependency-groups]
 dev = [
@@ -40,7 +40,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/videogen"]
+packages = ["src/ai_studio"]
 
 # ---------------------------------------------------------------- tooling
 
@@ -56,12 +56,12 @@ ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 # typer's whole API is call-in-default (`= typer.Option(...)`). B008 is correct
 # advice in general and wrong for this one library.
-"src/videogen/cli/*.py" = ["B008"]
+"src/ai_studio/cli/*.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.10"
 strict = true
-files = ["src/videogen"]
+files = ["src/ai_studio"]
 plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
@@ -78,22 +78,22 @@ markers = [
 # See docs/architecture.md.
 
 [tool.importlinter]
-root_package = "videogen"
+root_package = "ai_studio"
 
 [[tool.importlinter.contracts]]
 name = "Layered spine"
 type = "layers"
 layers = [
-    "videogen.cli",
-    "videogen.runtime",
-    "videogen.pipeline",
-    "videogen.providers",
-    "videogen.comfy",
-    "videogen.llm",
-    "videogen.storage",
-    "videogen.media",
-    "videogen.config",
-    "videogen.core",
+    "ai_studio.cli",
+    "ai_studio.runtime",
+    "ai_studio.pipeline",
+    "ai_studio.providers",
+    "ai_studio.comfy",
+    "ai_studio.llm",
+    "ai_studio.storage",
+    "ai_studio.media",
+    "ai_studio.config",
+    "ai_studio.core",
 ]
 
 [[tool.importlinter.contracts]]
@@ -101,70 +101,70 @@ layers = [
 # by protocol; the concrete client lives higher up and is injected.
 name = "Prompt building does no I/O"
 type = "forbidden"
-source_modules = ["videogen.prompts"]
+source_modules = ["ai_studio.prompts"]
 forbidden_modules = [
-    "videogen.llm",
-    "videogen.providers",
-    "videogen.comfy",
-    "videogen.pipeline",
-    "videogen.runtime",
-    "videogen.storage",
+    "ai_studio.llm",
+    "ai_studio.providers",
+    "ai_studio.comfy",
+    "ai_studio.pipeline",
+    "ai_studio.runtime",
+    "ai_studio.storage",
 ]
 
 [[tool.importlinter.contracts]]
 name = "Editing grammar stays infrastructure-free"
 type = "forbidden"
-source_modules = ["videogen.editing"]
+source_modules = ["ai_studio.editing"]
 forbidden_modules = [
-    "videogen.providers",
-    "videogen.comfy",
-    "videogen.render",
-    "videogen.runtime",
-    "videogen.pipeline",
-    "videogen.storage",
-    "videogen.media",
+    "ai_studio.providers",
+    "ai_studio.comfy",
+    "ai_studio.render",
+    "ai_studio.runtime",
+    "ai_studio.pipeline",
+    "ai_studio.storage",
+    "ai_studio.media",
 ]
 
 [[tool.importlinter.contracts]]
 name = "Gates are pure functions of on-disk artifacts"
 type = "forbidden"
-source_modules = ["videogen.gates"]
+source_modules = ["ai_studio.gates"]
 forbidden_modules = [
-    "videogen.providers",
-    "videogen.comfy",
-    "videogen.render",
-    "videogen.runtime",
+    "ai_studio.providers",
+    "ai_studio.comfy",
+    "ai_studio.render",
+    "ai_studio.runtime",
 ]
 
 [[tool.importlinter.contracts]]
 name = "Swapping the model cannot touch editing"
 type = "forbidden"
-source_modules = ["videogen.render"]
-forbidden_modules = ["videogen.providers", "videogen.comfy"]
+source_modules = ["ai_studio.render"]
+forbidden_modules = ["ai_studio.providers", "ai_studio.comfy"]
 
 [[tool.importlinter.contracts]]
 # No library layer may depend on the LINE/web side, so that side stays a leaf
 # and can be changed or dropped without touching the pipeline.
 #
-# `videogen.cli` is deliberately absent from the source list: it is the
+# `ai_studio.cli` is deliberately absent from the source list: it is the
 # composition root. Wiring the pieces together is its entire job, and it has to
 # import the app to be able to serve it. Every *library* module is still bound.
 name = "Phase-2 packages stay leaves"
 type = "forbidden"
 source_modules = [
-    "videogen.core",
-    "videogen.config",
-    "videogen.prompts",
-    "videogen.editing",
-    "videogen.storage",
-    "videogen.media",
-    "videogen.llm",
-    "videogen.gates",
-    "videogen.providers",
-    "videogen.comfy",
-    "videogen.planner",
-    "videogen.render",
-    "videogen.pipeline",
-    "videogen.runtime",
+    "ai_studio.core",
+    "ai_studio.config",
+    "ai_studio.prompts",
+    "ai_studio.editing",
+    "ai_studio.storage",
+    "ai_studio.media",
+    "ai_studio.llm",
+    "ai_studio.gates",
+    "ai_studio.providers",
+    "ai_studio.comfy",
+    "ai_studio.planner",
+    "ai_studio.render",
+    "ai_studio.pipeline",
+    "ai_studio.runtime",
 ]
-forbidden_modules = ["videogen.api", "videogen.bots"]
+forbidden_modules = ["ai_studio.api", "ai_studio.bots"]

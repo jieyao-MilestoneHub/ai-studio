@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from videogen.prompts.h3 import (
+from ai_studio.prompts.h3 import (
     Amplitude,
     CameraMotion,
     Dialogue,

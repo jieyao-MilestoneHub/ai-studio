@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from videogen.cli.main import app
-from videogen.config.settings import get_settings
+from ai_studio.cli.main import app
+from ai_studio.config.settings import get_settings
 
 REPO = Path(__file__).resolve().parents[2]
 runner = CliRunner()
@@ -32,7 +32,7 @@ def test_drain_exits_cleanly_when_no_window_is_open(monkeypatch: pytest.MonkeyPa
     """It runs on a five-minute timer all day, so 'no window' is the normal
     case and must be success, not failure -- a unit that fails 280 times a day
     trains everyone to ignore it."""
-    from videogen.runtime import session as sess
+    from ai_studio.runtime import session as sess
 
     monkeypatch.setattr(sess, "load_state", lambda: None)
     result = runner.invoke(app, ["session", "drain"])
@@ -43,22 +43,22 @@ def test_drain_exits_cleanly_when_no_window_is_open(monkeypatch: pytest.MonkeyPa
 def test_the_api_serves_the_directory_drain_writes_to(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """VIDEOGEN_FILES_DIR has to move both ends together.
+    """AI_STUDIO_FILES_DIR has to move both ends together.
 
     drain writes `<files_dir>/<token>.mp4` and the status page links
     `/files/<token>.mp4`. When the API ignored the setting, the clip rendered
     perfectly and then 404'd at delivery -- the most expensive place to fail.
     """
-    from videogen.api.main import create_app
+    from ai_studio.api.main import create_app
 
     target = tmp_path / "elsewhere"
-    monkeypatch.setenv("VIDEOGEN_FILES_DIR", str(target))
+    monkeypatch.setenv("AI_STUDIO_FILES_DIR", str(target))
     get_settings(refresh=True)
     try:
         app_ = create_app(queue=None, handler=None)
         assert Path(app_.state.files_dir) == target
     finally:
-        monkeypatch.delenv("VIDEOGEN_FILES_DIR", raising=False)
+        monkeypatch.delenv("AI_STUDIO_FILES_DIR", raising=False)
         get_settings(refresh=True)
 
 
@@ -71,7 +71,7 @@ def test_session_drain_constructs_both_the_video_and_image_provider(
     import shutil
     from datetime import datetime, timedelta, timezone
 
-    from videogen.runtime import session as sess
+    from ai_studio.runtime import session as sess
 
     # Isolated cwd: session_drain's default JobQueue() and its relative
     # workflows/ lookup both resolve off the cwd, and this must not touch the
@@ -110,7 +110,7 @@ def test_session_drain_constructs_both_the_video_and_image_provider(
         low_vram=True,
     )
     monkeypatch.setattr(sess, "load_state", lambda: fake_session)
-    monkeypatch.setattr("videogen.cli.main.get_provider", _fake_get_provider)
+    monkeypatch.setattr("ai_studio.cli.main.get_provider", _fake_get_provider)
 
     result = runner.invoke(app, ["session", "drain"])
     assert result.exit_code == 0, result.output

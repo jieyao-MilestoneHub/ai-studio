@@ -5,8 +5,8 @@ Copyright (c) 2026 ai-studio contributors
 Derived work notice
 ================================================================================
 
-The editing grammar implemented in `src/videogen/editing/` and the gate
-discipline in `src/videogen/gates/` are derived from:
+The editing grammar implemented in `src/ai_studio/editing/` and the gate
+discipline in `src/ai_studio/gates/` are derived from:
 
     Hao0321/video-autopilot-kit
     https://github.com/Hao0321/video-autopilot-kit

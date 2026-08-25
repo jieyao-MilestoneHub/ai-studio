@@ -6,10 +6,10 @@
       "Bash(uv run ruff:*)",
       "Bash(uv run lint-imports)",
       "Bash(uv run mypy:*)",
-      "Bash(uv run videogen doctor)",
-      "Bash(uv run videogen format:*)",
-      "Bash(uv run videogen pod status:*)",
-      "Bash(uv run videogen pod capacity)",
+      "Bash(uv run ai-studio doctor)",
+      "Bash(uv run ai-studio format:*)",
+      "Bash(uv run ai-studio pod status:*)",
+      "Bash(uv run ai-studio pod capacity)",
       "Bash(uv run python:*)",
       "Bash(uv sync:*)",
       "Bash(uv lock:*)",
@@ -21,9 +21,9 @@
       "Bash(git branch:*)"
     ],
     "ask": [
-      "Bash(uv run videogen pod up:*)",
-      "Bash(uv run videogen pod down:*)",
-      "Bash(uv run videogen generate:*)",
+      "Bash(uv run ai-studio pod up:*)",
+      "Bash(uv run ai-studio pod down:*)",
+      "Bash(uv run ai-studio generate:*)",
       "Bash(git push:*)"
     ]
   }

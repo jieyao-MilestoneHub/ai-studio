@@ -1,6 +1,6 @@
 ---
 name: editing-rule
-description: Add or change a rule in the editing grammar (pacing, cuts, transitions, captions, audio, format). Use whenever the task touches src/videogen/editing/, src/videogen/gates/, or docs/editing-grammar.md — "add a transition rule", "change the caption read-speed limit", "why is this gate failing", "port another rule from the upstream kit".
+description: Add or change a rule in the editing grammar (pacing, cuts, transitions, captions, audio, format). Use whenever the task touches src/ai_studio/editing/, src/ai_studio/gates/, or docs/editing-grammar.md — "add a transition rule", "change the caption read-speed limit", "why is this gate failing", "port another rule from the upstream kit".
 ---
 
 # Landing an editing rule
