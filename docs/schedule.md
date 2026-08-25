@@ -175,7 +175,7 @@ regardless of which one happened to fire.
 ### Windows Task Scheduler
 
 ```powershell
-$repo = "C:\Users\USER\Desktop\Develop\video-gen"
+$repo = "C:\Users\USER\Desktop\Develop\ai-studio"
 $uv   = (Get-Command uv).Source
 
 schtasks /Create /TN "videogen-open"  /SC DAILY /ST 11:00 /F `
@@ -196,9 +196,9 @@ is unreliable, put the scheduler on whatever host serves the LINE webhook.
 
 ```cron
 # UTC. 11:00 Asia/Taipei = 03:00 UTC.
-0  3 * * *  cd /srv/video-gen && uv run videogen session open --until 13:00 --tz Asia/Taipei
-*/5 * * * * cd /srv/video-gen && uv run videogen session reap
-0  5 * * *  cd /srv/video-gen && uv run videogen session close
+0  3 * * *  cd /srv/ai-studio && uv run videogen session open --until 13:00 --tz Asia/Taipei
+*/5 * * * * cd /srv/ai-studio && uv run videogen session reap
+0  5 * * *  cd /srv/ai-studio && uv run videogen session close
 ```
 
 ## Checking on it

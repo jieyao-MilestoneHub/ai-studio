@@ -247,7 +247,7 @@ Two deliberate choices in the generated units:
 The window scheduler lives on this host rather than on a laptop, so it does not
 depend on someone's machine being awake — see [schedule.md](schedule.md).
 
-Credentials are not written by the script. Put them in `/srv/video-gen/.env`
+Credentials are not written by the script. Put them in `/srv/ai-studio/.env`
 yourself (`chmod 600`), then `systemctl restart videogen`.
 
 ## The flow, end to end

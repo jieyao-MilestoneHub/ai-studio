@@ -18,13 +18,13 @@ Everything below is arranged to preserve it.
 
 ```
 L0  core                     data model only; imports nothing internal
-L1  config · prompts · editing   settings, H3 prompt schema, editing rules
+L1  config · prompts · editing   settings, H3 + Flux prompt schemas, editing rules
 L2  media · storage          ffmpeg invocation, artifact stores
-L3  gates · providers · comfy    rule checks, clip backends, ComfyUI protocol
-    planner · render
-L4  pipeline                 stage graph, run/resume
+L3  gates · providers · comfy    rule checks, clip/image backends, ComfyUI + LLM protocols
+    llm · planner · render
+L4  pipeline                 request queue, drain loop, stage graph, run/resume
 L5  runtime · cli            pod lifecycle, command line
-L6  api · bots               phase 2 — nothing imports these
+L6  api · bots               FastAPI service + LINE bot — nothing imports these
 ```
 
 Enforced by `import-linter` in `pyproject.toml`, run in CI:
@@ -128,14 +128,16 @@ generation is a receipt, not a check.
 |---|---|
 | `core` | built — models, capabilities, ids, timecode, errors |
 | `config` | built |
-| `prompts` | built — full MiniMax H3 schema, 15 tests |
-| `editing` | `format_policy` built (12 tests); the grammar is **specified, not implemented** |
-| `media` | built — ffmpeg/ffprobe invocation |
+| `prompts` | built — MiniMax H3 structured schema and the Flux.1-dev prompt builder |
+| `editing` | `format_policy` built; the grammar is **specified, not implemented** |
+| `media` | built — ffmpeg/ffprobe invocation, including still-image probing for Flux |
 | `storage` | `local` built; `s3` pending |
-| `comfy` | built — client, graph binding, turbo validation (17 tests) |
-| `providers` | `stub` and `comfyui` built |
+| `comfy` | built — client, graph binding, turbo validation |
+| `llm` | built — endpoint client that converts a chat message into a structured prompt |
+| `providers` | `stub` and `comfyui` (clip, MiniMax H3) built; `flux` (image, Flux.1-dev) built |
 | `gates` | shell built; no rules yet |
-| `planner`, `render`, `pipeline` | not started |
-| `runtime` | `pod` built against the live REST v2 schema |
-| `cli` | `doctor`, `format`, `generate`, `pod {capacity,up,status,down}` |
-| `api`, `bots` | reserved, empty |
+| `planner`, `render` | not started |
+| `pipeline` | built — SQLite request queue, drain loop, LLM-conversion worker |
+| `runtime` | `pod`, `session`, and `budget` built against the live REST v2 schema |
+| `cli` | `doctor`, `format`, `generate`, `pod {capacity,up,status,down}`, `session {open,close,status,reap,drain}`, `line` |
+| `api`, `bots` | built — FastAPI webhook/status/file service and the LINE bot |

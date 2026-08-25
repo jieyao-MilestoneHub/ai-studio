@@ -1,11 +1,11 @@
 [project]
-name = "video-gen"
+name = "ai-studio"
 version = "0.1.0"
-description = "AI video generation on RunPod — MiniMax H3 clips assembled with a rigorous editing grammar"
+description = "AI video and image generation on RunPod — MiniMax H3 clips and Flux.1-dev images assembled with a rigorous editing grammar"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10,<3.14"
-keywords = ["runpod", "comfyui", "video-generation", "minimax-h3", "ffmpeg"]
+keywords = ["runpod", "comfyui", "video-generation", "image-generation", "minimax-h3", "flux", "ffmpeg"]
 
 dependencies = [
     "pydantic>=2.7",

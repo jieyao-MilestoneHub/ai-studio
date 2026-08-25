@@ -24,7 +24,10 @@ from videogen.providers.registry import available, get_provider
 
 app = typer.Typer(
     add_completion=False,
-    help="Generate video with MiniMax H3 on RunPod, assembled with an editing grammar.",
+    help=(
+        "Generate video (MiniMax H3) and images (Flux.1-dev) on RunPod, and run "
+        "the LINE bot that triggers them."
+    ),
 )
 console = Console()
 

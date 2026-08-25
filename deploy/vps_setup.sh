@@ -20,8 +20,8 @@ set -euo pipefail
 
 HOSTNAME_ARG="${1:?usage: vps_setup.sh <hostname>}"
 APP_USER=videogen
-APP_DIR=/srv/video-gen
-REPO="${VIDEOGEN_REPO:-https://github.com/jieyao-MilestoneHub/video-gen.git}"
+APP_DIR=/srv/ai-studio
+REPO="${VIDEOGEN_REPO:-https://github.com/jieyao-MilestoneHub/ai-studio.git}"
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
