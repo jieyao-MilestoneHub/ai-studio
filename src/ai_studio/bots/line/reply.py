@@ -1,16 +1,28 @@
-"""LINE Reply API client.
+"""LINE Reply API client — the acknowledgement, not the delivery.
 
 Reply is the **only** send method LINE does not count against the monthly
 message quota — push, multicast, broadcast and narrowcast all do, and they are
 counted *per recipient*, so one push into a twenty-person group costs twenty
-messages. Delivering results as a link in a free reply is what makes this bot
-cost nothing to run at any volume.
+messages.
 
-The constraint that shapes everything: a reply token is **single-use and valid
+The constraint that shapes this module: a reply token is **single-use and valid
 for about one minute**. It cannot carry the finished video, because the video
-does not exist for another few minutes at best and possibly not until tomorrow's
-window. So the reply carries a link to a status page, and the video is never
-pushed at all.
+does not exist for another few minutes at best and possibly not until the next
+window. So a reply is always and only the immediate "got it, you are number
+three in line" — free, instant, and worth sending for every request.
+
+**What changed:** this file used to end by concluding that the video is
+therefore *never pushed at all*, and that delivery is a link to a status page.
+That conclusion has been reversed, deliberately and with the cost understood —
+see `push.py`. The short version: on price the link was the better answer and
+still is, but the product is a clip that lands in the group where somebody
+asked for it, addressed to them, and a link to a status page is a receipt for
+a thing that happened somewhere else. The quota is now something managed (one
+private group; explicit 429 handling that degrades to text rather than to
+silence) rather than something avoided.
+
+So: **reply acknowledges, push delivers.** Both exist, and neither does the
+other's job.
 
 Reference:
 https://developers.line.biz/en/docs/messaging-api/pricing/
@@ -43,10 +55,10 @@ class LineReplyClient:
     async def reply_text(self, reply_token: str, *texts: str) -> None:
         """Reply with one or more text messages.
 
-        Kept to text on purpose: a link in text has none of the constraints a
-        video message object carries (mp4 only, <=200MB, HTTPS with TLS 1.2+,
-        a <=1MB poster at a matching aspect ratio, and a host that supports HTTP
-        range requests). Dropping those is most of why delivery is a link.
+        Text only, and not because the media constraints are hard — `push.py`
+        meets them now. Because there is nothing to send yet: this fires within
+        two seconds of the request, and the clip is minutes away at best. A
+        media message here would have no media.
         """
         if not texts:
             return

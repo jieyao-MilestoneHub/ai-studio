@@ -277,3 +277,148 @@ def test_state_survives_reopening_the_database(tmp_path: Path) -> None:
         assert reopened is not None
         assert reopened.state is JobState.PARSED
         assert reopened.prompt == PROMPT
+
+
+# ------------------------------------------------------------- delivery
+
+
+def test_done_is_not_delivered(q: JobQueue) -> None:
+    """The distinction push is billed for. Without it a worker restart sees a
+    `done` job and pushes it a second time, at full price, saying nothing new."""
+    job = _add(q)
+    q.set_parsed(job.id, PROMPT)
+    q.claim_next()
+    q.complete(job.id, "files/abc.mp4")
+
+    assert q.by_id(job.id).delivered_at is None
+    assert [j.id for j in q.undelivered()] == [job.id]
+
+    q.mark_delivered(job.id)
+
+    assert q.by_id(job.id).delivered_at is not None
+    assert q.undelivered() == []
+
+
+def test_a_failed_job_is_undelivered_too(q: JobQueue) -> None:
+    """Somebody is still waiting on it, and silence reads as a broken bot."""
+    job = _add(q)
+    q.set_parsed(job.id, PROMPT)
+    q.claim_next()
+    q.fail(job.id, "the pod died")
+
+    assert [j.id for j in q.undelivered()] == [job.id]
+
+
+def test_unfinished_work_is_not_undelivered(q: JobQueue) -> None:
+    """`undelivered` means "finished and unannounced", not "not finished"."""
+    job = _add(q)
+    q.set_parsed(job.id, PROMPT)
+
+    assert q.undelivered() == []
+    q.claim_next()
+    assert q.undelivered() == []
+
+
+def test_a_requeued_job_is_not_treated_as_finished(q: JobQueue) -> None:
+    """A transient failure goes back to `parsed`. Announcing it would bill a
+    push for something the user does not need to know about."""
+    job = _add(q)
+    q.set_parsed(job.id, PROMPT)
+    q.claim_next()
+    q.fail(job.id, "proxy hiccup", requeue=True)
+
+    assert q.by_id(job.id).state is JobState.PARSED
+    assert q.undelivered() == []
+
+
+def test_a_database_from_before_delivery_shipped_still_opens(tmp_path: Path) -> None:
+    """`CREATE TABLE IF NOT EXISTS` never alters an existing table, so an old
+    file has to be migrated rather than recreated — the alternative is losing
+    every queued request on deploy."""
+    path = tmp_path / "old.sqlite3"
+    old = sqlite3.connect(path)
+    old.executescript(
+        """
+        CREATE TABLE jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token TEXT NOT NULL UNIQUE,
+            event_id TEXT NOT NULL UNIQUE,
+            group_id TEXT NOT NULL,
+            user_id TEXT,
+            text TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'queued',
+            prompt_json TEXT,
+            output_path TEXT,
+            error TEXT,
+            gpu_tier TEXT,
+            created_at REAL NOT NULL,
+            parsed_at REAL,
+            started_at REAL,
+            finished_at REAL,
+            attempts INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO jobs (token, event_id, group_id, text, created_at)
+        VALUES ('tok-old', 'evt-old', 'Cgroup', '生成 一隻貓', 1700000000.0);
+        """
+    )
+    old.commit()
+    old.close()
+
+    with JobQueue(path) as queue:
+        survivor = queue.by_token("tok-old")
+        assert survivor is not None, "the pre-existing request was lost"
+        assert survivor.delivered_at is None
+        assert survivor.media_kind is MediaKind.VIDEO, "the older migration still applies"
+        queue.mark_delivered(survivor.id)
+        assert queue.by_token("tok-old").delivered_at is not None
+
+
+# ------------------------------------------------------------- daily counters
+
+
+def test_accepted_today_counts_one_users_requests(q: JobQueue) -> None:
+    q.enqueue("e-a", "Cgroup", "one", user_id="Ualice")
+    q.enqueue("e-b", "Cgroup", "two", user_id="Ualice")
+    q.enqueue("e-c", "Cgroup", "three", user_id="Ubob")
+
+    assert q.accepted_today("Ualice") == 2
+    assert q.accepted_today("Ubob") == 1
+    assert q.accepted_today("Unobody") == 0
+
+
+def test_accepted_today_ignores_an_unidentifiable_user(q: JobQueue) -> None:
+    """LINE omits `source.userId` for a user who has not accepted the terms.
+    Lumping all of those under one budget would let one anonymous request
+    starve the next."""
+    q.enqueue("e-x", "Cgroup", "one", user_id=None)
+
+    assert q.accepted_today("") == 0
+    assert q.accepted_today("Ualice") == 0
+
+
+def test_accepted_today_stops_at_the_day_boundary(q: JobQueue) -> None:
+    import time as _time
+
+    q.enqueue("e-old", "Cgroup", "yesterday", user_id="Ualice")
+    tomorrow = _time.time() + 86_400
+
+    assert q.accepted_today("Ualice", since=tomorrow) == 0
+    assert q.accepted_today("Ualice", since=0.0) == 1
+
+
+def test_pod_opens_are_counted_for_the_day(q: JobQueue) -> None:
+    """The backstop behind the monthly guard: a crash-looping worker opens a
+    fresh pod on every restart and each one is individually within budget."""
+    assert q.opens_today() == 0
+
+    q.record_pod_open("pod-1")
+    q.record_pod_open("pod-2")
+
+    assert q.opens_today() == 2
+    assert q.opens_today(since=_far_future()) == 0
+
+
+def _far_future() -> float:
+    import time as _time
+
+    return _time.time() + 86_400

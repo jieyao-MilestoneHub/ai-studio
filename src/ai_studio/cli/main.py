@@ -542,10 +542,23 @@ class _RuntimeHost:
     exempted from the "phase-2 packages stay leaves" contract.
     """
 
-    def __init__(self, *, name: str, poll_seconds: float) -> None:
+    def __init__(self, *, name: str, poll_seconds: float, push: object | None = None) -> None:
+        from ai_studio.bots.line.push import LinePushClient, NullPushClient
+
         self.name = name
         self.poll_seconds = poll_seconds
         self._providers: dict[str, dict[MediaKind, object]] = {}
+
+        settings = get_settings()
+        self.files_dir = Path(settings.files_dir)
+        self.base_url = settings.public_base_url.rstrip("/")
+        token = settings.line_channel_access_token
+        # NullPushClient without a token: the worker still renders and still
+        # marks jobs delivered, and the log says the push was not sent. Failing
+        # to start would make credentials a prerequisite for generating at all.
+        self.push: Any = push or (
+            LinePushClient(token.get_secret_value()) if token else NullPushClient()
+        )
 
     def now(self) -> datetime:
         from datetime import timezone
@@ -622,6 +635,56 @@ class _RuntimeHost:
         from ai_studio.runtime import session as sess
 
         sess.touch_activity()
+
+    async def deliver(self, job: Any, asset: Path | None) -> str:
+        """Push the finished media into the group that asked for it, @-ing them.
+
+        The poster is built here rather than in `push.py` because it is an
+        ffmpeg call and `bots` has no business shelling out. If it fails, the
+        delivery degrades to text and a link rather than being abandoned — a
+        thumbnail is not worth losing a clip that cost GPU-minutes over.
+        """
+        from ai_studio.bots.line import push as line_push
+
+        status_url = f"{self.base_url}/q/{job.token}"
+
+        if asset is None:
+            messages = line_push.failed_messages(
+                reason=job.error or "unknown", status_url=status_url,
+                prompt=job.text, user_id=job.user_id,
+            )
+            fallback = f"{job.text[:40]} 失敗了\n{status_url}"
+        else:
+            messages = []
+            try:
+                preview = media.poster(asset, self.files_dir / f"{asset.stem}_poster.jpg")
+            except AIStudioError as exc:
+                console.print(f"[yellow]no poster for {asset.name}:[/yellow] {exc}")
+            else:
+                messages = line_push.delivered_messages(
+                    media_url=f"{self.base_url}/files/{asset.name}",
+                    preview_url=f"{self.base_url}/files/{preview.name}",
+                    status_url=status_url,
+                    is_video=job.media_kind is MediaKind.VIDEO,
+                    prompt=job.text,
+                    user_id=job.user_id,
+                )
+            fallback = f"{job.text[:40]} 完成了\n{status_url}"
+            if not messages:
+                messages = [
+                    line_push.text_message(fallback, mention_user_id=job.user_id)
+                ]
+
+        return await line_push.deliver(
+            self.push,
+            to=job.group_id,
+            messages=messages,
+            fallback_text=fallback,
+            # LINE treats a repeat of this key as the same send, so a retry
+            # after a timeout cannot bill the group twice.
+            retry_key=job.token,
+            user_id=job.user_id,
+        )
 
 
 @app.command("worker")

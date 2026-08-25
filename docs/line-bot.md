@@ -1,7 +1,8 @@
 # The LINE bot
 
-Someone says `生成 一隻橘貓走在雨中` in a group; a link to the finished clip
-appears on a status page they can open any time.
+Someone says `生成 一隻橘貓走在雨中` in a group; the finished clip is pushed
+back into that group with them @-mentioned, and a status page carries the same
+thing for anyone who wants to look again later.
 
 ## Two triggers, one queue, one pod
 
@@ -11,21 +12,21 @@ appears on a status page they can open any time.
 | `畫圖` | `/畫圖`, `/img` | a still image | Flux.1-dev |
 
 Both enqueue into the same SQLite `jobs` table (tagged `media_kind`), both wait
-for the same 11:00–13:00 window, and both render on the same pod — `session
-drain` picks the H3 or Flux ComfyUI provider per job by `media_kind`, not by a
-second queue or a second pod. See [schedule.md](schedule.md) for how that
-window now decides *whether* to open (a demand gate: no queued work of either
-kind, no spend that day) and [runpod.md](runpod.md) for what downloading two
-model sets instead of one costs at window open.
+for the same 11:00–13:00 window, and both render on the same pod —
+`ai-studio worker` picks the H3 or Flux ComfyUI provider per job by
+`media_kind`, not by a second queue or a second pod. See
+[schedule.md](schedule.md) for how the pod is now opened by the day's first
+request rather than by a timer, and [runpod.md](runpod.md) for what
+downloading two model sets instead of one costs at window open.
 
-**Delivery is identical for both**: a link on the status page, never an inline
-image or video message. This isn't a missed opportunity for a faster image
-path — a Flux image is fast to *generate* (`[speculative]`, ~15–40s) but still
+**Delivery is identical for both**: the finished media is **pushed back into
+the group** that asked for it, with the requester **@-mentioned** — a video
+message object for `生成`, an image message object for `畫圖`, each with a
+JPEG poster, followed by a text message carrying the mention and the status
+link. A Flux image is fast to *generate* (`[speculative]`, ~15–40s) but still
 only happens during the scheduled window, which can be hours after the
-original message. By then the reply token that triggered it (single-use, ~1
-minute) is long dead, so there is no way to attach the result to that original
-reply regardless of how quickly it's ready. The status-page link is the only
-delivery mechanism this architecture has, for either kind.
+original message, so nothing about the delivery path differs between the two
+kinds.
 
 ⚠️ **Flux.1-dev ships under a non-commercial licence** from Black Forest Labs
 (Flux.1-schnell is Apache-2.0, unrestricted). If this bot's use is ever
@@ -44,23 +45,66 @@ out. It also means the receiver **cannot scale to zero**: a cold start does not
 reliably fit in two seconds, so this side runs on a small always-on host.
 
 **2. A reply token is single-use and lives about a minute.** The clip does not
-exist for minutes at best, and until tomorrow's window at worst. So the reply is
-only ever an acknowledgement, and the result is never pushed.
+exist for minutes at best, and until the next window at worst. So the reply is
+only ever an acknowledgement — it physically cannot carry the result.
 
 **3. Only replies are free.** Quoting the pricing page: *the number of messages
 is counted by the number of people you send a message to* — so one push into a
 twenty-person group costs twenty messages, whether it carries a video or a line
 of text. Reply is the sole method not counted.
 
-Hence **delivery is a link in a free reply, and nothing is ever pushed**. The bot
-costs nothing to run in LINE terms at any volume.
+**So: reply acknowledges, push delivers.** Rules 1 and 2 are physics and shape
+the code. Rule 3 is a price, and it is the one that got re-decided.
 
-That also removed a pile of constraints. A LINE *video message* would need mp4
-under 200MB on HTTPS with TLS 1.2+, a poster image under 1MB at a matching
-aspect ratio, and a host that supports **HTTP range requests** — the last being
-the awkward one, since a naive `StreamingResponse` does not. A link needs none of
-it. And the volume is trivial: a measured 5-second clip is **0.99MB** 📏, so ~50
-a month is ~50MB, and a directory on the host is the entire storage layer.
+### The decision that was reversed
+
+This document used to conclude from rule 3 that **nothing is ever pushed** and
+that delivery is a link to a status page. On cost alone that was right, and it
+still is. It was reversed anyway, on purpose:
+
+- The product is a clip that lands in the group where somebody asked for it,
+  addressed to them. A link to a status page is a receipt for a thing that
+  happened somewhere else.
+- The quota is now **managed** rather than avoided. This is one private group
+  (`LINE_ALLOWED_GROUP_ID` is a hard allowlist), the volume is ~50 renders a
+  month, and 429 is handled explicitly: `bots/line/push.py` degrades to a
+  single text message with the link and logs a WARNING. What it never does is
+  fail quietly — a delivery that goes silent is indistinguishable from a
+  broken bot, so the user asks again and that costs another conversion and
+  another GPU slot.
+
+The constraints the link-based delivery avoided are therefore now met rather
+than dodged. A LINE *video message* needs mp4 under 200MB on HTTPS with TLS
+1.2+, a poster image under 1MB at a matching aspect ratio, and a host that
+supports **HTTP range requests** — the last being the awkward one, since a
+naive `StreamingResponse` does not.
+
+- The poster comes from `media.poster()`: first frame of a clip, thumbnail of
+  an image, always a **new JPEG** (a 1024×1024 Flux PNG routinely clears 1MB
+  on its own), shrunk down a width/quality ladder until it fits, aspect ratio
+  preserved throughout. If it cannot be made, delivery degrades to text and a
+  link rather than being abandoned — a thumbnail is not worth losing a clip
+  that cost GPU-minutes over.
+- Range requests: `/files/{name}` is a Starlette `FileResponse`, which answers
+  `Range` with a 206 and a correct `Content-Range` 📏 (verified on Starlette
+  1.6.0, and pinned by tests in `tests/unit/test_api.py` — a video message
+  fails in a very hard-to-trace way without it).
+- Volume is still trivial: a measured 5-second clip is **0.99MB** 📏, so ~50 a
+  month is ~50MB, and a directory on the host is the entire storage layer.
+
+### `done` is not `delivered`
+
+The queue carries a `delivered_at` timestamp beside the job state. Rendering
+and announcing fail independently — the clip can exist while the push is
+refused for quota — and without the distinction a worker restart re-pushes
+everything it finds finished, at full per-recipient price, telling the user
+nothing new. The order is **complete → push → mark delivered**: a push that
+succeeds and a mark that then fails sends one extra message, while the reverse
+loses the delivery entirely. One duplicate beats one silence.
+
+A **failed** request is delivered too, for the same reason and more urgently.
+On success the user eventually sees something appear; on failure, silence is
+the only signal they get.
 
 ## What runs where
 
@@ -261,7 +305,8 @@ yourself (`chmod 600`), then `systemctl restart ai-studio`.
   → background: LLM turns it into an H3 prompt    (seconds)
   → the worker sees `parsed` work and opens a pod (inside business hours)
   → it renders                                    (~5 min each)
-  → the status page shows the download
+  → push: video + text, @ the requester           (billed per recipient)
+  → mark delivered, so a restart cannot re-push
 ```
 
 A user can also ask `好了嗎` at any time — that is a free reply, so polling by
