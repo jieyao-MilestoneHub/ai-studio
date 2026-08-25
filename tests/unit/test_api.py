@@ -334,3 +334,77 @@ def test_a_poster_is_served_with_an_image_content_type(files_client) -> None:
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("image/")
+
+
+# ------------------------------------------------------------ memberJoined
+
+# The second WARNING line ("no LINE_ALLOWED_USER_IDS set: they can trigger a
+# render now") lives in the FastAPI route, not in `WebhookHandler` — so the
+# handler-level tests in `test_line_webhook.py` cannot reach it, and it went
+# unasserted. A join is the moment the set of people who can spend GPU time
+# changes, and nothing here polls the roster, so this log line is the only
+# notice that change produces.
+
+
+def _member_joined(group: str = GROUP, event_id: str = "evt-join") -> dict:
+    return {
+        "type": "memberJoined",
+        "mode": "active",
+        "webhookEventId": event_id,
+        "timestamp": 1700000000000,
+        "source": {"type": "group", "groupId": group},
+        "joined": {"members": [{"type": "user", "userId": "U" + "7" * 32}]},
+    }
+
+
+def _app_with_users(tmp_path: Path, users):
+    queue = JobQueue(tmp_path / "join.sqlite3")
+    handler = WebhookHandler(
+        queue,
+        NullReplyClient(),
+        channel_secret=SECRET,
+        allowed_group_id=GROUP,
+        allowed_user_ids=users,
+        base_url="https://vg.example.com",
+    )
+    return create_app(queue=queue, handler=handler, files_dir=tmp_path / "files"), queue
+
+
+def test_an_open_allowlist_warns_twice_when_someone_joins(
+    tmp_path: Path, caplog
+) -> None:
+    """With no user allowlist, the newcomer can trigger a render immediately.
+    That is the whole reason the second line exists."""
+    app, queue = _app_with_users(tmp_path, ())
+    with TestClient(app) as c, caplog.at_level(logging.WARNING, logger="ai_studio.webhook"):
+        assert _post(c, [_member_joined()]).status_code == 200
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("JOINED" in m for m in messages)
+    assert any("LINE_ALLOWED_USER_IDS" in m for m in messages)
+    queue.close()
+
+
+def test_a_closed_allowlist_warns_once(tmp_path: Path, caplog) -> None:
+    """The join is still worth a line — the roster changed — but the newcomer
+    cannot spend anything, so the second line would be false."""
+    app, queue = _app_with_users(tmp_path, ("U" + "1" * 32,))
+    with TestClient(app) as c, caplog.at_level(logging.WARNING, logger="ai_studio.webhook"):
+        assert _post(c, [_member_joined()]).status_code == 200
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("JOINED" in m for m in messages)
+    assert not any("LINE_ALLOWED_USER_IDS" in m for m in messages)
+    queue.close()
+
+
+def test_a_join_in_another_group_warns_about_nothing(tmp_path: Path, caplog) -> None:
+    """Any account can add this bot to any group. Only the roster of the group
+    actually served is worth a line."""
+    app, queue = _app_with_users(tmp_path, ())
+    with TestClient(app) as c, caplog.at_level(logging.WARNING, logger="ai_studio.webhook"):
+        assert _post(c, [_member_joined(group="C" + "f" * 32)]).status_code == 200
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("JOINED" in m for m in messages)
+    queue.close()

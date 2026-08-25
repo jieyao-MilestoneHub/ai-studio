@@ -214,10 +214,27 @@ WARNING ai_studio.webhook | member(s) JOINED the group: U7d3...
 WARNING ai_studio.webhook |   no LINE_ALLOWED_USER_IDS set: they can trigger a render now
 ```
 
-> Not verified: LINE has a *Get group chat member user IDs* endpoint, which would
-> let the roster be read directly instead of watched. I could not confirm from
-> the docs whether it is limited to verified or premium accounts, so nothing here
-> depends on it. Worth checking if you ever want a real roster sync.
+Both lines are asserted in `tests/unit/test_api.py`: two warnings with an open
+allowlist, one with a closed one, and none at all for a join in a group this bot
+does not serve. They live in the FastAPI route rather than in `WebhookHandler`,
+which is why the handler-level tests could not reach them and they went
+unasserted for a while.
+
+> **Still not verified: whether this account can read the roster directly.**
+> LINE has a *Get group chat member user IDs* endpoint, which would let the
+> roster be read instead of watched. The docs do not make clear whether it is
+> limited to verified or premium accounts, so nothing here depends on it.
+>
+> One command settles it, on the VM with real credentials:
+>
+> ```bash
+> curl -H "Authorization: Bearer $LINE_CHANNEL_ACCESS_TOKEN" >   https://api.line.me/v2/bot/group/$LINE_ALLOWED_GROUP_ID/members/ids
+> ```
+>
+> **200** = available to this account. **403**, or a body saying *not available
+> for this account*, = verified/premium only. Replace this box with the answer
+> and the date it was obtained — an open question that stays open for three
+> months stops being a question and starts being folklore.
 
 ### 5. Serve
 

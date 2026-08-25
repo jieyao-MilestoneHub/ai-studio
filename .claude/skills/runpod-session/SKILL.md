@@ -26,12 +26,24 @@ Czechia, France, the Netherlands and Sweden are EU.
 ## 2. Deploy
 
 ```bash
-uv run ai-studio pod up --template-id <official-comfyui-cuda13-template-id>
+uv run ai-studio pod up --template-id cw3nka7d08
 ```
 
-Template must be the **official RunPod ComfyUI, CUDA 13** one — the community
-templates crowd it out in search. On CUDA 12.8 H3's quantised fast paths fall
-back to a slow route.
+`cw3nka7d08` is RunPod's official **"ComfyUI"** template for standard GPUs, and
+it is the value of `runtime.session.TEMPLATE_COMFYUI_STANDARD` — a test asserts
+both the constant and the `--template-id` actually sent on `pod create`, because
+this id has already been wrong once. Do not paste a different one from search:
+the community templates crowd the official one out, and the id that used to be
+hardcoded here (`2lv7ev3wfp`) has since been renamed to "ComfyUI Blackwell
+Edition" and is now for RTX 5090/B200 — the wrong card for this ladder.
+
+⚠️ **Which CUDA version that template runs is not established.** The claim that
+H3 needs CUDA 13.0, and that 12.8 makes its quantised fast paths fall back to a
+slow route, is `[reported]` — inherited, never checked here. RunPod's own docs
+list only `runpod/comfyui:latest` and `runpod/comfyui:cuda12.8`; no cuda13 tag
+is documented anywhere. Meanwhile `runtime/session.py` passes
+`--min-cuda-version 13.0` on every create, which either does nothing or refuses
+every rung. Resolve it before spending a window on it — PLAN.md Phase 7.0.
 
 `pod up` verifies host RAM and terminates immediately if the machine has less
 than 60 GB. That is not paranoia: a 31 GB host crashed part-way through a second
