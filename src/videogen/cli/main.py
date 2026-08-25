@@ -593,7 +593,9 @@ def pod_placement() -> None:
 
 @pod_app.command("up")
 def pod_up(
-    template_id: str = typer.Option(..., help="Official RunPod ComfyUI template id (CUDA 13)."),
+    template_id: str = typer.Option(
+        ..., help="Official RunPod ComfyUI template id — see runtime.session.TEMPLATE_COMFYUI_STANDARD."
+    ),
     name: str = typer.Option("videogen-comfyui"),
 ) -> None:
     """Deploy the ComfyUI pod, verifying host RAM before accepting it."""

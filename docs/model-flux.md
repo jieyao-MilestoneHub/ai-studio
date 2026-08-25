@@ -43,7 +43,7 @@ a window open now downloads **~72–78 GB** total, not ~54.7 GB — see
 |---|---|---|
 | GPU | shared with H3 — RTX 4090 24GB minimum, per the existing ladder | one pod, one ComfyUI instance serves both models |
 | VRAM headroom | `[speculative]` — Flux.1-dev fp8 needs meaningfully less than H3's measured 43.3GB peak, but the two models are never loaded simultaneously (ComfyUI swaps between jobs), so peak VRAM is whichever model is active, not the sum | unmeasured: whether ComfyUI's own model-swap overhead adds meaningful VRAM pressure during the swap itself is untested |
-| CUDA | 13.0, same template as H3 | no separate template; same "Official Runpod ComfyUI, CUDA 13" pod |
+| CUDA | same template as H3 — see [model-h3.md](model-h3.md)'s host requirements for the current template id and the open CUDA-version question | no separate template; same pod |
 | Disk | shares H3's 200GB container disk, no network volume | see [runpod.md](runpod.md) |
 
 ## Settings

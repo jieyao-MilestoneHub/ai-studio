@@ -37,9 +37,22 @@ from typing import Any
 from videogen.core.errors import PodError
 from videogen.runtime.budget import SpendLedger
 
-TEMPLATE_COMFYUI_CUDA13 = "2lv7ev3wfp"
-"""Official Runpod "ComfyUI - CUDA 13" template. CUDA 12.8 makes H3's quantised
-fast paths fall back to a slow route, so the version is not interchangeable."""
+TEMPLATE_COMFYUI_STANDARD = "cw3nka7d08"
+"""Official RunPod "ComfyUI" template, for standard GPUs (RTX 4090, L40, A100,
+etc — the only GPUs `CANDIDATES` below ever asks for). Confirmed against
+RunPod's own tutorial (docs.runpod.io/tutorials/pods/comfyui) on 2026-08-25:
+the id previously hardcoded here (`2lv7ev3wfp`) has since been renamed/rescoped
+to "ComfyUI Blackwell Edition" and is now specifically for RTX 5090/B200 — the
+wrong template for this project's ladder.
+
+⚠️ Open question, not yet resolved: RunPod's current docs only mention two
+image tags, `runpod/comfyui:latest` (standard) and `runpod/comfyui:cuda12.8`
+(Blackwell) — no "cuda13" tag is documented anywhere today, which is in
+tension with docs/model-h3.md's claim that H3 needs CUDA 13.0 specifically
+("on 12.8 strong cards fall back to a slow path"). Verify what CUDA version
+this template actually runs (console template detail page, or
+`runpodctl template search comfyui`) before trusting H3's turbo path on it.
+"""
 
 TERMINATE_BUFFER_MIN = 10
 """How far past window end `--terminate-after` is set. The buffer covers a clip
@@ -236,7 +249,7 @@ def open_session(
                 created = _runpodctl(
                     "pod", "create",
                     "--name", name,
-                    "--template-id", TEMPLATE_COMFYUI_CUDA13,
+                    "--template-id", TEMPLATE_COMFYUI_STANDARD,
                     "--gpu-id", tier.gpu,
                     "--data-center-ids", tier.datacenter,
                     "--cloud-type", tier.cloud,

@@ -19,6 +19,12 @@ from videogen.runtime import session as sess
 @pytest.fixture(autouse=True)
 def _isolate_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sess, "STATE_FILE", tmp_path / "session.json")
+    # close_session() now also writes a SpendLedger entry on every close; without
+    # isolating it too, every test that closes a session writes into the real
+    # repo's runs/.spend_ledger.json instead of a throwaway one.
+    from videogen.runtime.budget import SpendLedger
+
+    monkeypatch.setattr(sess, "SpendLedger", lambda: SpendLedger(tmp_path / "ledger.json"))
 
 
 def _calls_recorder(responses: list[Any]) -> tuple[list[list[str]], Any]:
@@ -176,13 +182,12 @@ def test_close_records_the_session_cost_into_the_monthly_ledger(
 ) -> None:
     """The ledger has to be fed by `close_session()` itself, not by whichever
     CLI command happened to call it -- `close_if_idle` is the path that
-    actually ends the window on almost every real day (see the next test)."""
+    actually ends the window on almost every real day (see the next test).
+
+    `SpendLedger` is already isolated by the autouse `_isolate_state` fixture,
+    same as `STATE_FILE` -- read it back through `sess.SpendLedger()` (the
+    patched factory) rather than constructing a second, unrelated instance."""
     import json
-
-    from videogen.runtime.budget import SpendLedger
-
-    ledger_path = tmp_path / "ledger.json"
-    monkeypatch.setattr(sess, "SpendLedger", lambda: SpendLedger(ledger_path))
 
     _, fake = _calls_recorder([{"items": []}, {"id": "p", "costPerHr": 0.5}])
     monkeypatch.setattr(sess, "_runpodctl", fake)
@@ -196,7 +201,7 @@ def test_close_records_the_session_cost_into_the_monthly_ledger(
     monkeypatch.setattr(sess, "_runpodctl", fake2)
     sess.close_session(name="w")
 
-    assert SpendLedger(ledger_path).spent_this_month_usd() == pytest.approx(0.5, abs=0.05)
+    assert sess.SpendLedger().spent_this_month_usd() == pytest.approx(0.5, abs=0.05)
 
 
 def test_reap_closing_a_quiet_window_also_records_to_the_ledger(
@@ -208,11 +213,6 @@ def test_reap_closing_a_quiet_window_also_records_to_the_ledger(
     guard would see close to $0 spent nearly every month regardless of the
     real bill."""
     import json
-
-    from videogen.runtime.budget import SpendLedger
-
-    ledger_path = tmp_path / "ledger.json"
-    monkeypatch.setattr(sess, "SpendLedger", lambda: SpendLedger(ledger_path))
 
     _, fake = _calls_recorder([{"items": []}, {"id": "p", "costPerHr": 0.354}])
     monkeypatch.setattr(sess, "_runpodctl", fake)
@@ -227,7 +227,7 @@ def test_reap_closing_a_quiet_window_also_records_to_the_ledger(
     monkeypatch.setattr(sess, "_runpodctl", fake2)
     assert "idle 45min" in sess.close_if_idle(20, name="w")
 
-    assert SpendLedger(ledger_path).spent_this_month_usd() == pytest.approx(0.354, abs=0.05)
+    assert sess.SpendLedger().spent_this_month_usd() == pytest.approx(0.354, abs=0.05)
 
 
 def test_close_keeps_going_when_one_delete_fails(monkeypatch: pytest.MonkeyPatch) -> None:

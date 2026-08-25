@@ -36,8 +36,8 @@ character consistency. On a datacenter link 42 GB takes about 9 minutes at
 |---|---|---|
 | GPU | RTX 4090 24 GB | VRAM peaks at 15.7–21.9 GB, so 24 GB is ample |
 | **Host RAM** | **≥ 60 GB** | ComfyUI does not release the 32B text encoder after loading. A 31 GB host crashed part-way through a second consecutive generation. Not selectable via API — deploy, inspect, terminate if short. |
-| CUDA | **13.0** | H3's quantised fast paths assume the CUDA 13 generation; on 12.8 strong cards fall back to a slow path |
-| Template | Official RunPod ComfyUI, CUDA 13 | the community templates crowd it out in search — look for the "Official Runpod ComfyUI templates" card |
+| CUDA | **13.0** (⚠️ unverified against the current template, see below) | H3's quantised fast paths assume the CUDA 13 generation; on 12.8 strong cards fall back to a slow path |
+| Template | RunPod's official **"ComfyUI"** template (`cw3nka7d08`) for standard GPUs — `runtime.session.TEMPLATE_COMFYUI_STANDARD` | ⚠️ 📏 checked 2026-08-25: the template id this repo previously hardcoded (`2lv7ev3wfp`) has been renamed/rescoped to **"ComfyUI Blackwell Edition"** and is now specifically for RTX 5090/B200, not the RTX 4090/L40S this project targets. RunPod's current docs only mention `runpod/comfyui:latest` (standard) and `runpod/comfyui:cuda12.8` (Blackwell) image tags — no "cuda13" tag is documented anywhere today, which is in tension with the CUDA 13.0 requirement above. **Verify the standard template's actual CUDA version live before trusting the turbo path on it** — this has not been done yet. |
 | Disk | 200 GB container disk (template default) | no network volume — see [runpod.md](runpod.md) |
 
 Launch ComfyUI as:

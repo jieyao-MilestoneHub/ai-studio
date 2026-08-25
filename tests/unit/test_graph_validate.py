@@ -79,7 +79,7 @@ def test_a_clean_non_h3_graph_with_stock_nodes_passes_untouched() -> None:
     so the turbo trap must not fire on it at all — including its stock
     KSamplerSelect, which is only a problem when it drives a detected turbo LoRA."""
     flux_like = {
-        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "flux1-dev-fp8.safetensors"}},
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "flux1-dev.safetensors"}},
         "2": {"class_type": "CLIPTextEncode", "inputs": {"text": ""}},
         "3": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
         "4": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}},
@@ -100,7 +100,7 @@ def _image_workflow_dict() -> dict[str, Any]:
                 "height": ["3", "height"],
             },
         },
-        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "flux1-dev-fp8.safetensors"}},
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "flux1-dev.safetensors"}},
         "2": {"class_type": "CLIPTextEncode", "inputs": {"text": ""}},
         "3": {"class_type": "EmptySD3LatentImage", "inputs": {"width": 1024, "height": 1024}},
         "4": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}},

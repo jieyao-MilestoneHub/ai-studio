@@ -43,7 +43,7 @@ Three things that will otherwise cost you money quietly:
 ## Deploy
 
 ```bash
-uv run videogen pod up --template-id <official-comfyui-cuda13-template-id>
+uv run videogen pod up --template-id <official-comfyui-template-id>  # cw3nka7d08 for standard GPUs, see runtime.session.TEMPLATE_COMFYUI_STANDARD
 uv run videogen pod status
 ```
 
