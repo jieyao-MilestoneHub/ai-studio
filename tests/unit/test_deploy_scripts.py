@@ -120,3 +120,53 @@ def test_embedded_python_compiles(script: Path) -> None:
         pytest.skip(f"no multi-line python -c block in {script.name}")
     for block in blocks:
         compile(block, f"{script.name}:python -c", "exec")
+
+
+# --------------------------------------------------------------- flux LoRA
+
+# `hf download` keeps the remote filename, so the file lands as
+# `lora.safetensors` — a name that says nothing in a directory that also holds
+# the H3 turbo LoRA, and that `workflows/flux_dev.json` does not ask for. The
+# rename is what makes those two strings the same string, and if it silently
+# does not happen ComfyUI reports it only in a log nobody reads at 11:04.
+
+POD_SETUP = REPO / "deploy" / "pod_setup.sh"
+FLUX_LORA_NAME = "flux_nsfw_uncensored_v1.safetensors"
+
+
+def test_the_flux_lora_is_downloaded() -> None:
+    body = POD_SETUP.read_text(encoding="utf-8")
+    assert "dl Heartsync/Flux-NSFW-uncensored lora.safetensors" in body
+
+
+def test_the_flux_lora_is_renamed_to_what_the_workflow_loads() -> None:
+    body = POD_SETUP.read_text(encoding="utf-8")
+    workflow = (REPO / "workflows" / "flux_dev.json").read_text(encoding="utf-8")
+
+    assert FLUX_LORA_NAME in body
+    assert FLUX_LORA_NAME in workflow, "the graph asks for a different filename"
+
+
+def test_a_missing_flux_lora_stops_the_setup_instead_of_being_ignored() -> None:
+    """Continuing without it means the pod boots, ComfyUI starts, the first
+    image renders, and the adapter was never there — on a billing machine."""
+    body = POD_SETUP.read_text(encoding="utf-8")
+
+    rename_block = body[body.index("FLUX_LORA=") :]
+    assert "die" in rename_block.split("\n\n")[0], "no failure path after the rename"
+
+
+def test_the_rename_happens_after_the_downloads_finish() -> None:
+    """`dl` backgrounds every download. Renaming before the wait would move a
+    file that is still being written, or one that does not exist yet."""
+    body = POD_SETUP.read_text(encoding="utf-8")
+
+    assert body.index("weights complete") < body.index("FLUX_LORA=")
+
+
+def test_the_advertised_download_size_includes_the_lora() -> None:
+    """The log line is what an operator watches to know whether a stall is
+    normal. It was ~51GB before this LoRA's 0.69GB was added."""
+    body = POD_SETUP.read_text(encoding="utf-8")
+
+    assert "starting weight downloads (~52GB)" in body
