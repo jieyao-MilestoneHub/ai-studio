@@ -139,9 +139,16 @@ no change. A blurry result is a prompt problem — use `videogen.prompts.h3`.
 
 ## Platform traps
 
-- **ffmpeg is installed but not on PATH** at
-  `C:\ffmpeg\ffmpeg-master-latest-win64-gpl\bin`. `.claude/settings.json`
-  prepends it; export it manually in a bare shell.
+- **On Windows, ffmpeg is installed but not on PATH** at
+  `C:\ffmpeg\ffmpeg-master-latest-win64-gpl\bin`. Prepend it yourself in a bare
+  shell (see the `export PATH=...` line under Commands), and if you want
+  Claude-Code-invoked commands to see it too, put the prepend in
+  `.claude/settings.local.json` (gitignored, per-machine) — **not** in the
+  checked-in `.claude/settings.json`. Claude Code's `env` block sets values
+  verbatim with no shell expansion, so a `;$PATH`/`:$PATH` suffix does not
+  merge with the real PATH — it clobbers it. A Windows-only value there once
+  broke every `PreToolUse:Bash` hook on Linux/macOS (`bash: not found`)
+  because it replaced the entire PATH instead of extending it.
 - **Always pass `encoding="utf-8"`** to `open()` and `subprocess`. The Windows
   default is cp950 and throws on any non-ASCII byte. Keep CLI output ASCII —
   em-dashes and bullets render as mojibake in the console.
