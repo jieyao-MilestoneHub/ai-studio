@@ -27,6 +27,7 @@ card is slower than the two runs in sequence, not faster.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -34,8 +35,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from ai_studio import media
 from ai_studio.core.enums import MediaKind
 from ai_studio.core.errors import AIStudioError, ProviderError
+from ai_studio.gates.core import GateContext, write_report
+from ai_studio.gates.output_gate import output_gate
 from ai_studio.pipeline.drain import (
     MAX_ATTEMPTS,
     MAX_CONSECUTIVE_FAILURES,
@@ -44,6 +48,7 @@ from ai_studio.pipeline.drain import (
     render_image,
 )
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
+from ai_studio.providers.base import write_provider_manifest
 
 _log = logging.getLogger("ai_studio.worker")
 
@@ -102,6 +107,7 @@ class WorkerReport:
     ticks: int = 0
     completed: int = 0
     failed: int = 0
+    rejected: int = 0
     requeued: int = 0
     delivered: int = 0
     undelivered: int = 0
@@ -117,6 +123,10 @@ class WorkerReport:
             f"requeued={self.requeued}",
             f"delivered={self.delivered}",
         ]
+        if self.rejected:
+            # Generated, paid for, and not a picture. Louder than a plain
+            # failure because the GPU-seconds were spent either way.
+            parts.append(f"REJECTED={self.rejected}")
         if self.undelivered:
             # Louder than the rest: the media exists and nobody has been told.
             parts.append(f"UNDELIVERED={self.undelivered}")
@@ -243,6 +253,20 @@ async def _run_one(
         report.last_action = "failed"
         return "failed"
 
+    broken = verify_output(job, asset, provider, runs_dir=files_dir.parent / "runs")
+    if broken:
+        # The media exists and was paid for, but it is not a picture. Pushing it
+        # is worse than saying so: a flat black clip in the group reads as the
+        # bot working, and the user waits for a better one that never comes.
+        # Routed through the ordinary failure path so they get told.
+        queue.fail(job.id, f"output failed verification: {broken}")
+        report.failed += 1
+        report.rejected += 1
+        _log.error("job %d produced a bad render: %s", job.id, broken)
+        await _deliver(queue, host, job.id, None, report)
+        report.last_action = "rejected"
+        return "rejected"
+
     queue.complete(job.id, str(asset))
     report.completed += 1
     report.seconds.append(time.monotonic() - started)
@@ -253,6 +277,76 @@ async def _run_one(
     await _deliver(queue, host, job.id, asset, report)
     report.last_action = "completed"
     return "completed"
+
+
+PROFILE_BY_KIND = {MediaKind.VIDEO: "minimax-h3", MediaKind.IMAGE: "flux-1-dev"}
+
+
+def verify_output(
+    job: Job, asset: Path, provider: Any, *, runs_dir: Path
+) -> str | None:
+    """Check a finished render against what the provider promised.
+
+    Returns a description of what is wrong, or None when it is fine.
+
+    This is where the gate layer earns its shape. Everything it needs is written
+    to `runs/<token>/` first -- the capabilities snapshot and the measured facts
+    about the file -- and the gate then reads only those, never the provider.
+    That is the layer contract, and it is also what makes the rule testable
+    against a fixture directory with no GPU and no ffmpeg.
+
+    Measurement failures degrade to "cannot tell", not to "fine": if ffmpeg is
+    missing the render is still delivered, because a missing probe is our
+    problem and the clip is the user's.
+    """
+    run_dir = Path(runs_dir) / job.token
+    caps = provider.capabilities()
+    is_video = job.media_kind is MediaKind.VIDEO
+
+    try:
+        write_provider_manifest(
+            run_dir,
+            caps,
+            profile_key=PROFILE_BY_KIND[job.media_kind],
+            workflow=getattr(provider.workflow, "source", ""),
+        )
+        info: Any = media.probe(asset) if is_video else media.probe_image(asset)
+        payload: dict[str, Any] = {
+            "shot_id": f"job{job.id}",
+            "width": info.width,
+            "height": info.height,
+            "size_bytes": info.size_bytes,
+        }
+        if is_video:
+            payload.update(
+                fps=info.fps,
+                duration_s=info.duration_s,
+                has_audio=info.has_audio,
+                frames=round(info.duration_s * info.fps) if info.fps else None,
+            )
+        try:
+            luma = media.luma_stats(asset)
+            payload["luma"] = {
+                "frames": luma.frames,
+                "y_min": luma.y_min,
+                "y_max": luma.y_max,
+                "y_avg": luma.y_avg,
+            }
+        except AIStudioError as exc:
+            _log.warning("job %d: could not measure luma: %s", job.id, exc)
+
+        (run_dir / "output.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        report = output_gate(GateContext(run_dir))
+        write_report(run_dir, report)
+    except Exception as exc:  # a check that cannot run must not lose the render
+        _log.warning("job %d: output verification did not run: %s", job.id, exc)
+        return None
+
+    if not report.failures:
+        return None
+    return "; ".join(f"[{f.rule_id}] {f.message}" for f in report.failures)[:400]
 
 
 async def _deliver(

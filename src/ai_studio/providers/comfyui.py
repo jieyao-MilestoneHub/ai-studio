@@ -28,6 +28,8 @@ from ai_studio.comfy.graph import Workflow
 from ai_studio.comfy.jobs import cancel_job, fetch_output, poll_job
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import GenMode, JobState
+from ai_studio.core.errors import ProviderSubmitError, UnknownKeyError
+from ai_studio.core.model_profile import MINIMAX_H3
 from ai_studio.core.provider_spec import ClipAsset, ClipJob, ClipRequest, ProviderCapabilities
 from ai_studio.storage.base import sha256_file
 
@@ -39,17 +41,6 @@ Note this differs from the 0.69 quoted in some write-ups; 0.69 is the RTX 5090
 machines that can be pre-empted without warning.
 """
 
-# Generation seconds for a 5s clip on an RTX 4090, by native canvas. [reported]
-# The 608x352 figure is anomalous — it is *slower* than the larger 864x480,
-# while the same source's RTX 3050 column scales normally with resolution. Most
-# likely a first-run warm-up artifact. Re-measure before trusting it.
-MEASURED_LATENCY_S: dict[tuple[int, int], float] = {
-    (608, 352): 182.0,
-    (864, 480): 133.0,
-    (1280, 736): 361.0,
-    (1344, 768): 300.0,
-}
-
 
 def h3_capabilities(
     width: int = 864,
@@ -58,26 +49,44 @@ def h3_capabilities(
     hourly_usd: float = DEFAULT_HOURLY_USD,
     clip_seconds: float = 5.0,
 ) -> ProviderCapabilities:
-    """Capabilities for MiniMax H3 at a given native canvas."""
-    latency = MEASURED_LATENCY_S.get((width, height), 300.0)
-    cost_per_clip = hourly_usd * latency / 3600.0
+    """Capabilities for MiniMax H3 at a given canvas, derived from the profile.
+
+    The canvas table used to live here as `MEASURED_LATENCY_S` — named
+    "measured" while its own comment graded it `[reported]` — with a
+    `.get((w, h), 300.0)` fallback. That fallback was the bug: an off-table
+    canvas silently inherited 1344x768's timing, so both its cost estimate and
+    its job timeout became someone else's numbers. `require_canvas` raises
+    instead.
+    """
+    canvas = MINIMAX_H3.require_canvas(width, height)
+    if canvas.latency_s is None:  # pragma: no cover - every H3 canvas has one
+        raise UnknownKeyError("measured latency for canvas", canvas.label, [])
+
+    cost_per_clip = hourly_usd * canvas.latency_s / 3600.0
+    grid = MINIMAX_H3.frame_grid
+    assert grid is not None and MINIMAX_H3.fps is not None  # H3 produces video
     return ProviderCapabilities(
         provider="comfyui",
-        model_id=f"minimax-h3-fl2va@{width}x{height}",
-        native_width=width,
-        native_height=height,
-        native_fps=24,
+        model_id=f"minimax-h3-fl2va@{canvas.label}",
+        native_width=canvas.width,
+        native_height=canvas.height,
+        native_fps=MINIMAX_H3.fps,
         modes=frozenset({GenMode.T2V, GenMode.I2V, GenMode.KEYFRAME, GenMode.REF2V}),
-        min_clip_s=1.0,
+        min_clip_s=MINIMAX_H3.duration_for(grid.minimum),
         max_clip_s=15.0,
-        clip_duration_quantum=None,
-        has_native_audio=True,
+        # Frames come in steps of 17, so durations come in steps of 17/24s. The
+        # grid's *offset* (n % 17 == 5) has no home in a float quantum, which is
+        # why `ModelProfile.frames_for` is the only supported way to turn a
+        # duration into a length. This field is the shadow that fact casts on a
+        # provider-agnostic type, not a replacement for it.
+        clip_duration_quantum=grid.step / MINIMAX_H3.fps,
+        has_native_audio=MINIMAX_H3.has_native_audio,
         supports_seed=True,
-        supports_negative_prompt=False,
-        max_prompt_chars=8000,
+        supports_negative_prompt=MINIMAX_H3.supports_negative_prompt,
+        max_prompt_chars=MINIMAX_H3.max_prompt_chars,
         url_ttl_s=None,
         cost_per_second_usd=round(cost_per_clip / clip_seconds, 6),
-        expected_latency_s=latency,
+        expected_latency_s=canvas.latency_s,
         max_concurrent_jobs=1,
     )
 
@@ -102,6 +111,11 @@ class ComfyUIProvider:
         self.client = ComfyClient(
             base_url or settings.comfy_url, timeout_s=settings.comfy_timeout_s
         )
+        # Stored, not just forwarded. `fetch` used to bill from the module
+        # constant, so every clip rendered on the L40S rung ($1.004/hr) recorded
+        # its cost at the 4090's $0.74 — about 26% low, feeding a wrong number
+        # into anything that reads ClipAsset.cost_usd.
+        self._hourly_usd = hourly_usd
         self._caps = h3_capabilities(width, height, hourly_usd=hourly_usd)
 
     def capabilities(self) -> ProviderCapabilities:
@@ -110,11 +124,30 @@ class ComfyUIProvider:
     # ---------------------------------------------------------------- submit
 
     async def submit(self, request: ClipRequest) -> ClipJob:
+        # Both checks are free and both run before a single GPU-second. This is
+        # the boundary where a provider-agnostic ClipRequest becomes an H3
+        # submission, so it is the only place that can catch a request H3 will
+        # quietly reinterpret.
+        MINIMAX_H3.require_canvas(request.width, request.height)
+
+        grid = MINIMAX_H3.frame_grid
+        assert grid is not None  # H3 produces video
+        frames = round(request.duration_s * request.fps)
+        if not grid.is_valid(frames):
+            below, above = grid.neighbours(frames)
+            raise ProviderSubmitError(
+                f"{request.duration_s:.4f}s at {request.fps}fps is {frames} frames, "
+                f"which MiniMax H3 cannot produce — legal lengths are {grid.step}k+"
+                f"{grid.base} ({below} or {above} here). ComfyUI would snap it up "
+                f"silently, so the clip would not be the length that was asked for. "
+                f"Use ModelProfile.frames_for() to pick a duration."
+            )
+
         values: dict[str, Any] = {
             "prompt": request.prompt,
             "width": request.width,
             "height": request.height,
-            "length": round(request.duration_s * request.fps),
+            "length": frames,
         }
         for name, value in (
             ("seed", request.seed),
@@ -164,7 +197,7 @@ class ComfyUIProvider:
             provider=self.name,
             job_id=job.job_id,
             # Billed by wall clock: what this clip actually occupied the GPU for.
-            cost_usd=round(DEFAULT_HOURLY_USD * elapsed / 3600.0, 6),
+            cost_usd=round(self._hourly_usd * elapsed / 3600.0, 6),
         )
 
     # ---------------------------------------------------------------- cancel

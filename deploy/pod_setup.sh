@@ -103,7 +103,18 @@ dl() {  # repo file destdir
     > "/workspace/dl-logs/$(basename "$2").log" 2>&1 &
   log "  downloading $(basename "$2")"
 }
-log "starting weight downloads (~52GB)"
+# black-forest-labs/FLUX.1-dev is a GATED repo: `hf download` returns 401
+# without a token whose account has accepted the FLUX.1 [dev] Non-Commercial
+# License once on the model page. Checked here, before 52GB of H3 starts, so
+# the failure costs seconds rather than being discovered on a pod that has
+# already spent twenty minutes downloading.
+if [ -z "${HF_TOKEN:-}" ]; then
+  die "HF_TOKEN is not set. black-forest-labs/FLUX.1-dev is gated: accept its
+  licence once at https://huggingface.co/black-forest-labs/FLUX.1-dev then
+  export HF_TOKEN=hf_... before running this script."
+fi
+
+log "starting weight downloads (~84GB)"
 dl Comfy-Org/MiniMax-H3 "$DIT" "$M"
 dl Comfy-Org/MiniMax-H3 text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors "$M"
 dl Comfy-Org/MiniMax-H3 vae/minimax_h3_video_vae_fp16.safetensors "$M"
@@ -113,6 +124,19 @@ dl larryvrh/MiniMax-H3-Turbo-Lora minimax_h3_turbo_v4_step600_ema.safetensors "$
 # Needs no trigger word: neither candidate's model card declares an
 # instance_prompt -- this is an "unrestrain" adapter, not a concept LoRA.
 dl Heartsync/Flux-NSFW-uncensored lora.safetensors "$M/loras"
+
+# Flux.1-dev itself. NONE of these were downloaded before -- the workflow
+# loaded four files the pod never fetched, which surfaces as a failure at
+# submit time on a machine that is already billing. Sizes are from the HF
+# file-tree API; the filenames must match workflows/flux_dev.json exactly and
+# a test asserts that they do.
+dl black-forest-labs/FLUX.1-dev flux1-dev.safetensors "$M/diffusion_models"   # 23.8 GB, gated
+dl comfyanonymous/flux_text_encoders t5xxl_fp8_e4m3fn.safetensors "$M/text_encoders"  # 4.9 GB
+dl comfyanonymous/flux_text_encoders clip_l.safetensors "$M/text_encoders"    # 246 MB
+# The VAE via the Lumina repackage rather than the gated FLUX.1-dev copy: it is
+# byte-identical (335,304,388) and ungated, and it is what ComfyUI's own Flux
+# example page points at.
+dl Comfy-Org/Lumina_Image_2.0_Repackaged split_files/vae/ae.safetensors "$M/vae"
 
 # ── 4. wait for the weights, then restart ComfyUI ─────────────────────────
 while pgrep -f 'hf download' >/dev/null; do
@@ -126,6 +150,17 @@ log "weights complete: $(du -sh "$M" | cut -f1)"
 # strings the same string. Fail loudly rather than leaving the graph pointing
 # at a file that is not there: ComfyUI's own error for a missing LoRA is a
 # line in a log nobody is reading at 11:04.
+# `hf download` keeps the repo's directory structure, so the Lumina VAE lands
+# at vae/split_files/vae/ae.safetensors. VAELoader looks in vae/ and nowhere
+# else, so an unflattened file is a file ComfyUI cannot see.
+if [ -f "$M/vae/split_files/vae/ae.safetensors" ]; then
+  mv "$M/vae/split_files/vae/ae.safetensors" "$M/vae/ae.safetensors"
+  rm -rf "$M/vae/split_files"
+fi
+for required in   "$M/diffusion_models/flux1-dev.safetensors"   "$M/text_encoders/t5xxl_fp8_e4m3fn.safetensors"   "$M/text_encoders/clip_l.safetensors"   "$M/vae/ae.safetensors"; do
+  [ -f "$required" ] || die "flux weight missing: $required (check /workspace/dl-logs)"
+done
+
 FLUX_LORA="$M/loras/flux_nsfw_uncensored_v1.safetensors"
 if [ -f "$M/loras/lora.safetensors" ]; then
   mv "$M/loras/lora.safetensors" "$FLUX_LORA"

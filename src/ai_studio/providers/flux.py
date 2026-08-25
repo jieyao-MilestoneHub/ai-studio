@@ -32,6 +32,7 @@ from ai_studio.core.image_provider_spec import (
     ImageProviderCapabilities,
     ImageRequest,
 )
+from ai_studio.core.model_profile import FLUX_1_DEV
 from ai_studio.storage.base import sha256_file
 
 DEFAULT_HOURLY_USD = 0.74
@@ -62,9 +63,14 @@ def flux_capabilities(
     height: int = 1024,
     *,
     hourly_usd: float = DEFAULT_HOURLY_USD,
-    steps: int = DEFAULT_STEPS,
 ) -> ImageProviderCapabilities:
-    """Capabilities for Flux.1-dev at a given native canvas."""
+    """Capabilities for Flux.1-dev at a given canvas, derived from the profile.
+
+    The `steps` parameter this used to accept was never read in the body — a
+    knob that looked configurable and was not. Steps reach the graph through the
+    workflow binding or not at all.
+    """
+    FLUX_1_DEV.require_canvas(width, height)
     cost_per_image = round(hourly_usd * MEASURED_LATENCY_S / 3600.0, 6)
     return ImageProviderCapabilities(
         provider="flux",
@@ -95,7 +101,6 @@ class FluxComfyUIProvider:
         width: int = 1024,
         height: int = 1024,
         hourly_usd: float = DEFAULT_HOURLY_USD,
-        steps: int = DEFAULT_STEPS,
         lora_strength: float = DEFAULT_LORA_STRENGTH,
         **_: Any,
     ) -> None:
@@ -106,7 +111,7 @@ class FluxComfyUIProvider:
         )
         self._hourly_usd = hourly_usd
         self._lora_strength = lora_strength
-        self._caps = flux_capabilities(width, height, hourly_usd=hourly_usd, steps=steps)
+        self._caps = flux_capabilities(width, height, hourly_usd=hourly_usd)
 
     def capabilities(self) -> ImageProviderCapabilities:
         return self._caps

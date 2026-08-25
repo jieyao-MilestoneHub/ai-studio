@@ -21,8 +21,10 @@ all about money and none about taste:
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from ai_studio.core.image_provider_spec import (
     ImageAsset,
@@ -89,3 +91,50 @@ class ImageProvider(Protocol):
     async def cancel(self, job: ImageJob) -> None: ...
 
     async def aclose(self) -> None: ...
+
+
+def write_provider_manifest(
+    dest_dir: Path | str,
+    capabilities: ProviderCapabilities | ImageProviderCapabilities,
+    *,
+    profile_key: str,
+    workflow: Path | str,
+    extra: dict[str, Any] | None = None,
+) -> Path:
+    """Publish a capabilities snapshot to `provider_manifest.json`.
+
+    This file has been named in `core/provider_spec.py`, in this module's own
+    docstring above, in `docs/architecture.md` and in `CLAUDE.md` ("Do not move
+    it") since the beginning — and nothing has ever written it. The dependency
+    inversion was real at the type level (`ProviderCapabilities` genuinely lives
+    in `core`, and `editing` genuinely does not import `providers`); only the
+    serialisation half was missing.
+
+    It matters now because gates are, by contract, *pure functions of on-disk
+    artifacts* and may not import `providers`. Without this file a gate has no
+    way to learn what the model was configured to produce, which is exactly what
+    checking a render against its own promises requires.
+
+    Written once per pod rather than per job: it describes the provider, and the
+    provider does not change while the pod lives. The workflow digest is what
+    makes that claim checkable — two runs with the same manifest really did
+    submit the same graph.
+    """
+    workflow_path = Path(workflow)
+    digest = ""
+    if workflow_path.is_file():
+        digest = hashlib.sha256(workflow_path.read_bytes()).hexdigest()[:16]
+
+    payload: dict[str, Any] = {
+        "profile": profile_key,
+        "workflow": workflow_path.name,
+        "workflow_sha256_16": digest,
+        "capabilities": capabilities.model_dump(mode="json"),
+    }
+    if extra:
+        payload.update(extra)
+
+    dest = Path(dest_dir) / "provider_manifest.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return dest

@@ -8,16 +8,20 @@ network and no database.
 from __future__ import annotations
 
 from ai_studio.core.enums import MediaKind
+from ai_studio.core.model_profile import MINIMAX_H3
 from ai_studio.pipeline.queue import JobQueue, JobState
 from ai_studio.prompts import flux as flux_prompts
 from ai_studio.prompts.convert import LlmClient, convert
 from ai_studio.prompts.flux import FluxPrompt
 from ai_studio.prompts.h3 import H3Prompt
 
-DEFAULT_DURATION_S = 124 / 24
-"""124 frames at 24fps. The turbo node pack documents that frame counts snap to
-a 17k+5 grid and that 124 is the validated floor, so this is the shortest clip
-the model will actually produce rather than a round number."""
+DEFAULT_DURATION_S = MINIMAX_H3.shortest_useful_duration_s
+"""The shortest clip worth generating, from the model profile.
+
+124 frames at 24fps. The `17k+5` grid is `[verified]` against ComfyUI's own
+`nodes_minimax_h3.py`; **124 is not the model's floor** — ComfyUI accepts 5 —
+it is the turbo LoRA's trained lower bound `[reported]`, which is why the
+profile records the two separately."""
 
 
 async def convert_job(

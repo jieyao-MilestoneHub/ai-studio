@@ -35,7 +35,7 @@ character consistency. On a datacenter link 42 GB takes about 9 minutes at
 | requirement | value | why |
 |---|---|---|
 | GPU | RTX 4090 24 GB | VRAM peaks at 15.7–21.9 GB, so 24 GB is ample |
-| **Host RAM** | **≥ 60 GB** | ComfyUI does not release the 32B text encoder after loading. A 31 GB host crashed part-way through a second consecutive generation. Not selectable via API — deploy, inspect, terminate if short. |
+| **Host RAM** | **≥ 60 GB** `[speculative]` — ⚠️ contradicted, see Corrections §1 | The 31 GB crash is real 📏, but "therefore ≥60 GB" does not follow from it: ComfyUI issue #15488 documents H3 killing the GPU *because* 64 GB was visible, stable when capped to 32 GB. The guard in `runtime.pod` is unchanged deliberately — relaxing a money guard on two issue threads is worse than carrying a stale one. Not selectable via API. |
 | CUDA | **13.0** `[reported]` (⚠️ unverified against the current template, see below) | `[reported]`, and inherited rather than tested here: H3's quantised fast paths are said to assume the CUDA 13 generation, with 12.8 falling back to a slow path on strong cards. Nothing in this project has checked either half. `runtime/session.py` passes `--min-cuda-version 13.0` on every create, so if the standard template is really 12.8 that flag is either a no-op or a refusal on every rung — see PLAN.md Phase 7.0 |
 | Template | RunPod's official **"ComfyUI"** template (`cw3nka7d08`) for standard GPUs — `runtime.session.TEMPLATE_COMFYUI_STANDARD` | ⚠️ 📏 checked 2026-08-25: the template id this repo previously hardcoded (`2lv7ev3wfp`) has been renamed/rescoped to **"ComfyUI Blackwell Edition"** and is now specifically for RTX 5090/B200, not the RTX 4090/L40S this project targets. RunPod's current docs only mention `runpod/comfyui:latest` (standard) and `runpod/comfyui:cuda12.8` (Blackwell) image tags — no "cuda13" tag is documented anywhere today, which is in tension with the CUDA 13.0 requirement above. **Verify the standard template's actual CUDA version live before trusting the turbo path on it** — this has not been done yet. |
 | Disk | 200 GB container disk (template default) | no network volume — see [runpod.md](runpod.md) |
@@ -195,3 +195,151 @@ Camera motion comes from a closed vocabulary (`pushes in`, `trucks right`,
 `arcs around the subject`, …) written as prose, with amplitude and speed only
 when they are not the default. Dialogue keeps identity outside `<d>` and the
 verbatim words inside.
+
+---
+
+## Corrections from the 2026-08-26 research pass
+
+A web research pass contradicted five things this file previously stated as
+fact. They are recorded here rather than silently edited away, because "we used
+to believe X" is the part that stops the same wrong thing being re-derived.
+
+Grading below follows [attribution.md](attribution.md). `[verified]` means read
+out of primary source — the model card, MiniMax's repo, or ComfyUI's own code.
+
+### 1. "Host RAM must be ≥ 60 GB" is not established, and may be backwards
+
+`runtime.pod` still terminates a host with less, and that guard has **not** been
+changed — but the reasoning under it no longer holds up.
+
+ComfyUI issue [#15488](https://github.com/Comfy-Org/ComfyUI/issues/15488)
+documents H3 **killing the GPU because 64 GB was visible to the OS** (`GPU is
+lost`, TDR, after 1-8 generations). Capping the machine to 32 GB produced 29
+consecutive clean runs. The reporter notes that "ComfyUI constants scale with
+total RAM, including `cache_ram` and `MAX_PINNED_MEMORY`". A 3060/32 GB box is
+`[reported]` generating 124 frames at 864x480 without trouble.
+
+The 31 GB crash this project recorded is real. The inference "therefore ≥60 GB
+is required" does not follow from it, and more RAM is **not** monotonically
+safer on H3's quantised path. Both reports are Windows/WDDM; whether either
+reproduces on a Linux pod is `[not found]`.
+
+**Not changed, deliberately.** Relaxing a money guard on the strength of two
+issue threads is worse than carrying a stale one. Revisit with our own numbers
+after the first real run.
+
+### 2. 864x480 is not a native canvas
+
+H3's native size is a **768 px short edge** `[verified]`, which at the official
+aspect ratios means **1344x768**. 864x480 is a *legal* canvas — both dimensions
+are multiples of 32, which is the real constraint — and it is ~2.3x faster
+`[reported]`, but it is off-native and this file used to call it native.
+
+`core/model_profile.py` now records `native=True` on exactly one canvas, and a
+test asserts 864x480 is not it. Whether the speed is worth the quality is an
+open A/B for the first run, not a settled question.
+
+Max pixel area is **768 x 1344 ≈ 1.03 MP** `[verified]`. ComfyUI's own
+"1.0 Megapixel" preset yields 1376x768 and **exceeds it** — do not use it.
+
+### 3. 124 frames is the LoRA's floor, not the model's
+
+The `17k+5` grid is confirmed `[verified]` — read directly out of ComfyUI's
+`comfy_extras/nodes_minimax_h3.py`, which snaps an out-of-grid request *upward*.
+Legal lengths are 5, 22, 39, 56, 73, 90, 107, 124, 141 …
+
+But **ComfyUI's minimum is 5 frames**, not 124. The 124 figure comes from the
+turbo LoRA's own card, which gives a trained range of 124-362 frames
+`[reported]` — a property of that adapter, not of H3. The profile records the
+two separately (`minimum` vs `recommended_minimum`) so they cannot be conflated
+again.
+
+### 4. The comb-artifact story is single-source, and its cause is disputed
+
+This file attributes vertical comb artifacts and banding to driving the turbo
+LoRA through stock nodes, at 2.53 vs 9.8 s/iter. That figure and that
+description trace to **one blog post**, and no independent corroboration was
+found. Every other source describing a stock-node problem describes **audio**
+degradation, not picture.
+
+What is `[verified]`: H3 denoises video and audio on two different flow
+schedules (`shift_video` 12.0, `shift_audio` 3.0), stock samplers originally
+stepped both on one schedule, and that was **fixed upstream on 2026-08-06** in
+PR [#15243](https://github.com/Comfy-Org/ComfyUI/pull/15243), shipped in
+v0.31.0 as `ModelSamplingAV`.
+
+A more likely mechanism for the 3.9x delta, `[speculative]`: applying a LoRA to
+an `int8_convrot` checkpoint forces dequantisation to bf16, abandoning the fast
+quantised kernels — so the *fast* path may be the one where the LoRA silently
+did not apply. Issue [#15563](https://github.com/Comfy-Org/ComfyUI/issues/15563)
+states that dequantisation happens, **and that the bf16 path produces black
+frames**. If that is right, "the slow path is the correct path" is not a safe
+conclusion either.
+
+**The ban in `comfy/validate.py` is unchanged.** It is cheap insurance and
+costs nothing to keep. But the real detector is not the eye:
+
+```bash
+grep -i "lora key not loaded" <comfyui log>     # must print nothing
+```
+
+ComfyUI does not raise on a key mismatch. It logs at WARNING and returns a
+perfectly good, completely un-LoRA'd render.
+
+### 5. CUDA 13 — the open question is answered
+
+`runpod/comfyui:cuda13.0` **exists** `[verified]`
+([Docker Hub tags](https://hub.docker.com/r/runpod/comfyui/tags): `cuda13.0`,
+`1.4.6-cuda13.0`, `dev-cuda13.0`). RunPod's *docs* list only `latest` and
+`cuda12.8`, which is what this project was reading. So
+`--min-cuda-version 13.0` in `runtime/session.py` is not a dead flag.
+
+CUDA 13 is **not required** — it is what makes `int8_convrot` fast. Comfy-Org's
+own guidance: *"prefer `int8_convrot` if you are able to use pytorch with
+cu130"*, with `fp8_scaled` as the documented fallback `[verified]`.
+
+⚠️ `[reported]` and worth checking on the pod: a CUDA-13 **base image** does not
+imply a cu130 **torch wheel**, and only the wheel activates the hardware
+dequant path. Verify `torch.version.cuda` inside the pod, not the image tag.
+
+### 6. The launch flags are real after all
+
+`--fast-disk`, `--use-sage-attention` and `--reserve-vram` all exist
+`[verified]` in ComfyUI's `comfy/cli_args.py`. This file's previous hedge —
+"the flag names themselves are unverified" — was over-cautious.
+
+The probe in `deploy/pod_setup.sh` stays: it costs nothing and it is what makes
+a future rename survivable. Note that v0.32.0 added `--use-ck-attention`
+("Comfy Kitchen attention"), described as reaching SageAttention-class speed
+with no extra install `[reported]` — a possible simplification later.
+
+### 7. Pin ComfyUI. v0.32.0 is a trap
+
+`[verified]` Issue [#15665](https://github.com/Comfy-Org/ComfyUI/issues/15665):
+H3 at full resolution went from ~26 minutes on v0.31.1 to **~2 hours on
+v0.32.0**, from PR #15486. 512x512 is unaffected, so it is resolution-dependent
+and would hit us at exactly our canvas sizes. Unfixed at time of writing.
+
+`deploy/pod_setup.sh` upgrades ComfyUI **unpinned**, which means the pod runs
+whatever shipped that morning. That is the actual defect; a 4x regression
+landing mid-window would consume the entire remaining budget.
+
+### 8. Licence terms this file did not record
+
+`[verified]` from the MiniMax H3 Community License Agreement:
+
+- **US / EU / UK / South Korea are excluded territories** requiring separate
+  authorisation. This project already treats that as a *datacenter* rule
+  (`runtime.pod.LICENCE_SAFE_DATACENTERS`) — but the clause is about where the
+  **product and its users** are, not only where the GPU is.
+- Products over **$20M USD annual revenue** need prior written authorisation.
+- Commercial product UI must **display "MiniMax H3"**.
+- Output files must carry **AI-generation identifiers**.
+
+The last two are product obligations nothing in this codebase currently meets.
+For a private single-group bot that is arguably moot, but it is written down
+here so nobody has to rediscover it.
+
+Also `[verified]`: only **H3-Base** is open. `H3-Context-IR` and
+`H3-Regenerate-2K` are hosted-API only, so **local ComfyUI tops out at 768p** —
+the "2K, 15 second" headline is the hosted product, not this one.
