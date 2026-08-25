@@ -13,8 +13,8 @@ export PATH="/c/ffmpeg/ffmpeg-master-latest-win64-gpl/bin:$PATH"   # ffmpeg is i
 uv run ruff check --no-cache src tests examples
 uv run lint-imports
 uv run pytest tests -q
-uv run videogen doctor
-uv run videogen generate "a test clip" --provider stub
+uv run ai-studio doctor
+uv run ai-studio generate "a test clip" --provider stub
 ```
 
 ## What each one is actually for
@@ -24,7 +24,7 @@ uv run videogen generate "a test clip" --provider stub
 | `ruff check` | style and a real class of bugs (unused imports, mutable defaults) |
 | **`lint-imports`** | **architecture drift** — the five layering contracts. This is the one people forget, and it is the one that stops the design eroding. |
 | `pytest` | the format geometry, the H3 prompt schema, and the turbo-trap guard |
-| `videogen doctor` | ffmpeg and its required filters, python version, credentials |
+| `ai-studio doctor` | ffmpeg and its required filters, python version, credentials |
 | `generate --provider stub` | the whole pipeline end to end, offline, free |
 
 ## Gotchas

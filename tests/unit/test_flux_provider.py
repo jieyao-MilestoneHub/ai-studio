@@ -13,12 +13,12 @@ from typing import Any
 
 import pytest
 
-from videogen import media
-from videogen.comfy.client import ComfyOutput
-from videogen.core.enums import GenMode, JobState
-from videogen.core.image_provider_spec import ImageJob, ImageRequest
-from videogen.providers import flux as flux_provider
-from videogen.providers.flux import FluxComfyUIProvider, flux_capabilities
+from ai_studio import media
+from ai_studio.comfy.client import ComfyOutput
+from ai_studio.core.enums import GenMode, JobState
+from ai_studio.core.image_provider_spec import ImageJob, ImageRequest
+from ai_studio.providers import flux as flux_provider
+from ai_studio.providers.flux import FluxComfyUIProvider, flux_capabilities
 
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / "workflows" / "flux_dev.json"
@@ -122,7 +122,7 @@ async def test_fetch_uses_probe_image_not_probe(
 
 @pytest.mark.asyncio
 async def test_cancel_swallows_provider_errors(provider: FluxComfyUIProvider) -> None:
-    from videogen.core.errors import ProviderError
+    from ai_studio.core.errors import ProviderError
 
     async def fake_interrupt() -> None:
         raise ProviderError("nothing running")

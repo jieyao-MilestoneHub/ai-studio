@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from videogen.comfy.ui_workflow import (
+from ai_studio.comfy.ui_workflow import (
     prune_unreachable,
     set_literal,
     ui_to_api,
@@ -182,7 +182,7 @@ def test_each_shipped_workflow_matches_the_tier_it_serves(
 
 @pytest.mark.parametrize("name", ["h3_fl2va_turbo.json", "h3_fl2va_turbo_fp8.json"])
 def test_both_shipped_workflows_pass_the_turbo_guard(name: str) -> None:
-    from videogen.comfy.validate import validate_graph
+    from ai_studio.comfy.validate import validate_graph
 
     graph = {k: v for k, v in _shipped(name).items() if not k.startswith("_")}
     validate_graph(graph, expect_turbo=True)
@@ -192,7 +192,7 @@ def test_both_shipped_workflows_pass_the_turbo_guard(name: str) -> None:
 def test_both_shipped_workflows_load_with_the_required_bindings(name: str) -> None:
     from pathlib import Path
 
-    from videogen.comfy.graph import REQUIRED_BINDINGS, Workflow
+    from ai_studio.comfy.graph import REQUIRED_BINDINGS, Workflow
 
     wf = Workflow.load(Path(__file__).resolve().parents[2] / "workflows" / name)
     assert wf.bindings.keys() >= REQUIRED_BINDINGS

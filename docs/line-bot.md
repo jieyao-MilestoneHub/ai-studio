@@ -98,7 +98,7 @@ cp .env.example .env
 # LINE_CHANNEL_SECRET         Basic settings
 # LINE_CHANNEL_ACCESS_TOKEN   Messaging API -> issue a long-lived token
 # LINE_ALLOWED_GROUP_ID       leave empty for now
-# VIDEOGEN_PUBLIC_BASE_URL    https://<your-host>
+# AI_STUDIO_PUBLIC_BASE_URL    https://<your-host>
 ```
 
 `.env` is gitignored and a test asserts it (`tests/unit/test_gitignore.py`).
@@ -113,7 +113,7 @@ cp .env.example .env
 groups it belongs to, so the id has to be read off a live event.
 
 ```bash
-uv run videogen line capture-group
+uv run ai-studio line capture-group
 ```
 
 With `LINE_ALLOWED_GROUP_ID` empty the bot runs in **capture mode**: it answers
@@ -138,7 +138,7 @@ LINE_ALLOWED_USER_IDS=Uabc...,Udef...
 Empty means *any member of the group*. That is a legitimate choice for a group
 whose roster you trust, and it is the default because requiring a user list up
 front would make the bot unusable before anyone had ever spoken to it. But it is
-a choice, so `videogen line serve` prints it in yellow at startup rather than
+a choice, so `ai-studio line serve` prints it in yellow at startup rather than
 letting it pass as a default.
 
 With the list set, the gate **fails closed**: LINE does not always include
@@ -150,7 +150,7 @@ Collecting the ids needs no extra tooling. Every accepted request logs
 authorise someone:
 
 ```
-2026-08-25 11:03:22 INFO    videogen.webhook | callback ok: wrong_user (U7d3...)
+2026-08-25 11:03:22 INFO    ai_studio.webhook | callback ok: wrong_user (U7d3...)
 ```
 
 Two deliberate limits on the gate:
@@ -166,8 +166,8 @@ the only notice a change produces; it is logged at WARNING, with a second line
 if no user allowlist is set:
 
 ```
-WARNING videogen.webhook | member(s) JOINED the group: U7d3...
-WARNING videogen.webhook |   no LINE_ALLOWED_USER_IDS set: they can trigger a render now
+WARNING ai_studio.webhook | member(s) JOINED the group: U7d3...
+WARNING ai_studio.webhook |   no LINE_ALLOWED_USER_IDS set: they can trigger a render now
 ```
 
 > Not verified: LINE has a *Get group chat member user IDs* endpoint, which would
@@ -178,7 +178,7 @@ WARNING videogen.webhook |   no LINE_ALLOWED_USER_IDS set: they can trigger a re
 ### 5. Serve
 
 ```bash
-uv run videogen line serve --port 8000
+uv run ai-studio line serve --port 8000
 ```
 
 ## Public HTTPS
@@ -194,12 +194,12 @@ console each time.
 
 ```bash
 cloudflared tunnel login
-cloudflared tunnel create videogen
-cloudflared tunnel route dns videogen vg.example.com
-cloudflared tunnel run --url http://localhost:8000 videogen
+cloudflared tunnel create ai-studio
+cloudflared tunnel route dns ai-studio vg.example.com
+cloudflared tunnel run --url http://localhost:8000 ai-studio
 ```
 
-Then `VIDEOGEN_PUBLIC_BASE_URL=https://vg.example.com`.
+Then `AI_STUDIO_PUBLIC_BASE_URL=https://vg.example.com`.
 
 Caveat worth stating plainly: **the machine has to stay awake.** Webhooks
 arriving while it sleeps are lost, and the 11:00 `session open` will not fire
@@ -248,7 +248,7 @@ The window scheduler lives on this host rather than on a laptop, so it does not
 depend on someone's machine being awake — see [schedule.md](schedule.md).
 
 Credentials are not written by the script. Put them in `/srv/ai-studio/.env`
-yourself (`chmod 600`), then `systemctl restart videogen`.
+yourself (`chmod 600`), then `systemctl restart ai-studio`.
 
 ## The flow, end to end
 
@@ -350,7 +350,7 @@ mode. Falling down the ladder is a quality change, not only a price change.
 ($60.24 at rung 1) already exceeds a $50/month target before the VPS is even
 added.** That range was a description, not an enforced number, until
 `runtime.budget.MonthlyBudgetGuard` — see [schedule.md](schedule.md) for the
-demand gate and budget guard that make `VIDEOGEN_MAX_MONTH_USD` (default $50)
+demand gate and budget guard that make `AI_STUDIO_MAX_MONTH_USD` (default $50)
 an actual ceiling: skip a window with nothing queued, refuse to open one the
 remaining month's budget can't cover, and shrink one it can only partly cover.
 

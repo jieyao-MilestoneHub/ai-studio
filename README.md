@@ -27,13 +27,13 @@ account, no API key, no GPU, no money.
 
 ```bash
 uv sync --group dev
-uv run videogen doctor          # checks python, ffmpeg + required filters, credentials
-uv run videogen generate "a baker opening the shutters before sunrise" --provider stub
-uv run videogen format yt_longform_1080p   # how 864x480 maps onto the delivery canvas
+uv run ai-studio doctor          # checks python, ffmpeg + required filters, credentials
+uv run ai-studio generate "a baker opening the shutters before sunrise" --provider stub
+uv run ai-studio format yt_longform_1080p   # how 864x480 maps onto the delivery canvas
 uv run python examples/build_prompt.py     # the MiniMax H3 structured prompt builder
 ```
 
-You need `ffmpeg` on `PATH` with `libass`. `videogen doctor` tells you exactly
+You need `ffmpeg` on `PATH` with `libass`. `ai-studio doctor` tells you exactly
 which filters are missing if any are.
 
 This only exercises the video (H3) path — `generate` always builds a clip
@@ -144,7 +144,7 @@ Things to know before you spend anything:
   is a licence question, not just a latency one.
 - **Flux.1-dev's licence is non-commercial**, independent of geography —
   confirm the bot's actual use before shipping this to any commercial context.
-- `VIDEOGEN_MAX_MONTH_USD` (default $50) is a calendar-month budget ceiling,
+- `AI_STUDIO_MAX_MONTH_USD` (default $50) is a calendar-month budget ceiling,
   checked before a session is allowed to open a pod at all.
 
 ---

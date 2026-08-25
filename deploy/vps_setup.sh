@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision a fresh Ubuntu box as the always-on side of videogen.
+# Provision a fresh Ubuntu box as the always-on side of ai-studio.
 #
 #   curl -fsSL <this file> | bash -s -- <hostname>
 # or, on the box:
@@ -19,9 +19,9 @@
 set -euo pipefail
 
 HOSTNAME_ARG="${1:?usage: vps_setup.sh <hostname>}"
-APP_USER=videogen
+APP_USER=ai-studio
 APP_DIR=/srv/ai-studio
-REPO="${VIDEOGEN_REPO:-https://github.com/jieyao-MilestoneHub/ai-studio.git}"
+REPO="${AI_STUDIO_REPO:-https://github.com/jieyao-MilestoneHub/ai-studio.git}"
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
@@ -80,9 +80,9 @@ systemctl enable --now caddy >/dev/null 2>&1 || true
 systemctl reload caddy || systemctl restart caddy
 
 say "service"
-cat > /etc/systemd/system/videogen.service <<UNIT
+cat > /etc/systemd/system/ai-studio.service <<UNIT
 [Unit]
-Description=videogen LINE webhook, status pages and file delivery
+Description=ai-studio LINE webhook, status pages and file delivery
 After=network-online.target
 Wants=network-online.target
 
@@ -90,7 +90,7 @@ Wants=network-online.target
 User=${APP_USER}
 WorkingDirectory=${APP_DIR}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/local/bin/uv run videogen line serve --host 127.0.0.1 --port 8000
+ExecStart=/usr/local/bin/uv run ai-studio line serve --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
 # LINE requires a 200 within two seconds, so this process must never be cold.
@@ -115,20 +115,20 @@ for phase in open drain reap close; do
     reap)  cmd="session reap";                                when="*:0/5" ;;
     close) cmd="session close";                               when="05:00" ;;
   esac
-  cat > /etc/systemd/system/videogen-${phase}.service <<UNIT
+  cat > /etc/systemd/system/ai-studio-${phase}.service <<UNIT
 [Unit]
-Description=videogen window ${phase}
+Description=ai-studio window ${phase}
 
 [Service]
 Type=oneshot
 User=${APP_USER}
 WorkingDirectory=${APP_DIR}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/local/bin/uv run videogen ${cmd}
+ExecStart=/usr/local/bin/uv run ai-studio ${cmd}
 UNIT
-  cat > /etc/systemd/system/videogen-${phase}.timer <<UNIT
+  cat > /etc/systemd/system/ai-studio-${phase}.timer <<UNIT
 [Unit]
-Description=videogen window ${phase} timer
+Description=ai-studio window ${phase} timer
 
 [Timer]
 # UTC. 11:00 Asia/Taipei is 03:00 UTC.
@@ -144,9 +144,9 @@ UNIT
 done
 
 systemctl daemon-reload
-systemctl enable --now videogen.service >/dev/null 2>&1 || true
+systemctl enable --now ai-studio.service >/dev/null 2>&1 || true
 for phase in open drain reap close; do
-  systemctl enable --now videogen-${phase}.timer >/dev/null 2>&1 || true
+  systemctl enable --now ai-studio-${phase}.timer >/dev/null 2>&1 || true
 done
 
 say "firewall"
@@ -166,11 +166,11 @@ cat <<NEXT
        LINE_CHANNEL_ACCESS_TOKEN=...
        LINE_ALLOWED_GROUP_ID=            <- leave empty to run capture mode
        RUNPOD_API_KEY=...
-       VIDEOGEN_PUBLIC_BASE_URL=https://${HOSTNAME_ARG}
-       VIDEOGEN_LLM_ENDPOINT_ID=...
-  2. systemctl restart videogen
+       AI_STUDIO_PUBLIC_BASE_URL=https://${HOSTNAME_ARG}
+       AI_STUDIO_LLM_ENDPOINT_ID=...
+  2. systemctl restart ai-studio
   3. curl https://${HOSTNAME_ARG}/healthz          -> {"ok":true,...}
   4. LINE console webhook URL: https://${HOSTNAME_ARG}/callback  -> Verify
-  5. systemctl list-timers 'videogen-*'            -> three timers armed
-  Logs: journalctl -u videogen -f
+  5. systemctl list-timers 'ai-studio-*'            -> three timers armed
+  Logs: journalctl -u ai-studio -f
 NEXT

@@ -1,5 +1,5 @@
 {
-  "_videogen": {
+  "_ai_studio": {
     "bindings": {
       "prompt": ["4", "text"],
       "width": ["5", "width"],
@@ -69,6 +69,6 @@
   },
   "13": {
     "class_type": "SaveImage",
-    "inputs": { "images": ["12", 0], "filename_prefix": "videogen" }
+    "inputs": { "images": ["12", 0], "filename_prefix": "ai_studio" }
   }
 }

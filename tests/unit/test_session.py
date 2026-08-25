@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from videogen.core.errors import PodError
-from videogen.runtime import session as sess
+from ai_studio.core.errors import PodError
+from ai_studio.runtime import session as sess
 
 
 @pytest.fixture(autouse=True)
@@ -22,7 +22,7 @@ def _isolate_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # close_session() now also writes a SpendLedger entry on every close; without
     # isolating it too, every test that closes a session writes into the real
     # repo's runs/.spend_ledger.json instead of a throwaway one.
-    from videogen.runtime.budget import SpendLedger
+    from ai_studio.runtime.budget import SpendLedger
 
     monkeypatch.setattr(sess, "SpendLedger", lambda: SpendLedger(tmp_path / "ledger.json"))
 
@@ -101,7 +101,7 @@ def test_only_the_cheapest_rung_waits() -> None:
 
 def test_the_ladder_only_uses_licence_permitted_datacenters() -> None:
     """H3's licence excludes the US, EU, UK and South Korea."""
-    from videogen.runtime.pod import LICENCE_SAFE_DATACENTERS
+    from ai_studio.runtime.pod import LICENCE_SAFE_DATACENTERS
 
     assert all(t.datacenter in LICENCE_SAFE_DATACENTERS for t in sess.CANDIDATES)
 

@@ -10,7 +10,7 @@ schema, while a five-fold increase in resolution changed nothing. [reported]
 
 from __future__ import annotations
 
-from videogen.prompts.h3 import (
+from ai_studio.prompts.h3 import (
     Amplitude,
     CameraMotion,
     Dialogue,

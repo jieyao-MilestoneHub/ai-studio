@@ -1,6 +1,6 @@
 # ComfyUI workflows
 
-A workflow here is a ComfyUI **API-format** graph plus a `_videogen` block that
+A workflow here is a ComfyUI **API-format** graph plus a `_ai_studio` block that
 says where run parameters land.
 
 ## Producing one
@@ -8,14 +8,14 @@ says where run parameters land.
 1. Build the graph in the ComfyUI UI on the pod.
 2. **Save (API Format)** — not the ordinary Save. The ordinary format carries UI
    layout and cannot be submitted to `/prompt`.
-3. Drop the JSON here and add a `_videogen` block (below).
-4. `videogen generate --provider comfyui --workflow workflows/yours.json`
+3. Drop the JSON here and add a `_ai_studio` block (below).
+4. `ai-studio generate --provider comfyui --workflow workflows/yours.json`
 
-The `_videogen` block is stripped before submission, so ComfyUI never sees it.
+The `_ai_studio` block is stripped before submission, so ComfyUI never sees it.
 
 ```json
 {
-  "_videogen": {
+  "_ai_studio": {
     "expect_turbo": true,
     "bindings": {
       "prompt":   ["6",  "text"],
@@ -94,6 +94,6 @@ specific prose **205.9**, official structured schema **367.6**. Same prose at
 five times the pixels: 608×352 **29.2**, 864×480 **30.3**, 1344×768 **26.0**.
 [reported]
 
-A blurry result is a prompt problem. Use `videogen.prompts.h3` — it builds the
+A blurry result is a prompt problem. Use `ai_studio.prompts.h3` — it builds the
 official schema from typed fields, so the structure is the output rather than
 something you have to remember.

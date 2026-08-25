@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from videogen.core.enums import MediaKind
-from videogen.pipeline.queue import Job, JobQueue, JobState
+from ai_studio.core.enums import MediaKind
+from ai_studio.pipeline.queue import Job, JobQueue, JobState
 
 PROMPT = {"integrated_multimodal_description": "[Shot 1] a cat"}
 

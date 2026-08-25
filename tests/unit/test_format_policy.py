@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from videogen.core.enums import FormatStrategy
-from videogen.core.errors import FormatPolicyViolation, UnknownKeyError
-from videogen.editing.format_policy import (
+from ai_studio.core.enums import FormatStrategy
+from ai_studio.core.errors import FormatPolicyViolation, UnknownKeyError
+from ai_studio.editing.format_policy import (
     BANNED_FILTERS,
     MAX_UPSCALE,
     plan_format,

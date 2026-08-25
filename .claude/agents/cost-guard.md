@@ -33,7 +33,7 @@ how much they could cost and how silently.
    minutes of GPU. A check that runs post-generation is a receipt, not a check.
    Anything derivable from `plan.json` must run PRE.
 
-5. **A missing or bypassable cost ceiling.** `VIDEOGEN_MAX_COST_USD` must be
+5. **A missing or bypassable cost ceiling.** `AI_STUDIO_MAX_COST_USD` must be
    consulted before submission, not after. Flag any estimate that is computed
    and then not compared, or a ceiling that can be silently defaulted away.
 

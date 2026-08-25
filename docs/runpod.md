@@ -21,7 +21,7 @@ runs for minutes, and it must stay debuggable on a laptop with no GPU.
 ## Before you deploy
 
 ```bash
-uv run videogen pod capacity     # licence-safe DC with actual stock
+uv run ai-studio pod capacity     # licence-safe DC with actual stock
 ```
 
 Three things that will otherwise cost you money quietly:
@@ -43,8 +43,8 @@ Three things that will otherwise cost you money quietly:
 ## Deploy
 
 ```bash
-uv run videogen pod up --template-id <official-comfyui-template-id>  # cw3nka7d08 for standard GPUs, see runtime.session.TEMPLATE_COMFYUI_STANDARD
-uv run videogen pod status
+uv run ai-studio pod up --template-id <official-comfyui-template-id>  # cw3nka7d08 for standard GPUs, see runtime.session.TEMPLATE_COMFYUI_STANDARD
+uv run ai-studio pod status
 ```
 
 `pod up` checks capacity, deploys into a licence-safe datacenter, and then
@@ -68,7 +68,7 @@ while it fails. `pod status` prints both warnings.
 Then point the provider at it:
 
 ```bash
-export VIDEOGEN_COMFY_URL="https://<pod-id>-8188.proxy.runpod.net"
+export AI_STUDIO_COMFY_URL="https://<pod-id>-8188.proxy.runpod.net"
 ```
 
 ## The 100-second wall
@@ -130,7 +130,7 @@ weights on container disk, deliverables on R2 — no conflict.
 ## Shut down
 
 ```bash
-uv run videogen pod down <pod-id>
+uv run ai-studio pod down <pod-id>
 ```
 
 **This terminates.** Stopping a pod does not stop billing — it keeps the

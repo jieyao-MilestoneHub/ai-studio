@@ -149,7 +149,7 @@ and are now fixed in `deploy/pod_setup.sh`:
    A deploy refusal looks identical whether the datacenter is empty or has
    never had that card, which is why this survived a live run. The ladder now
    places L40S in **OC-AU-1** — the only one of those five that H3's licence
-   permits, the Netherlands being EU and the rest US — and `videogen pod
+   permits, the Netherlands being EU and the rest US — and `ai-studio pod
    placement` checks every rung against the catalog so a dead rung is loud
    instead of looking like bad luck.
 
@@ -170,7 +170,7 @@ Same seed, same 1344×768, same scene, changing only the prompt:
 Same prose at five times the pixels: 608×352 **29.2**, 864×480 **30.3**,
 1344×768 **26.0** — i.e. no effect.
 
-**A blurry result is a prompt problem.** `videogen.prompts.h3` implements the
+**A blurry result is a prompt problem.** `ai_studio.prompts.h3` implements the
 official schema from
 [VIDEO_PROMPT_WRITING_GUIDE_base_en.md](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md)
 as typed fields:
