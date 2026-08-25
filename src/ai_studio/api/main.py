@@ -74,6 +74,11 @@ def create_app(
             allowed_group_id=settings.line_allowed_group_id,
             allowed_user_ids=settings.allowed_users,
             base_url=settings.public_base_url,
+            # A cap the handler defaults to *off*: this is the composition
+            # root, so a guard that is configured but never passed in here is
+            # a guard that does not exist. See tests/unit/test_drain_wiring.py
+            # for the last time that distinction cost this project something.
+            max_jobs_per_user_per_day=settings.max_jobs_per_user_per_day,
         )
     app.state.handler = handler
 

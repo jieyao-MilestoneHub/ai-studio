@@ -34,8 +34,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from ai_studio.core.errors import PodError
-from ai_studio.runtime.budget import SpendLedger
+import httpx
+
+from ai_studio.config.settings import get_settings
+from ai_studio.core.errors import CostCeilingExceeded, PodError
+from ai_studio.pipeline.queue import JobQueue
+from ai_studio.runtime import hours
+from ai_studio.runtime.budget import MonthlyBudgetGuard, SpendLedger
 
 TEMPLATE_COMFYUI_STANDARD = "cw3nka7d08"
 """Official RunPod "ComfyUI" template, for standard GPUs (RTX 4090, L40, A100,
@@ -301,6 +306,126 @@ def _seconds_left(window_end: datetime) -> float:
     return max(0.0, (window_end.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds())
 
 
+# -------------------------------------------------------------- request-driven
+
+
+def ensure_pod(
+    queue: JobQueue,
+    *,
+    name: str = "ai-studio-window",
+    candidates: tuple[Tier, ...] = CANDIDATES,
+    now: datetime | None = None,
+    max_opens_per_day: int | None = None,
+) -> Session:
+    """Return a live window, opening one if business hours allow it.
+
+    This is the request-driven replacement for the 03:00 UTC `open` timer. The
+    timer opened a pod whether or not anyone had asked for anything; this opens
+    one only when a caller has work in hand, and refuses outright outside
+    business hours. `open_session` itself is unchanged — the deploy logic was
+    already the right shape, only the moment it runs has moved.
+
+    The lease is the end of business hours, so `--terminate-after` lands at
+    13:10 without anybody inventing a second deadline for it.
+
+    Three gates, cheapest first, all of them before anything is created:
+
+    1. **Business hours.** Raises `OutsideBusinessHours`, its own type, because
+       the caller's answer to it is specific: hold the request for tomorrow.
+    2. **Opens per day.** The failure the monthly guard cannot see — a worker
+       that crash-loops opens a fresh pod on every restart, and each one is
+       individually inside budget.
+    3. **Monthly budget.** Unchanged semantics, moved here from the CLI's
+       `session open`: same guard, same pessimistic worst-rung arithmetic, now
+       on the path that actually creates pods.
+    """
+    if not hours.is_open(now):
+        raise hours.OutsideBusinessHours(
+            f"business hours are {hours.OPEN_LOCAL:%H:%M}-{hours.CLOSE_LOCAL:%H:%M} "
+            f"{hours.TZ}; next open {hours.next_open(now).astimezone(hours.TZ):%Y-%m-%d %H:%M}. "
+            "Nothing was created and nothing is billing."
+        )
+
+    # An open window is reused, not doubled. `open_session` would refuse a
+    # second pod under the same name anyway, but that refusal is an error and
+    # this is the ordinary case: the second request of the day.
+    live = load_state()
+    if live is not None and not live.past_window():
+        return live
+
+    settings = get_settings()
+    limit = settings.max_pod_opens_per_day if max_opens_per_day is None else max_opens_per_day
+    opened = queue.opens_today(since=hours.day_start(now).timestamp())
+    if limit and opened >= limit:
+        raise CostCeilingExceeded(
+            f"{opened} pod(s) already opened today, cap is {limit} "
+            "(AI_STUDIO_MAX_POD_OPENS_PER_DAY). Nothing was created and nothing "
+            "is billing."
+        )
+
+    guard = MonthlyBudgetGuard(
+        SpendLedger(),
+        cap_usd=settings.max_month_usd,
+        vps_monthly_usd=settings.vps_monthly_usd,
+    )
+    guard.refuse_if_broke(candidates)
+    window_end = guard.throttle(
+        hours.window_end_for(now),
+        now or datetime.now(timezone.utc),
+        max(tier.usd_per_hr for tier in candidates),
+    )
+
+    session = open_session(window_end, name=name, candidates=candidates)
+    # Recorded before the caller does anything else with the session: a pod
+    # that exists but was never counted is one the daily cap cannot see.
+    queue.record_pod_open(session.pod_id)
+    return session
+
+
+def wait_ready(
+    session: Session,
+    *,
+    timeout_s: float = 900.0,
+    interval_s: float = 15.0,
+    request_timeout_s: float = 10.0,
+) -> float:
+    """Block until ComfyUI answers on the pod, and return how long that took.
+
+    `deploy/pod_setup.sh` waits for the same endpoint from inside the pod; this
+    is the outside view, and it is the one that matters to a caller about to
+    submit. The pod answers 502 through the proxy for several minutes while it
+    copies itself to /workspace, so a single request proves nothing.
+
+    Every request is given its own short timeout rather than one long one:
+    RunPod's proxy is severed by Cloudflare at ~100 seconds, so a request that
+    blocks for longer is not patience, it is a hang.
+
+    Raises `PodError` on timeout — the pod is up and billing but unusable, and
+    that is precisely the state that must not be mistaken for "nothing is
+    wrong".
+    """
+    url = f"{session.comfy_url}/system_stats"
+    deadline = time.monotonic() + timeout_s
+    started = time.monotonic()
+    last = "no attempt made"
+
+    while True:
+        try:
+            response = httpx.get(url, timeout=request_timeout_s)
+            if response.status_code == 200:
+                return time.monotonic() - started
+            last = f"HTTP {response.status_code}"
+        except httpx.HTTPError as exc:
+            last = f"{type(exc).__name__}: {exc}"
+
+        if time.monotonic() >= deadline:
+            raise PodError(
+                f"{session.pod_id} did not answer {url} within {timeout_s:.0f}s "
+                f"(last: {last}). The pod is running and billing -- close it."
+            )
+        time.sleep(interval_s)
+
+
 # ----------------------------------------------------------------------- close
 
 
@@ -346,12 +471,21 @@ def close_session(*, name: str = "ai-studio-window") -> list[str]:
     return terminated
 
 
-def close_if_idle(idle_minutes: int = 20, *, name: str = "ai-studio-window") -> str:
+def close_if_idle(idle_minutes: int = 10, *, name: str = "ai-studio-window") -> str:
     """Close early when the window has gone quiet.
 
-    A 3.8h window sized for peak demand is mostly idle at low volume, and idle
+    A window sized for peak demand is mostly idle at low volume, and idle
     minutes cost exactly as much as working ones. Requires the queue to report
     when it last finished work; see `last_activity_at` in the state file.
+
+    Ten minutes rather than twenty, and for a different reason than before.
+    The old number was about not wasting the tail of a window that was going to
+    be paid for anyway. Now that the pod is opened by a request rather than by
+    a timer, the window is only as long as the work needs — and the first real
+    run cannot afford two hours (see PLAN.md Phase 7). Ten is a guess pending
+    the one measurement that settles it: the cold-open time. A cold open that
+    turns out to be expensive argues for a *longer* grace, not a shorter one,
+    because every reopen pays it again.
     """
     session = load_state()
     if session is None:

@@ -15,13 +15,15 @@ Reference: https://developers.line.biz/en/docs/messaging-api/receiving-messages/
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from ai_studio.bots.line.verify import verify
 from ai_studio.core.enums import MediaKind
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
+from ai_studio.runtime import hours
 
 DEFAULT_TRIGGER = "生成"
 """Messages must start with this. Everything else is ignored *silently* — no
@@ -49,7 +51,8 @@ class Outcome:
     """What the handler did with one event, for logging and for tests."""
 
     action: str  # accepted | duplicate | status | ignored | standby | capture
-    #             | wrong_group | wrong_user | memberJoined | memberLeft
+    #             | wrong_group | wrong_user | rate_limited
+    #             | memberJoined | memberLeft
     job: Job | None = None
     detail: str = ""
 
@@ -66,6 +69,8 @@ class WebhookHandler:
         allowed_user_ids: Iterable[str] = (),
         trigger: str = DEFAULT_TRIGGER,
         image_trigger: str = DEFAULT_IMAGE_TRIGGER,
+        max_jobs_per_user_per_day: int = 0,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.queue = queue
         self.replier = replier
@@ -75,6 +80,11 @@ class WebhookHandler:
         self.base_url = base_url.rstrip("/")
         self.trigger = trigger
         self.image_trigger = image_trigger
+        self.max_jobs_per_user_per_day = max_jobs_per_user_per_day
+        # Injected so a test can stand at 03:00 without the machine having to.
+        # `bots` is L6 and `runtime` is L5, so reaching down for the business
+        # calendar is allowed; reaching back up never is.
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     # --------------------------------------------------------------- entry
 
@@ -156,6 +166,16 @@ class WebhookHandler:
             await self._safe_reply(reply_token, "這個 BOT 只回應已授權的成員。")
             return Outcome("wrong_user", detail=str(user_id))
 
+        # Before the insert, deliberately. Accepting and then refusing would
+        # still have spent an LLM conversion on a request that never runs.
+        if self._over_daily_cap(user_id):
+            await self._safe_reply(
+                reply_token,
+                f"你今天已經送出 {self.max_jobs_per_user_per_day} 個請求,"
+                "達到每日上限。明天 11:00 之後再試。",
+            )
+            return Outcome("rate_limited", detail=str(user_id))
+
         return await self._accept(
             event, group_id or "", user_id, prompt, reply_token, media_kind=media_kind
         )
@@ -204,12 +224,44 @@ class WebhookHandler:
             return Outcome("duplicate", job=job)
 
         position = self.queue.position(job.token) or 1
-        await self._safe_reply(
-            reply_token,
-            f"收到 ✓ 排隊第 {position} 位,正在解析你的描述\n"
-            f"進度與下載 → {self._link(job)}",
-        )
+        await self._safe_reply(reply_token, self._accepted_line(job, position))
         return Outcome("accepted", job=job)
+
+    def _accepted_line(self, job: Job, position: int) -> str:
+        """What a newly accepted request is told.
+
+        Out of hours the request is still accepted — it waits in the queue for
+        the next window. Refusing it instead would mean whatever someone
+        thought of at midnight is simply lost, which is a worse outcome than
+        waiting until eleven. What changes is only what they are told: the
+        place in the line is true either way, but on its own at 03:00 it reads
+        as "shortly" and is off by eight hours, so out of hours it is followed
+        by when "shortly" actually is.
+        """
+        head = f"收到 ✓ 排隊第 {position} 位"
+        link = f"進度與下載 → {self._link(job)}"
+        if hours.is_open(self.clock()):
+            return f"{head},正在解析你的描述\n{link}"
+        opens = hours.next_open(self.clock()).astimezone(hours.TZ)
+        return (
+            f"{head}\n"
+            f"營業時間 {hours.OPEN_LOCAL:%H:%M}-{hours.CLOSE_LOCAL:%H:%M},"
+            f"已排入下一個時段(約 {opens:%m/%d %H:%M}),完成後會在群組通知你\n"
+            f"{link}"
+        )
+
+    def _over_daily_cap(self, user_id: str | None) -> bool:
+        """Has this user used up today's allowance?
+
+        Skipped entirely when the cap is 0 (off) or the id is unknown — LINE
+        omits `source.userId` for a user who has not accepted the Official
+        Account terms, and there is no per-user budget to enforce against a
+        user we cannot name. The group and user allowlists are what stand
+        between that case and an open bar.
+        """
+        if not self.max_jobs_per_user_per_day or not user_id:
+            return False
+        return self.queue.accepted_today(user_id) >= self.max_jobs_per_user_per_day
 
     async def _capture(
         self, source: dict[str, Any], text: str, reply_token: str

@@ -39,9 +39,11 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ai_studio.core.enums import MediaKind
 
@@ -69,6 +71,23 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_state   ON jobs(state, created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at);
+
+CREATE TABLE IF NOT EXISTS pod_opens (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    pod_id    TEXT NOT NULL,
+    opened_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pod_opens_at ON pod_opens(opened_at);
+"""
+
+DAY_TZ = ZoneInfo("Asia/Taipei")
+"""The day boundary the per-day caps count against.
+
+Repeated here rather than imported from `runtime.hours`, which is where the
+business calendar actually lives, because `pipeline` sits *below* `runtime` in
+the layer contract and importing upwards would break it. The callers that own
+the calendar pass their own boundary in; this constant only backs the
+no-argument default.
 """
 
 
@@ -111,6 +130,12 @@ class Job:
     @property
     def waited_s(self) -> float:
         return max(0.0, (self.started_at or time.time()) - self.created_at)
+
+
+def _day_start_ts(now: datetime | None = None) -> float:
+    """Local midnight as a POSIX timestamp, to compare against `created_at`."""
+    local = (now or datetime.now(timezone.utc)).astimezone(DAY_TZ)
+    return local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
 
 def _row_to_job(row: sqlite3.Row) -> Job:
@@ -340,6 +365,49 @@ class JobQueue:
             (JobState.QUEUED.value, limit),
         ).fetchall()
         return [_row_to_job(r) for r in rows]
+
+    def accepted_today(self, user_id: str, *, since: float | None = None) -> int:
+        """How many requests this user has had accepted since local midnight.
+
+        Counts every state, failures included: the cap is on asking, not on
+        succeeding, or a user whose prompts keep failing validation would have
+        an unlimited allowance. `None` is never counted — LINE omits
+        `source.userId` for a user who has not accepted the Official Account
+        terms, and lumping all of those together under one budget would let one
+        anonymous request starve the next.
+        """
+        if not user_id:
+            return 0
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE user_id=? AND created_at >= ?",
+            (user_id, _day_start_ts() if since is None else since),
+        ).fetchone()
+        return int(row["n"])
+
+    def record_pod_open(self, pod_id: str, *, when: float | None = None) -> None:
+        """Note that a pod was created. Called by whoever created it.
+
+        Recorded at *open* rather than at close, because the cap it feeds
+        exists to stop a second pod being created — by which point a close has
+        not happened yet. The spend ledger records the other half at close.
+        """
+        self._conn.execute(
+            "INSERT INTO pod_opens (pod_id, opened_at) VALUES (?, ?)",
+            (pod_id, time.time() if when is None else when),
+        )
+
+    def opens_today(self, *, since: float | None = None) -> int:
+        """How many pods have been created since local midnight.
+
+        The backstop behind the monthly budget guard, for the failure the guard
+        cannot see: a worker that crashes and restarts in a loop would open a
+        fresh pod each time and every one of them is within budget on its own.
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM pod_opens WHERE opened_at >= ?",
+            (_day_start_ts() if since is None else since,),
+        ).fetchone()
+        return int(row["n"])
 
     def release_running(self, reason: str) -> int:
         """Return every `running` job to `parsed`. Call at window open.

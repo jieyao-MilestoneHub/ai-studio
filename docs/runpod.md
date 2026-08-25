@@ -112,6 +112,17 @@ volume's main selling point — skipping a redownload on every request — was
 never actually on the table here. It also still pins the pod to one
 datacenter, on top of the already-thin RTX 4090 pool.
 
+**Request-driven pod opening does not change this either.** Since PLAN.md
+Phase 1 the pod is created by the day's first LINE request rather than by a
+03:00 UTC timer, which is easy to misread as "a pod per request" — it is not.
+"Instant" means *instant inside business hours*: 11:00-13:00 Asia/Taipei, and
+`ensure_pod` reuses the day's pod for every later request, with
+`AI_STUDIO_MAX_POD_OPENS_PER_DAY` (default 2) as the hard backstop. So the
+download still happens **at most once a day**, the arithmetic above is
+unchanged, and the conclusion — no network volume — stands. What actually
+changed is that a day with no LINE messages now downloads nothing at all,
+which makes the redownload side cheaper still.
+
 A volume also **pins the pod to one datacenter**, which shrinks the GPU pool —
 and 4090 stock is already thin. RunPod's own golden path documents a live case
 where a datacenter pin left workers throttled and a job queued for over four
