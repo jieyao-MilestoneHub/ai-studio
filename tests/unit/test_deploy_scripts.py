@@ -271,3 +271,133 @@ def test_the_flags_are_never_passed_unconditionally() -> None:
         assert "--use-sage-attention" not in line
         assert "$EXTRA" in line, "the probe result is not actually used"
 
+
+
+# ------------------------------------------- the VPS unit set is self-consistent
+
+# `deploy/vps_setup.sh` names its units in one loop and enables them in
+# another, and then tells the operator how many to expect in a third place.
+# Those three drifted apart once already -- the script generated four timers
+# while the next-steps text said "three timers armed" -- so the numbers are now
+# derived and compared rather than trusted.
+
+VPS_SETUP = REPO / "deploy" / "vps_setup.sh"
+
+REMOVAL_LOOP = ["open", "drain", "reap", "close"]
+"""Every unit this script has ever installed, which is what it must remove."""
+
+
+def _phase_loops() -> list[list[str]]:
+    """Every `for phase in ...; do` list in the script, in source order.
+
+    Three of them: remove the old set, generate the current set, enable the
+    current set.
+    """
+    import re
+
+    body = VPS_SETUP.read_text(encoding="utf-8")
+    return [m.split() for m in re.findall(r"^for phase in (.+?); do$", body, re.M)]
+
+
+def test_the_script_removes_every_unit_it_has_ever_installed() -> None:
+    """The upgrade path, and the reason it is not optional.
+
+    This script is re-run on boxes it already provisioned. Writing only the two
+    current timers would leave `ai-studio-open.timer` enabled and firing --
+    creating a pod at 03:00 whether or not anyone asked -- and
+    `ai-studio-drain.timer` racing the worker for the same queue. An upgrade
+    that leaves the thing it replaced still running is worse than no upgrade.
+    """
+    loops = _phase_loops()
+    body = VPS_SETUP.read_text(encoding="utf-8")
+
+    assert loops, "no `for phase in` loop at all"
+    assert loops[0] == REMOVAL_LOOP, f"the removal loop is {loops[0]}"
+    assert "systemctl disable --now" in body
+    assert "rm -f" in body
+    assert body.index("rm -f") < body.index("say \"window timers\""), (
+        "units are removed after being written, which deletes the new ones"
+    )
+
+
+def test_the_generate_and_enable_loops_use_the_same_unit_list() -> None:
+    """A unit generated but never enabled is a file nobody notices is inert."""
+    loops = _phase_loops()
+
+    assert len(loops) == 3, f"expected remove/generate/enable, found {len(loops)}"
+    generate, enable = loops[1], loops[2]
+    assert generate == enable, f"generate={generate} enable={enable}"
+    assert generate == ["reap", "close"]
+
+
+def test_the_next_steps_text_matches_how_many_timers_are_created() -> None:
+    body = VPS_SETUP.read_text(encoding="utf-8")
+    count = len(_phase_loops()[1])
+    words = {1: "one", 2: "two", 3: "three", 4: "four"}
+
+    assert f"{words[count]} timers armed" in body, (
+        f"{count} timers are created; the next-steps text says otherwise"
+    )
+
+
+def test_nothing_on_a_timer_can_open_a_pod() -> None:
+    """The whole point of the request-driven worker. A scheduled `session open`
+    bills whether or not anybody asked for anything."""
+    generate = _phase_loops()[1]
+    body = VPS_SETUP.read_text(encoding="utf-8")
+
+    assert "open" not in generate, f"a timer still runs `session open`: {generate}"
+    assert "drain" not in generate, "draining is the worker's job now, not a timer's"
+    assert "session open" not in body
+
+
+def test_both_long_running_services_are_created_and_enabled() -> None:
+    body = VPS_SETUP.read_text(encoding="utf-8")
+
+    for unit in ("ai-studio.service", "ai-studio-worker.service"):
+        assert f"/etc/systemd/system/{unit}" in body, f"{unit} is never written"
+        assert f"systemctl enable --now {unit}" in body, f"{unit} is never enabled"
+
+
+def test_the_worker_is_enabled_after_the_removal_loop() -> None:
+    """The removal loop disables `ai-studio-<phase>` units by name. If the
+    worker were enabled before it ran, ordering alone would be enough to leave
+    the box with nothing that renders."""
+    body = VPS_SETUP.read_text(encoding="utf-8")
+
+    assert body.index("for phase in open drain reap close") < body.index(
+        "systemctl enable --now ai-studio-worker.service"
+    )
+
+
+def test_the_worker_restarts_itself() -> None:
+    """It is the only thing that turns a queued request into a pod. If it dies
+    at 11:02 and nothing restarts it, the window is silently lost."""
+    body = VPS_SETUP.read_text(encoding="utf-8")
+    unit = body[body.index("ai-studio-worker.service") : body.index('say "removing')]
+
+    assert "Restart=always" in unit
+
+
+def test_caddy_reverse_proxies_to_the_loopback_port_the_app_binds() -> None:
+    body = VPS_SETUP.read_text(encoding="utf-8")
+
+    assert "reverse_proxy 127.0.0.1:8000" in body
+    assert "--host 127.0.0.1 --port 8000" in body, "the app binds a different port"
+
+
+def test_the_app_port_is_never_opened_to_the_internet() -> None:
+    """Only Caddy on loopback should reach 8000; it is what terminates TLS, and
+    LINE will not talk to a plain-HTTP webhook. Previously guaranteed by a
+    comment alone."""
+    body = VPS_SETUP.read_text(encoding="utf-8")
+
+    assert "allow 8000" not in body
+    for port in ("22/tcp", "80/tcp", "443/tcp"):
+        assert f"ufw allow {port}" in body, f"{port} is no longer opened"
+
+
+def test_a_missed_close_does_not_fire_late() -> None:
+    """`Persistent=true` would run a queued job at boot. Closing is idempotent,
+    so this is noise rather than spend -- but it was set deliberately."""
+    assert "Persistent=false" in VPS_SETUP.read_text(encoding="utf-8")
