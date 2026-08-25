@@ -23,8 +23,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
-from videogen.core.enums import GenMode
+from videogen.core.enums import GenMode, MediaKind
 from videogen.core.errors import ProviderError, VideogenError
+from videogen.core.image_provider_spec import ImageRequest
 from videogen.core.provider_spec import ClipRequest
 from videogen.pipeline.queue import Job, JobQueue
 
@@ -54,6 +55,15 @@ of the window's money instead of grinding through the whole queue failing.
 class ClipProviderLike(Protocol):
     def capabilities(self) -> Any: ...
     async def submit(self, request: ClipRequest) -> Any: ...
+    async def poll(self, job: Any) -> Any: ...
+    async def fetch(self, job: Any, dest: Path) -> Any: ...
+    async def cancel(self, job: Any) -> None: ...
+    async def aclose(self) -> None: ...
+
+
+class ImageProviderLike(Protocol):
+    def capabilities(self) -> Any: ...
+    async def submit(self, request: ImageRequest) -> Any: ...
     async def poll(self, job: Any) -> Any: ...
     async def fetch(self, job: Any, dest: Path) -> Any: ...
     async def cancel(self, job: Any) -> None: ...
@@ -95,7 +105,7 @@ class DrainReport:
 
 async def drain_window(
     queue: JobQueue,
-    provider: ClipProviderLike,
+    providers: dict[MediaKind, ClipProviderLike | ImageProviderLike],
     *,
     window_end: datetime,
     files_dir: Path,
@@ -104,16 +114,20 @@ async def drain_window(
     max_clips: int | None = None,
     on_activity: Any = None,
 ) -> DrainReport:
-    """Generate clips until the window closes or the queue empties.
+    """Generate clips and images until the window closes or the queue empties.
 
-    `on_activity` is called after each clip so the idle reaper's timer resets —
-    otherwise a long-running window looks idle and gets closed underneath us.
+    One shared pod, one FIFO queue, dispatched per job by `media_kind` —
+    `providers` must have an entry for every kind the queue might contain.
+
+    `on_activity` is called after each render so the idle reaper's timer
+    resets — otherwise a long-running window looks idle and gets closed
+    underneath us.
     """
     report = DrainReport(gpu_tier=gpu_tier)
     files_dir = Path(files_dir)
     files_dir.mkdir(parents=True, exist_ok=True)
 
-    caps = provider.capabilities()
+    caps_by_kind = {kind: provider.capabilities() for kind, provider in providers.items()}
 
     # Anything left `running` belongs to a window that ended badly. Reclaim it
     # before starting, or it sits there forever.
@@ -132,9 +146,17 @@ async def drain_window(
         if job is None:
             break
 
+        provider: Any = providers[job.media_kind]
+        caps = caps_by_kind[job.media_kind]
+
         started = time.monotonic()
         try:
-            asset = await _render(job, provider, caps, files_dir, window_end, poll_interval_s)
+            if job.media_kind is MediaKind.IMAGE:
+                asset = await _render_image(
+                    job, provider, caps, files_dir, window_end, poll_interval_s
+                )
+            else:
+                asset = await _render(job, provider, caps, files_dir, window_end, poll_interval_s)
         except ProviderError as exc:
             # The backend's problem, so keep the request — but only while it has
             # attempts left, or requeue becomes an infinite loop.
@@ -209,4 +231,43 @@ async def _render(
 
     dest = files_dir / f"{job.token}.mp4"
     await provider.fetch(clip_job, dest)
+    return dest
+
+
+async def _render_image(
+    job: Job,
+    provider: ImageProviderLike,
+    caps: Any,
+    files_dir: Path,
+    window_end: datetime,
+    poll_interval_s: float,
+) -> Path:
+    """Submit, poll, fetch. One image. Mirrors `_render` with no frame count."""
+    plan = job.prompt or {}
+    rendered = plan.get("_rendered")
+    if not rendered:
+        raise VideogenError("job has no rendered prompt; conversion did not run")
+
+    request = ImageRequest(
+        shot_id=f"job{job.id}",
+        mode=GenMode.T2I,
+        prompt=str(rendered),
+        width=caps.native_width,
+        height=caps.native_height,
+        seed=job.id,
+    )
+
+    image_job = await provider.submit(request)
+    while not image_job.is_terminal:
+        if datetime.now(timezone.utc) >= window_end:
+            await provider.cancel(image_job)
+            raise ProviderError("window closed while the image was rendering")
+        await asyncio.sleep(poll_interval_s)
+        image_job = await provider.poll(image_job)
+
+    if not image_job.state.is_success:
+        raise ProviderError(f"generation failed: {image_job.error or image_job.state.value}")
+
+    dest = files_dir / f"{job.token}.{caps.output_format}"
+    await provider.fetch(image_job, dest)
     return dest

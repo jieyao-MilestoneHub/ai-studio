@@ -43,14 +43,24 @@ from videogen.core.errors import GraphValidationError, UnknownKeyError
 META_KEY = "_videogen"
 
 REQUIRED_BINDINGS = frozenset({"prompt", "width", "height", "length"})
-"""Without these a workflow cannot be driven from a spec at all."""
+"""Without these a video workflow cannot be driven from a spec at all."""
+
+IMAGE_REQUIRED_BINDINGS = frozenset({"prompt", "width", "height"})
+"""A still image has no frame-count binding — there is no `length` to fill."""
 
 
 class Workflow:
     """A validated, parameterisable ComfyUI workflow."""
 
-    def __init__(self, graph: dict[str, Any], *, source: str = "<memory>") -> None:
+    def __init__(
+        self,
+        graph: dict[str, Any],
+        *,
+        source: str = "<memory>",
+        required_bindings: frozenset[str] = REQUIRED_BINDINGS,
+    ) -> None:
         self.source = source
+        self._required_bindings = required_bindings
         meta = graph.get(META_KEY, {})
         if not isinstance(meta, dict):
             raise GraphValidationError(f"{source}: {META_KEY} must be an object")
@@ -76,7 +86,9 @@ class Workflow:
     # ------------------------------------------------------------------ load
 
     @classmethod
-    def load(cls, path: Path | str) -> Workflow:
+    def load(
+        cls, path: Path | str, *, required_bindings: frozenset[str] = REQUIRED_BINDINGS
+    ) -> Workflow:
         path = Path(path)
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
@@ -86,7 +98,7 @@ class Workflow:
             raise GraphValidationError(f"{path}: invalid JSON — {exc}") from None
         if not isinstance(raw, dict):
             raise GraphValidationError(f"{path}: expected a JSON object at the top level")
-        return cls(raw, source=str(path))
+        return cls(raw, source=str(path), required_bindings=required_bindings)
 
     # ---------------------------------------------------------------- checks
 
@@ -99,7 +111,7 @@ class Workflow:
             if node_id not in self.graph
             or key not in self.graph[node_id].get("inputs", {})
         ]
-        missing = REQUIRED_BINDINGS - self.bindings.keys()
+        missing = self._required_bindings - self.bindings.keys()
         if missing:
             problems.append(f"missing required bindings: {sorted(missing)}")
         if problems:

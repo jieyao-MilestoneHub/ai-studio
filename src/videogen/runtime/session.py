@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from videogen.core.errors import PodError
+from videogen.runtime.budget import SpendLedger
 
 TEMPLATE_COMFYUI_CUDA13 = "2lv7ev3wfp"
 """Official Runpod "ComfyUI - CUDA 13" template. CUDA 12.8 makes H3's quantised
@@ -296,6 +297,16 @@ def close_session(*, name: str = "videogen-window") -> list[str]:
     Terminates rather than stops: a stopped pod keeps its disk and keeps
     charging for it. Falls back to matching by name so a lost state file cannot
     strand a billing machine.
+
+    Records the session's cost into the monthly `SpendLedger` here, not in the
+    CLI — this is the one place every close path (the scheduled `session
+    close`, and `close_if_idle`'s early closes, which are what actually end
+    the window on almost every real day given how much headroom the window
+    has over typical demand) funnels through. Recording it only where the CLI
+    happens to call this would silently starve the monthly budget guard of
+    real spend data on the common path, exactly the "wired but not actually
+    wired" failure this project has already paid for once (see
+    `tests/unit/test_drain_wiring.py`).
     """
     terminated: list[str] = []
 
@@ -310,6 +321,13 @@ def close_session(*, name: str = "videogen-window") -> list[str]:
         except PodError as exc:
             # Keep going: one stuck pod must not stop us terminating the rest.
             terminated.append(f"{pod_id} (FAILED: {exc})")
+
+    if session is not None:
+        SpendLedger().record_session(
+            session.spent_usd(),
+            tier_label=session.tier_label,
+            minutes=session.elapsed_hours() * 60,
+        )
 
     clear_state()
     return terminated

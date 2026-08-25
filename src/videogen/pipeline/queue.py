@@ -41,6 +41,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from videogen.core.enums import MediaKind
+
 DEFAULT_DB = Path("runs/queue.sqlite3")
 
 _SCHEMA = """
@@ -52,6 +54,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     user_id     TEXT,
     text        TEXT    NOT NULL,
     state       TEXT    NOT NULL DEFAULT 'queued',
+    media_kind  TEXT    NOT NULL DEFAULT 'video',
     prompt_json TEXT,
     output_path TEXT,
     error       TEXT,
@@ -88,6 +91,7 @@ class Job:
     user_id: str | None
     text: str
     state: JobState
+    media_kind: MediaKind
     prompt_json: str | None
     output_path: str | None
     error: str | None
@@ -116,6 +120,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         user_id=row["user_id"],
         text=row["text"],
         state=JobState(row["state"]),
+        media_kind=MediaKind(row["media_kind"]),
         prompt_json=row["prompt_json"],
         output_path=row["output_path"],
         error=row["error"],
@@ -137,7 +142,20 @@ class JobQueue:
         self._local = threading.local()
         self._connections: list[sqlite3.Connection] = []
         self._lock = threading.Lock()
-        self._connect().executescript(_SCHEMA)
+        conn = self._connect()
+        conn.executescript(_SCHEMA)
+        self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Add columns to a database created before this feature shipped.
+
+        `CREATE TABLE IF NOT EXISTS` never alters an existing table, and SQLite
+        has no `ADD COLUMN IF NOT EXISTS`, so the existence check is required —
+        an unconditional `ALTER TABLE` on a column that already exists raises.
+        """
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+        if "media_kind" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN media_kind TEXT NOT NULL DEFAULT 'video'")
 
     def _connect(self) -> sqlite3.Connection:
         """One connection per thread, all pointing at the same file.
@@ -186,7 +204,13 @@ class JobQueue:
     # ------------------------------------------------------------------ write
 
     def enqueue(
-        self, event_id: str, group_id: str, text: str, user_id: str | None = None
+        self,
+        event_id: str,
+        group_id: str,
+        text: str,
+        user_id: str | None = None,
+        *,
+        media_kind: MediaKind = MediaKind.VIDEO,
     ) -> tuple[Job, bool]:
         """Insert a request. Returns `(job, created)`.
 
@@ -199,9 +223,13 @@ class JobQueue:
         now = time.time()
         try:
             cur = self._conn.execute(
-                "INSERT INTO jobs (token, event_id, group_id, user_id, text, state, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *",
-                (token, event_id, group_id, user_id, text, JobState.QUEUED.value, now),
+                "INSERT INTO jobs"
+                " (token, event_id, group_id, user_id, text, state, media_kind, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+                (
+                    token, event_id, group_id, user_id, text,
+                    JobState.QUEUED.value, media_kind.value, now,
+                ),
             )
             row = cur.fetchone()
             return _row_to_job(row), True

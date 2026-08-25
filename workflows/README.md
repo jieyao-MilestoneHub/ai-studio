@@ -35,6 +35,16 @@ The `_videogen` block is stripped before submission, so ComfyUI never sees it.
 and are only injected when present. `length` is in **frames**, not seconds —
 the provider multiplies duration by fps.
 
+**`flux_dev.json` is the exception**: a still image has no frame count, so it
+loads with `required_bindings=IMAGE_REQUIRED_BINDINGS` (`prompt`/`width`/
+`height` only, no `length`) via `providers.flux.FluxComfyUIProvider`. It is a
+standard non-turbo Flux.1-dev graph (`UNETLoader` → `DualCLIPLoader` →
+`CLIPTextEncode` → `FluxGuidance` → `BasicGuider`/`BasicScheduler`/
+`SamplerCustomAdvanced` → `VAEDecode` → `SaveImage`) — the turbo trap below
+does not apply to it at all, since `uses_turbo_lora()` only fires on
+`MiniMaxH3TurboLoRA` or a stock LoRA loader carrying a turbo/lightning hint,
+neither of which this graph has.
+
 Bindings are explicit rather than inferred by node class because a graph with
 two text encoders makes inference ambiguous, and because a re-export that
 renumbers nodes then fails loudly at load time instead of silently generating

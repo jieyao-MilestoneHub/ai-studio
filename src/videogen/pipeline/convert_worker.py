@@ -7,8 +7,12 @@ network and no database.
 
 from __future__ import annotations
 
+from videogen.core.enums import MediaKind
 from videogen.pipeline.queue import JobQueue, JobState
+from videogen.prompts import flux as flux_prompts
 from videogen.prompts.convert import LlmClient, convert
+from videogen.prompts.flux import FluxPrompt
+from videogen.prompts.h3 import H3Prompt
 
 DEFAULT_DURATION_S = 124 / 24
 """124 frames at 24fps. The turbo node pack documents that frame counts snap to
@@ -33,7 +37,11 @@ async def convert_job(
     if job is None:
         return "skipped: not queued"
 
-    prompt, how = await convert(job.text, client, duration_s=duration_s)
+    prompt: FluxPrompt | H3Prompt
+    if job.media_kind is MediaKind.IMAGE:
+        prompt, how = await flux_prompts.convert(job.text, client)
+    else:
+        prompt, how = await convert(job.text, client, duration_s=duration_s)
     payload = prompt.model_dump(mode="json")
     payload["_rendered"] = prompt.render()
     payload["_built_by"] = how

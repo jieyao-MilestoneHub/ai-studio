@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import html
 import logging
+import mimetypes
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from videogen.bots.line.reply import LineReplyClient, NullReplyClient
 from videogen.bots.line.webhook import InvalidSignature, WebhookHandler
 from videogen.config.settings import get_settings
+from videogen.core.enums import MediaKind
 from videogen.pipeline.queue import Job, JobQueue, JobState
 
 _log = logging.getLogger("videogen.webhook")
@@ -142,7 +144,9 @@ def create_app(
         path = app.state.files_dir / name
         if not path.is_file():
             raise HTTPException(status_code=404, detail="not found")
-        return FileResponse(path, media_type="video/mp4", filename=name)
+        # Both mp4 clips and png images live in this one directory now.
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return FileResponse(path, media_type=media_type, filename=name)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
@@ -208,10 +212,16 @@ def _render(job: Job, position: int | None, base_url: str) -> str:
     if job.state is JobState.DONE and job.output_path:
         name = Path(job.output_path).name
         url = f"{base_url.rstrip('/')}/files/{name}"
-        action = (
-            f'<p class="cta"><a href="{html.escape(url)}" download>下載影片 (mp4)</a></p>'
-            f'<video controls preload="metadata" src="{html.escape(url)}"></video>'
-        )
+        if job.media_kind is MediaKind.IMAGE:
+            action = (
+                f'<p class="cta"><a href="{html.escape(url)}" download>下載圖片</a></p>'
+                f'<img src="{html.escape(url)}" alt="生成結果">'
+            )
+        else:
+            action = (
+                f'<p class="cta"><a href="{html.escape(url)}" download>下載影片 (mp4)</a></p>'
+                f'<video controls preload="metadata" src="{html.escape(url)}"></video>'
+            )
     elif note:
         action = f'<p class="note">{html.escape(note)}</p>'
 
@@ -239,7 +249,7 @@ th,td{{text-align:left;padding:.5rem .25rem;border-bottom:1px solid color-mix(in
 th{{width:8rem;font-weight:600;opacity:.7}}
 .cta a{{display:inline-block;padding:.7rem 1.2rem;border-radius:.5rem;
        background:#2563eb;color:#fff;text-decoration:none;font-weight:600}}
-video{{width:100%;border-radius:.5rem;margin-top:1rem;background:#000}}
+video,img{{width:100%;border-radius:.5rem;margin-top:1rem;background:#000}}
 .note{{opacity:.7}}
 ol{{padding-left:1.2rem}} li{{margin:.4rem 0}}
 </style></head>

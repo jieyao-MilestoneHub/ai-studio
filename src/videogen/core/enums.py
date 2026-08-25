@@ -55,6 +55,18 @@ class GenMode(str, Enum):
     REF2V = "ref2v"
     """Reference-driven generation for character consistency (H3 ref2va)."""
 
+    T2I = "t2i"
+    """Text-to-image (Flux). No frame-count or fps concept applies."""
+
+
+class MediaKind(str, Enum):
+    """What a generation request produces. Drives queue dispatch and provider
+    selection — a video job and an image job share one FIFO queue and one pod,
+    but never the same provider, prompt builder, or asset shape."""
+
+    VIDEO = "video"
+    IMAGE = "image"
+
 
 class JobState(str, Enum):
     """Clip-generation job lifecycle.

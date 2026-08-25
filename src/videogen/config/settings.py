@@ -69,6 +69,20 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------- guardrails
 
     max_cost_usd: float = Field(default=5.0, ge=0, alias="VIDEOGEN_MAX_COST_USD")
+    max_month_usd: float = Field(
+        default=50.0,
+        ge=0,
+        alias="VIDEOGEN_MAX_MONTH_USD",
+        description="Hard calendar-month ceiling across every window. Enforced by "
+        "runtime.budget.MonthlyBudgetGuard before a pod is opened, not after.",
+    )
+    vps_monthly_usd: float = Field(
+        default=5.0,
+        ge=0,
+        alias="VIDEOGEN_VPS_MONTHLY_USD",
+        description="The always-on host's own monthly cost, reserved out of "
+        "max_month_usd before computing what's left for GPU compute.",
+    )
 
     ffmpeg_bin: str = Field(default="ffmpeg", alias="VIDEOGEN_FFMPEG_BIN")
     ffprobe_bin: str = Field(default="ffprobe", alias="VIDEOGEN_FFPROBE_BIN")

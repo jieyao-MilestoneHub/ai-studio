@@ -11,9 +11,9 @@ from collections.abc import Callable
 from typing import Any
 
 from videogen.core.errors import UnknownProviderError
-from videogen.providers.base import ClipProvider
+from videogen.providers.base import ClipProvider, ImageProvider
 
-ProviderFactory = Callable[..., ClipProvider]
+ProviderFactory = Callable[..., ClipProvider | ImageProvider]
 
 _REGISTRY: dict[str, ProviderFactory] = {}
 
@@ -27,7 +27,7 @@ def available() -> list[str]:
     return sorted(_REGISTRY)
 
 
-def get_provider(name: str, **kwargs: Any) -> ClipProvider:
+def get_provider(name: str, **kwargs: Any) -> ClipProvider | ImageProvider:
     _ensure_builtins()
     try:
         factory = _REGISTRY[name]
@@ -58,3 +58,7 @@ def _ensure_builtins() -> None:
     from videogen.providers.comfyui import ComfyUIProvider
 
     register("comfyui", ComfyUIProvider)
+
+    from videogen.providers.flux import FluxComfyUIProvider
+
+    register("flux", FluxComfyUIProvider)

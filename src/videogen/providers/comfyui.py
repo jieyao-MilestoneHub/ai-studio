@@ -25,9 +25,9 @@ from typing import Any
 from videogen import media
 from videogen.comfy.client import ComfyClient
 from videogen.comfy.graph import Workflow
+from videogen.comfy.jobs import cancel_job, fetch_output, poll_job
 from videogen.config.settings import get_settings
 from videogen.core.enums import GenMode, JobState
-from videogen.core.errors import ProviderError, ProviderJobFailed
 from videogen.core.provider_spec import ClipAsset, ClipJob, ClipRequest, ProviderCapabilities
 from videogen.storage.base import sha256_file
 
@@ -142,53 +142,12 @@ class ComfyUIProvider:
     # ------------------------------------------------------------------ poll
 
     async def poll(self, job: ClipJob) -> ClipJob:
-        now = time.time()
-        entry = await self.client.history(job.job_id)
-
-        if entry is None:
-            position = await self.client.queue_position(job.job_id)
-            state = JobState.QUEUED if position is not None else JobState.RUNNING
-            return job.with_state(state, now=now, queue_position=position)
-
-        status, error = ComfyClient.status_of(entry)
-        if status == "success":
-            outputs = ComfyClient.outputs_of(entry)
-            if not outputs:
-                return job.with_state(
-                    JobState.FAILED,
-                    now=now,
-                    error="ComfyUI reported success but produced no output files",
-                )
-            return job.with_state(
-                JobState.COMPLETED,
-                now=now,
-                raw={**job.raw, "output": outputs[0].__dict__},
-            )
-        if status == "error":
-            return job.with_state(JobState.FAILED, now=now, error=error or "execution error")
-        return job.with_state(JobState.RUNNING, now=now)
+        return await poll_job(self.client, job)
 
     # ----------------------------------------------------------------- fetch
 
     async def fetch(self, job: ClipJob, dest: Path) -> ClipAsset:
-        from videogen.comfy.client import ComfyOutput
-
-        raw_output = job.raw.get("output")
-        if not isinstance(raw_output, dict):
-            raise ProviderError(f"job {job.job_id} has no recorded output; poll it first")
-        if job.state is not JobState.COMPLETED:
-            raise ProviderJobFailed(f"job {job.job_id} is {job.state.value}, not completed")
-
-        output = ComfyOutput(
-            filename=str(raw_output["filename"]),
-            subfolder=str(raw_output.get("subfolder", "")),
-            type=str(raw_output.get("type", "output")),
-        )
-        payload = await self.client.download(output)
-
-        dest = Path(dest)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(payload)
+        dest = await fetch_output(self.client, job, dest)
 
         info = media.probe(dest)
         elapsed = max(job.elapsed_s, 1.0)
@@ -212,10 +171,7 @@ class ComfyUIProvider:
 
     async def cancel(self, job: ClipJob) -> None:
         """ComfyUI can only interrupt the running prompt, not a queued one."""
-        try:
-            await self.client.interrupt()
-        except ProviderError:
-            return None
+        await cancel_job(self.client)
 
     async def aclose(self) -> None:
         await self.client.aclose()

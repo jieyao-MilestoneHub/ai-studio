@@ -14,8 +14,9 @@ from typing import Any
 
 import pytest
 
-from videogen.core.enums import GenMode
+from videogen.core.enums import GenMode, MediaKind
 from videogen.core.enums import JobState as ClipState
+from videogen.core.image_provider_spec import ImageAsset, ImageProviderCapabilities
 from videogen.core.provider_spec import ClipAsset, ClipJob, ProviderCapabilities
 from videogen.pipeline.drain import STOP_CLAIMING_BEFORE_S, drain_window
 from videogen.pipeline.queue import JobQueue
@@ -32,7 +33,23 @@ CAPS = ProviderCapabilities(
     has_native_audio=True,
 )
 
+IMAGE_CAPS = ImageProviderCapabilities(
+    provider="fake-flux",
+    model_id="fake-flux-dev",
+    native_width=1024,
+    native_height=1024,
+    modes=frozenset({GenMode.T2I}),
+    output_format="png",
+)
+
 PROMPT = {"_rendered": "integrated_multimodal_description: [Shot 1] a cat", "_built_by": "llm"}
+IMAGE_PROMPT = {"_rendered": "a cat", "_built_by": "template"}
+
+
+def _video(provider: Any) -> dict[MediaKind, Any]:
+    """Wrap a single video provider as the `providers` dict `drain_window` now
+    expects — most tests here only ever exercise one media kind."""
+    return {MediaKind.VIDEO: provider}
 
 
 class FakeProvider:
@@ -75,6 +92,39 @@ class FakeProvider:
         return None
 
 
+class FakeImageProvider:
+    """The image-side counterpart to `FakeProvider`. Completes instantly."""
+
+    def __init__(self) -> None:
+        self.submitted: list[str] = []
+
+    def capabilities(self) -> ImageProviderCapabilities:
+        return IMAGE_CAPS
+
+    async def submit(self, request: Any) -> ClipJob:
+        self.submitted.append(request.shot_id)
+        return ClipJob(
+            provider="fake-flux", job_id=f"j-{request.shot_id}", shot_id=request.shot_id,
+            state=ClipState.COMPLETED, submitted_at=0.0, updated_at=0.0,
+        )
+
+    async def poll(self, job: ClipJob) -> ClipJob:
+        return job
+
+    async def fetch(self, job: ClipJob, dest: Path) -> ImageAsset:
+        Path(dest).write_bytes(b"\x89PNG\r\n\x1a\n")
+        return ImageAsset(
+            shot_id=job.shot_id, key=Path(dest).name, sha256="0" * 64, size_bytes=8,
+            width=1024, height=1024, format="png", provider="fake-flux", job_id=job.job_id,
+        )
+
+    async def cancel(self, job: ClipJob) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
 @pytest.fixture
 def ready(tmp_path: Path):
     """A queue with three parsed, claimable jobs."""
@@ -97,7 +147,7 @@ def _end(minutes: float) -> datetime:
 async def test_a_full_window_drains_the_queue(ready) -> None:
     q, files = ready
     report = await drain_window(
-        q, FakeProvider(), window_end=_end(60), files_dir=files, gpu_tier="L40S/COMMUNITY"
+        q, _video(FakeProvider()), window_end=_end(60), files_dir=files, gpu_tier="L40S/COMMUNITY"
     )
 
     assert report.completed == 3
@@ -111,7 +161,7 @@ async def test_the_serving_tier_is_recorded_on_each_job(ready) -> None:
     """Falling down the capacity ladder changes quality, so it must be visible."""
     q, files = ready
     await drain_window(
-        q, FakeProvider(), window_end=_end(60), files_dir=files, gpu_tier="4090/COMMUNITY"
+        q, _video(FakeProvider()), window_end=_end(60), files_dir=files, gpu_tier="4090/COMMUNITY"
     )
     assert all(j.gpu_tier == "4090/COMMUNITY" for j in q.recent())
 
@@ -120,10 +170,39 @@ async def test_the_serving_tier_is_recorded_on_each_job(ready) -> None:
 async def test_max_clips_bounds_a_measurement_run(ready) -> None:
     q, files = ready
     report = await drain_window(
-        q, FakeProvider(), window_end=_end(60), files_dir=files, max_clips=2
+        q, _video(FakeProvider()), window_end=_end(60), files_dir=files, max_clips=2
     )
     assert report.completed == 2
     assert q.counts().get("parsed") == 1
+
+
+# ------------------------------------------------------------- mixed kinds
+
+
+@pytest.mark.asyncio
+async def test_video_and_image_jobs_share_the_queue_and_dispatch_correctly(tmp_path: Path) -> None:
+    """One shared pod, one FIFO queue — dispatch is entirely by media_kind."""
+    with JobQueue(tmp_path / "q.sqlite3") as q:
+        video_job, _ = q.enqueue("evt-v", "Cgroup", "貓", media_kind=MediaKind.VIDEO)
+        q.set_parsed(video_job.id, PROMPT)
+        image_job, _ = q.enqueue("evt-i", "Cgroup", "貓", media_kind=MediaKind.IMAGE)
+        q.set_parsed(image_job.id, IMAGE_PROMPT)
+
+        video_provider = FakeProvider()
+        image_provider = FakeImageProvider()
+        files = tmp_path / "files"
+        report = await drain_window(
+            q,
+            {MediaKind.VIDEO: video_provider, MediaKind.IMAGE: image_provider},
+            window_end=_end(60),
+            files_dir=files,
+        )
+
+        assert report.completed == 2
+        assert video_provider.submitted == [f"job{video_job.id}"]
+        assert image_provider.submitted == [f"job{image_job.id}"]
+        assert (files / f"{video_job.token}.mp4").is_file()
+        assert (files / f"{image_job.token}.png").is_file()
 
 
 # --------------------------------------------------------- the closing bell
@@ -136,7 +215,7 @@ async def test_no_new_work_is_claimed_inside_the_reserved_tail(ready) -> None:
     provider = FakeProvider()
 
     report = await drain_window(
-        q, provider, window_end=_end(STOP_CLAIMING_BEFORE_S / 60 - 5), files_dir=files
+        q, _video(provider), window_end=_end(STOP_CLAIMING_BEFORE_S / 60 - 5), files_dir=files
     )
 
     assert report.completed == 0
@@ -151,7 +230,7 @@ async def test_a_clip_still_running_at_the_bell_is_cancelled_and_requeued(ready)
 
     # Window ends immediately, but claiming is allowed for this first pass.
     report = await drain_window(
-        q, provider, window_end=_end(-1), files_dir=files, poll_interval_s=0.01
+        q, _video(provider), window_end=_end(-1), files_dir=files, poll_interval_s=0.01
     )
 
     assert report.completed == 0
@@ -169,7 +248,7 @@ async def test_a_provider_failure_requeues_rather_than_losing_the_request(ready)
 
     q, files = ready
     report = await drain_window(
-        q, FakeProvider(fail_with=ProviderError("pod preempted")),
+        q, _video(FakeProvider(fail_with=ProviderError("pod preempted"))),
         window_end=_end(60), files_dir=files,
     )
 
@@ -193,7 +272,7 @@ async def test_a_request_level_failure_is_terminal(tmp_path: Path) -> None:
         q.set_parsed(job.id, {"no_rendered_key": True})
 
         report = await drain_window(
-            q, FakeProvider(), window_end=_end(60), files_dir=tmp_path / "files"
+            q, _video(FakeProvider()), window_end=_end(60), files_dir=tmp_path / "files"
         )
 
         assert report.failed == 1
@@ -209,7 +288,7 @@ async def test_jobs_orphaned_by_a_dead_pod_are_reclaimed_at_window_open(tmp_path
         q.claim_next()  # left running by a window that died
 
         report = await drain_window(
-            q, FakeProvider(), window_end=_end(60), files_dir=tmp_path / "files"
+            q, _video(FakeProvider()), window_end=_end(60), files_dir=tmp_path / "files"
         )
 
         assert report.requeued >= 1
@@ -223,7 +302,7 @@ async def test_jobs_orphaned_by_a_dead_pod_are_reclaimed_at_window_open(tmp_path
 async def test_the_report_separates_the_first_clip_from_later_ones(ready) -> None:
     """Whether clip two is faster is what decides if a window amortises setup."""
     q, files = ready
-    report = await drain_window(q, FakeProvider(), window_end=_end(60), files_dir=files)
+    report = await drain_window(q, _video(FakeProvider()), window_end=_end(60), files_dir=files)
 
     assert report.first_clip_s is not None
     assert len(report.later_clips_s) == 2
@@ -237,7 +316,7 @@ async def test_activity_is_reported_so_the_idle_reaper_does_not_close_a_busy_win
     q, files = ready
     beats = []
     await drain_window(
-        q, FakeProvider(), window_end=_end(60), files_dir=files,
+        q, _video(FakeProvider()), window_end=_end(60), files_dir=files,
         on_activity=lambda: beats.append(1),
     )
     assert len(beats) == 3
@@ -247,7 +326,7 @@ async def test_activity_is_reported_so_the_idle_reaper_does_not_close_a_busy_win
 async def test_an_empty_queue_returns_immediately(tmp_path: Path) -> None:
     with JobQueue(tmp_path / "q.sqlite3") as q:
         report = await drain_window(
-            q, FakeProvider(), window_end=_end(60), files_dir=tmp_path / "files"
+            q, _video(FakeProvider()), window_end=_end(60), files_dir=tmp_path / "files"
         )
         assert report.completed == 0 and report.failed == 0
 
@@ -275,7 +354,7 @@ async def test_requeue_is_capped_so_a_broken_pod_cannot_loop_forever(tmp_path: P
             q.fail(job.id, "provider: boom", requeue=True)
 
         report = await drain_window(
-            q, FakeProvider(fail_with=ProviderError("still broken")),
+            q, _video(FakeProvider(fail_with=ProviderError("still broken"))),
             window_end=_end(60), files_dir=tmp_path / "files",
         )
 
@@ -297,7 +376,7 @@ async def test_the_breaker_stops_the_window_after_three_failures_in_a_row(
             q.set_parsed(job.id, {"no_rendered_key": True})  # terminal every time
 
         report = await drain_window(
-            q, FakeProvider(), window_end=_end(60), files_dir=tmp_path / "files"
+            q, _video(FakeProvider()), window_end=_end(60), files_dir=tmp_path / "files"
         )
 
         assert report.failed == MAX_CONSECUTIVE_FAILURES

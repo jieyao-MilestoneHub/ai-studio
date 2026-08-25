@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from videogen.comfy.graph import Workflow
+from videogen.comfy.graph import IMAGE_REQUIRED_BINDINGS, REQUIRED_BINDINGS, Workflow
 from videogen.comfy.validate import uses_turbo_lora, validate_graph
 from videogen.core.errors import GraphValidationError, UnknownKeyError
 
@@ -72,6 +72,55 @@ def test_expecting_turbo_but_finding_none_is_an_error() -> None:
 
 def test_a_plain_base_graph_is_fine_when_turbo_is_not_expected() -> None:
     validate_graph(_base_graph())
+
+
+def test_a_clean_non_h3_graph_with_stock_nodes_passes_untouched() -> None:
+    """A Flux graph has no MiniMaxH3* nodes and no turbo/lightning hint strings,
+    so the turbo trap must not fire on it at all — including its stock
+    KSamplerSelect, which is only a problem when it drives a detected turbo LoRA."""
+    flux_like = {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "flux1-dev-fp8.safetensors"}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": ""}},
+        "3": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
+        "4": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}},
+    }
+    assert uses_turbo_lora(flux_like) is False
+    validate_graph(flux_like)  # must not raise
+
+
+# --------------------------------------------------------- image bindings
+
+
+def _image_workflow_dict() -> dict[str, Any]:
+    return {
+        "_videogen": {
+            "bindings": {
+                "prompt": ["2", "text"],
+                "width": ["3", "width"],
+                "height": ["3", "height"],
+            },
+        },
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "flux1-dev-fp8.safetensors"}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": ""}},
+        "3": {"class_type": "EmptySD3LatentImage", "inputs": {"width": 1024, "height": 1024}},
+        "4": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}},
+    }
+
+
+def test_an_image_graph_with_no_length_binding_loads_with_image_required_bindings() -> None:
+    wf = Workflow(_image_workflow_dict(), required_bindings=IMAGE_REQUIRED_BINDINGS)
+    assert "length" not in wf.bindings
+
+
+def test_the_default_required_bindings_still_reject_a_graph_missing_length() -> None:
+    """Regression: adding IMAGE_REQUIRED_BINDINGS must not weaken the H3 path."""
+    with pytest.raises(GraphValidationError, match="missing required bindings"):
+        Workflow(_image_workflow_dict())
+
+
+def test_image_required_bindings_have_no_length_requirement() -> None:
+    assert "length" in REQUIRED_BINDINGS
+    assert "length" not in IMAGE_REQUIRED_BINDINGS
 
 
 # -------------------------------------------------------------- structure

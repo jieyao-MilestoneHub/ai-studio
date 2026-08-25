@@ -3,6 +3,36 @@
 Someone says `生成 一隻橘貓走在雨中` in a group; a link to the finished clip
 appears on a status page they can open any time.
 
+## Two triggers, one queue, one pod
+
+| trigger | also matches | produces | model |
+|---|---|---|---|
+| `生成` | `/生成`, `/gen` | a video clip | MiniMax H3 |
+| `畫圖` | `/畫圖`, `/img` | a still image | Flux.1-dev |
+
+Both enqueue into the same SQLite `jobs` table (tagged `media_kind`), both wait
+for the same 11:00–13:00 window, and both render on the same pod — `session
+drain` picks the H3 or Flux ComfyUI provider per job by `media_kind`, not by a
+second queue or a second pod. See [schedule.md](schedule.md) for how that
+window now decides *whether* to open (a demand gate: no queued work of either
+kind, no spend that day) and [runpod.md](runpod.md) for what downloading two
+model sets instead of one costs at window open.
+
+**Delivery is identical for both**: a link on the status page, never an inline
+image or video message. This isn't a missed opportunity for a faster image
+path — a Flux image is fast to *generate* (`[speculative]`, ~15–40s) but still
+only happens during the scheduled window, which can be hours after the
+original message. By then the reply token that triggered it (single-use, ~1
+minute) is long dead, so there is no way to attach the result to that original
+reply regardless of how quickly it's ready. The status-page link is the only
+delivery mechanism this architecture has, for either kind.
+
+⚠️ **Flux.1-dev ships under a non-commercial licence** from Black Forest Labs
+(Flux.1-schnell is Apache-2.0, unrestricted). If this bot's use is ever
+commercial rather than personal/internal, that needs a separate commercial
+licence from Black Forest Labs, or a switch to schnell. See
+[model-flux.md](model-flux.md).
+
 ## Why it is shaped this way
 
 Three LINE rules decide the whole architecture.
@@ -38,7 +68,7 @@ a month is ~50MB, and a directory on the host is the entire storage layer.
 |---|---|---|
 | Webhook, status pages, file downloads, queue | small VPS (or your machine + a tunnel) | always |
 | Prompt conversion LLM | RunPod serverless, scale-to-zero | on demand |
-| MiniMax H3 | RunPod GPU pod | 11:00–13:00 Asia/Taipei |
+| MiniMax H3 + Flux.1-dev | same RunPod GPU pod | 11:00–13:00 Asia/Taipei, only if the queue is non-empty |
 
 Two separate RunPod resources on purpose. A measured H3 run peaked at **43.3GB**
 📏 on a 48GB card, leaving no room for a useful instruct model beside it — and
@@ -305,12 +335,26 @@ obvious next lever if shot splitting matters.
 
 | | per month |
 |---|---|
-| GPU pod, 2h/day (depends on which ladder rung serves) | $21–60, ~$48 expected |
+| GPU pod, up to 2h/day (depends on which ladder rung serves) | $21–60, ~$48 expected |
 | VPS | $4–6 |
-| LLM serverless, ~50 conversions | ~$0.10 |
+| LLM serverless, ~50 video conversions | ~$0.10 |
+| Image prompt conversion (Flux, no LLM call — see below) | $0 |
 | **LINE messages** | **$0** — replies only |
 | **Object storage** | **$0** — ~50MB on the host |
 
 Which rung served a run is recorded in `job.gpu_tier` and shown on the status
 page, because rungs 3 and 4 have 24GB and must run the softer `low_vram` LoRA
 mode. Falling down the ladder is a quality change, not only a price change.
+
+**"$21–60" is what the ladder alone can cost, and its own worst case
+($60.24 at rung 1) already exceeds a $50/month target before the VPS is even
+added.** That range was a description, not an enforced number, until
+`runtime.budget.MonthlyBudgetGuard` — see [schedule.md](schedule.md) for the
+demand gate and budget guard that make `VIDEOGEN_MAX_MONTH_USD` (default $50)
+an actual ceiling: skip a window with nothing queued, refuse to open one the
+remaining month's budget can't cover, and shrink one it can only partly cover.
+
+Flux's own prompt path is a simple strip/truncate/validate pass with no LLM
+call (`prompts/flux.py`), unlike H3's conversion, which is why it adds $0 to
+the LLM serverless line above — see [model-flux.md](model-flux.md) for why
+Flux doesn't need H3's structured schema.

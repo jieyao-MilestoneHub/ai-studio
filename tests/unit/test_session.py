@@ -171,6 +171,65 @@ def test_close_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert sess.close_session(name="w") == []
 
 
+def test_close_records_the_session_cost_into_the_monthly_ledger(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The ledger has to be fed by `close_session()` itself, not by whichever
+    CLI command happened to call it -- `close_if_idle` is the path that
+    actually ends the window on almost every real day (see the next test)."""
+    import json
+
+    from videogen.runtime.budget import SpendLedger
+
+    ledger_path = tmp_path / "ledger.json"
+    monkeypatch.setattr(sess, "SpendLedger", lambda: SpendLedger(ledger_path))
+
+    _, fake = _calls_recorder([{"items": []}, {"id": "p", "costPerHr": 0.5}])
+    monkeypatch.setattr(sess, "_runpodctl", fake)
+    sess.open_session(_end(120), name="w")
+
+    raw = sess._read_state_raw()
+    raw["opened_at"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    sess.STATE_FILE.write_text(json.dumps(raw), encoding="utf-8")
+
+    _, fake2 = _calls_recorder([{"items": []}, {"deleted": True}])
+    monkeypatch.setattr(sess, "_runpodctl", fake2)
+    sess.close_session(name="w")
+
+    assert SpendLedger(ledger_path).spent_this_month_usd() == pytest.approx(0.5, abs=0.05)
+
+
+def test_reap_closing_a_quiet_window_also_records_to_the_ledger(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A window sized for peak demand is quiet most days, so `close_if_idle`
+    -- not the scheduled `session close` -- is what actually ends most
+    windows. If only the explicit close recorded spend, the monthly budget
+    guard would see close to $0 spent nearly every month regardless of the
+    real bill."""
+    import json
+
+    from videogen.runtime.budget import SpendLedger
+
+    ledger_path = tmp_path / "ledger.json"
+    monkeypatch.setattr(sess, "SpendLedger", lambda: SpendLedger(ledger_path))
+
+    _, fake = _calls_recorder([{"items": []}, {"id": "p", "costPerHr": 0.354}])
+    monkeypatch.setattr(sess, "_runpodctl", fake)
+    sess.open_session(_end(120), name="w")
+
+    raw = sess._read_state_raw()
+    raw["opened_at"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    raw["last_activity_at"] = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
+    sess.STATE_FILE.write_text(json.dumps(raw), encoding="utf-8")
+
+    _, fake2 = _calls_recorder([{"items": []}, {"deleted": True}])
+    monkeypatch.setattr(sess, "_runpodctl", fake2)
+    assert "idle 45min" in sess.close_if_idle(20, name="w")
+
+    assert SpendLedger(ledger_path).spent_this_month_usd() == pytest.approx(0.354, abs=0.05)
+
+
 def test_close_keeps_going_when_one_delete_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     _, fake = _calls_recorder(
         [{"items": [{"id": "a", "name": "w"}, {"id": "b", "name": "w"}]},

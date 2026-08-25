@@ -4,15 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-AI video generation on RunPod: **MiniMax H3** clips generated through ComfyUI on
-a GPU pod, then assembled with an editing grammar derived from
+AI video generation on RunPod: **MiniMax H3** clips and **Flux.1-dev** images
+generated through ComfyUI on a shared GPU pod, then assembled with an editing
+grammar derived from
 [`Hao0321/video-autopilot-kit`](https://github.com/Hao0321/video-autopilot-kit)
-(MIT). Phase 2 adds FastAPI + a LINE bot so a group chat can trigger generation
-in natural language.
+(MIT). A FastAPI service + LINE bot lets a group chat trigger either
+(`生成`/`/gen` for video, `畫圖`/`/img` for image) in natural language — see
+`docs/line-bot.md`.
 
-Currently built: core model, format policy, H3 prompt builder, ComfyUI client,
-stub provider, pod lifecycle, CLI. **Not built:** the editing grammar
-implementation, gate rules, planner, render, FastAPI, LINE. The grammar is
+Currently built: core model, format policy, H3 prompt builder, Flux prompt
+builder, ComfyUI client, stub provider, pod lifecycle, CLI, FastAPI + LINE bot
+(dual trigger, queue, status pages, monthly budget guard). **Not built:** the
+editing grammar implementation, gate rules, planner, render. The grammar is
 specified in `docs/editing-grammar.md` and waiting.
 
 ## Commands
@@ -122,7 +125,17 @@ Every expensive mistake here is a quiet one.
   Romania and Sweden are EU).
 - Host RAM must be ≥60 GB and is not selectable via API; `pod up` verifies and
   terminates a short host.
-- `VIDEOGEN_MAX_COST_USD` is checked before submission.
+- `VIDEOGEN_MAX_COST_USD` is checked before submission — a **per-run** ceiling.
+- `VIDEOGEN_MAX_MONTH_USD` (default $50) is a **calendar-month** ceiling,
+  enforced by `runtime.budget.MonthlyBudgetGuard` before `session open` creates
+  a pod — necessary because the capacity ladder's own worst case already
+  exceeds $50/month on GPU alone. It refuses the window outright if the
+  month's remaining budget can't cover even a minimal session at the ladder's
+  priciest rung, or shrinks the window if it can only partly cover the full
+  one. `session open` also skips entirely — no budget check needed — when the
+  queue has no pending work; see `docs/schedule.md`.
+- **Flux.1-dev's licence is non-commercial**, separate from its geographic
+  restriction (there is none) — see `docs/model-flux.md`.
 
 ## Two traps that look like wins
 

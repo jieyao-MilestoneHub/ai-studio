@@ -6,6 +6,7 @@ from videogen.core.enums import (
     FormatStrategy,
     GenMode,
     JobState,
+    MediaKind,
     SceneMode,
     Severity,
     SourceKind,
@@ -27,6 +28,12 @@ from videogen.core.errors import (
     UnknownKeyError,
     UnknownProviderError,
     VideogenError,
+)
+from videogen.core.image_provider_spec import (
+    ImageAsset,
+    ImageJob,
+    ImageProviderCapabilities,
+    ImageRequest,
 )
 from videogen.core.models import (
     CaptionCue,
@@ -58,8 +65,13 @@ __all__ = [
     "GateReport",
     "GenMode",
     "GraphValidationError",
+    "ImageAsset",
+    "ImageJob",
+    "ImageProviderCapabilities",
+    "ImageRequest",
     "InsufficientHostRamError",
     "JobState",
+    "MediaKind",
     "PodError",
     "ProviderCapabilities",
     "ProviderError",

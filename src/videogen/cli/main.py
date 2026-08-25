@@ -6,6 +6,7 @@ import asyncio
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 import typer
 from rich.console import Console
@@ -18,6 +19,7 @@ from videogen.core.errors import VideogenError
 from videogen.core.ids import new_run_id, scene_id, shot_id
 from videogen.core.provider_spec import ClipRequest
 from videogen.editing.format_policy import plan_format, to_ffmpeg_filter
+from videogen.providers.base import ClipProvider
 from videogen.providers.registry import available, get_provider
 
 app = typer.Typer(
@@ -77,6 +79,7 @@ def doctor() -> None:
     table.add_row("comfy url", "-", settings.comfy_url)
     table.add_row("providers", "-", ", ".join(available()))
     table.add_row("cost ceiling", "-", f"${settings.max_cost_usd:.2f} per run")
+    table.add_row("month ceiling", "-", f"${settings.max_month_usd:.2f} (VPS ${settings.vps_monthly_usd:.2f})")
 
     console.print(table)
     if not ok:
@@ -147,7 +150,10 @@ async def _generate(
 ) -> None:
     settings = get_settings()
     kwargs = {"workflow": workflow} if workflow else {}
-    backend = get_provider(provider_name, **kwargs)
+    # This command only ever builds a ClipRequest (see below), so it needs a
+    # clip provider specifically — the registry serves both kinds now that
+    # `flux` is registered alongside `stub`/`comfyui`.
+    backend = cast(ClipProvider, get_provider(provider_name, **kwargs))
     caps = backend.capabilities()
 
     estimate = caps.estimated_cost_usd(seconds)
@@ -334,10 +340,40 @@ def session_open(
     tz: str = typer.Option(WINDOW_TZ, "--tz", help="Timezone for --until."),
     name: str = typer.Option("videogen-window"),
 ) -> None:
-    """Deploy the window's pod. Sets --terminate-after as a backstop."""
+    """Deploy the window's pod. Sets --terminate-after as a backstop.
+
+    Two checks run before anything is created: a demand gate (skip entirely
+    if the queue is empty — the timer fires unconditionally every day, this
+    command decides whether that's worth spending on) and a monthly budget
+    guard (refuse, or shrink the window, once this month's cap is close).
+    """
+    from datetime import timezone
+
+    from videogen.pipeline.queue import JobQueue
     from videogen.runtime import session as sess
+    from videogen.runtime.budget import MonthlyBudgetGuard, SpendLedger
+
+    with JobQueue() as queue:
+        if not queue.pending():
+            console.print("no queued work; skipping window open (no spend today)")
+            return
+
+    settings = get_settings()
+    guard = MonthlyBudgetGuard(
+        SpendLedger(),
+        cap_usd=settings.max_month_usd,
+        vps_monthly_usd=settings.vps_monthly_usd,
+    )
+    try:
+        guard.refuse_if_broke(sess.CANDIDATES)
+    except VideogenError as exc:
+        console.print(f"[red]window did not open:[/red] {exc}")
+        raise typer.Exit(1) from None
 
     end = _window_end(until, tz)
+    worst_case_hourly = max(tier.usd_per_hr for tier in sess.CANDIDATES)
+    end = guard.throttle(end, datetime.now(timezone.utc), worst_case_hourly)
+
     try:
         s = sess.open_session(end, name=name)
     except VideogenError as exc:
@@ -355,7 +391,12 @@ def session_open(
 
 @session_app.command("close")
 def session_close(name: str = typer.Option("videogen-window")) -> None:
-    """Terminate the window's pod. Idempotent; safe to schedule unconditionally."""
+    """Terminate the window's pod. Idempotent; safe to schedule unconditionally.
+
+    `sess.close_session()` itself records the session's cost into the monthly
+    ledger — not this command — so `session reap`'s early closes (the common
+    case: see its own docstring) are recorded too, not just this scheduled one.
+    """
     from videogen.runtime import session as sess
 
     terminated = sess.close_session(name=name)
@@ -440,8 +481,12 @@ def session_drain(
     workflow = Path("workflows") / (
         "h3_fl2va_turbo.json" if session.low_vram else "h3_fl2va_turbo_fp8.json"
     )
+    flux_workflow = Path("workflows") / "flux_dev.json"
     if not workflow.is_file():
         console.print(f"[red]missing workflow {workflow}[/red] (run from the repo root)")
+        raise typer.Exit(1)
+    if not flux_workflow.is_file():
+        console.print(f"[red]missing workflow {flux_workflow}[/red] (run from the repo root)")
         raise typer.Exit(1)
 
     console.print(
@@ -449,9 +494,17 @@ def session_drain(
         f"lora={'merged' if session.low_vram else 'bypass'}) until {session.window_end}"
     )
 
-    backend = get_provider(
+    from videogen.core.enums import MediaKind
+
+    h3_backend = get_provider(
         "comfyui",
         workflow=workflow,
+        base_url=session.comfy_url,
+        hourly_usd=session.cost_per_hr,
+    )
+    flux_backend = get_provider(
+        "flux",
+        workflow=flux_workflow,
         base_url=session.comfy_url,
         hourly_usd=session.cost_per_hr,
     )
@@ -460,7 +513,7 @@ def session_drain(
         report = asyncio.run(
             drain_window(
                 queue,
-                backend,
+                {MediaKind.VIDEO: h3_backend, MediaKind.IMAGE: flux_backend},
                 window_end=datetime.fromisoformat(session.window_end),
                 files_dir=settings.files_dir,
                 gpu_tier=session.tier_label,

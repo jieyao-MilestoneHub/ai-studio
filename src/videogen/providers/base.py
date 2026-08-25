@@ -24,6 +24,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from videogen.core.image_provider_spec import (
+    ImageAsset,
+    ImageJob,
+    ImageProviderCapabilities,
+    ImageRequest,
+)
 from videogen.core.provider_spec import ClipAsset, ClipJob, ClipRequest, ProviderCapabilities
 
 
@@ -60,3 +66,26 @@ class ClipProvider(Protocol):
     async def aclose(self) -> None:
         """Release any connections."""
         ...
+
+
+@runtime_checkable
+class ImageProvider(Protocol):
+    """A backend that turns an `ImageRequest` into a still image.
+
+    Same shape as `ClipProvider` — submit/poll/fetch/cancel over the same
+    ComfyUI HTTP surface — but for a still image, which has no frame count.
+    """
+
+    name: str
+
+    def capabilities(self) -> ImageProviderCapabilities: ...
+
+    async def submit(self, request: ImageRequest) -> ImageJob: ...
+
+    async def poll(self, job: ImageJob) -> ImageJob: ...
+
+    async def fetch(self, job: ImageJob, dest: Path) -> ImageAsset: ...
+
+    async def cancel(self, job: ImageJob) -> None: ...
+
+    async def aclose(self) -> None: ...

@@ -20,11 +20,16 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from videogen.bots.line.verify import verify
+from videogen.core.enums import MediaKind
 from videogen.pipeline.queue import Job, JobQueue, JobState
 
 DEFAULT_TRIGGER = "生成"
 """Messages must start with this. Everything else is ignored *silently* — no
 reply at all — so the bot is invisible during ordinary group conversation."""
+
+DEFAULT_IMAGE_TRIGGER = "畫圖"
+"""The image-generation counterpart to `DEFAULT_TRIGGER`. Same silent-ignore
+rule applies — an unmatched message gets no reply at all."""
 
 STATUS_WORDS = ("好了嗎", "好了没", "進度", "status", "查詢")
 """A free way to ask again. Replies are not billed, so a user can poll by
@@ -60,6 +65,7 @@ class WebhookHandler:
         base_url: str,
         allowed_user_ids: Iterable[str] = (),
         trigger: str = DEFAULT_TRIGGER,
+        image_trigger: str = DEFAULT_IMAGE_TRIGGER,
     ) -> None:
         self.queue = queue
         self.replier = replier
@@ -68,6 +74,7 @@ class WebhookHandler:
         self.allowed_user_ids = frozenset(allowed_user_ids)
         self.base_url = base_url.rstrip("/")
         self.trigger = trigger
+        self.image_trigger = image_trigger
 
     # --------------------------------------------------------------- entry
 
@@ -130,11 +137,13 @@ class WebhookHandler:
         if self._is_status_query(text):
             return await self._status(group_id or "", reply_token)
 
-        prompt = self._strip_trigger(text)
-        if prompt is None:
+        stripped = self._strip_trigger(text)
+        if stripped is None:
             return Outcome("ignored", detail="no trigger word")
+        prompt, media_kind = stripped
         if not prompt:
-            await self._safe_reply(reply_token, f"用法:{self.trigger} <想看的畫面>")
+            trigger = self.trigger if media_kind is MediaKind.VIDEO else self.image_trigger
+            await self._safe_reply(reply_token, f"用法:{trigger} <想看的畫面>")
             return Outcome("ignored", detail="empty prompt")
 
         user_id = source.get("userId")
@@ -147,7 +156,9 @@ class WebhookHandler:
             await self._safe_reply(reply_token, "這個 BOT 只回應已授權的成員。")
             return Outcome("wrong_user", detail=str(user_id))
 
-        return await self._accept(event, group_id or "", user_id, prompt, reply_token)
+        return await self._accept(
+            event, group_id or "", user_id, prompt, reply_token, media_kind=media_kind
+        )
 
     def _membership(self, event: dict[str, Any]) -> Outcome:
         """Report a membership change. Deliberately does not reply.
@@ -178,11 +189,15 @@ class WebhookHandler:
         user_id: str | None,
         prompt: str,
         reply_token: str,
+        *,
+        media_kind: MediaKind = MediaKind.VIDEO,
     ) -> Outcome:
         # webhookEventId is LINE's own idempotency key. Using it means a
         # redelivery cannot enqueue — and pay for — the same clip twice.
         event_id = str(event.get("webhookEventId") or f"{group_id}:{event.get('timestamp')}")
-        job, created = self.queue.enqueue(event_id, group_id, prompt, user_id=user_id)
+        job, created = self.queue.enqueue(
+            event_id, group_id, prompt, user_id=user_id, media_kind=media_kind
+        )
 
         if not created:
             await self._safe_reply(reply_token, self._status_line(job))
@@ -232,22 +247,34 @@ class WebhookHandler:
         ]
 
         if not pending and not recent_done:
-            await self._safe_reply(reply_token, f"目前沒有排隊中的工作。用「{self.trigger} …」開始。")
+            await self._safe_reply(
+                reply_token,
+                f"目前沒有排隊中的工作。用「{self.trigger} …」生成影片,"
+                f"或「{self.image_trigger} …」生成圖片。",
+            )
             return Outcome("status")
 
         lines = [f"排隊中 {len(pending)} 件"]
-        lines += [f"  · {j.text[:18]} — {self._state_zh(j)}" for j in pending[:5]]
+        lines += [
+            f"  · {'🖼' if j.media_kind is MediaKind.IMAGE else '🎬'} "
+            f"{j.text[:18]} — {self._state_zh(j)}"
+            for j in pending[:5]
+        ]
         lines += [f"  ✓ {j.text[:18]} → {self._link(j)}" for j in recent_done[:3]]
         await self._safe_reply(reply_token, "\n".join(lines))
         return Outcome("status")
 
     # -------------------------------------------------------------- helpers
 
-    def _strip_trigger(self, text: str) -> str | None:
-        """The prompt after the trigger word, or None if it is not a request."""
+    def _strip_trigger(self, text: str) -> tuple[str, MediaKind] | None:
+        """The prompt after the trigger word and which kind it asked for, or
+        None if it is not a request at all."""
         for prefix in (self.trigger, f"/{self.trigger}", "/gen"):
             if text.startswith(prefix):
-                return text[len(prefix) :].strip()
+                return text[len(prefix) :].strip(), MediaKind.VIDEO
+        for prefix in (self.image_trigger, f"/{self.image_trigger}", "/img"):
+            if text.startswith(prefix):
+                return text[len(prefix) :].strip(), MediaKind.IMAGE
         return None
 
     def _is_status_query(self, text: str) -> bool:

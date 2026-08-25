@@ -10,6 +10,7 @@ import pytest
 from videogen.bots.line.reply import NullReplyClient
 from videogen.bots.line.verify import sign, verify
 from videogen.bots.line.webhook import InvalidSignature, WebhookHandler
+from videogen.core.enums import MediaKind
 from videogen.pipeline.queue import JobQueue, JobState
 
 SECRET = "test-channel-secret"
@@ -174,6 +175,53 @@ async def test_slash_forms_also_trigger(wired) -> None:
         body = _body([_text_event(text, event_id=f"evt-slash-{i}")])
         (outcome,) = await handler.handle(body, sign(body, SECRET))
         assert outcome.action == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_the_image_trigger_enqueues_an_image_job(wired) -> None:
+    handler, _queue, replier = wired
+    body = _body([_text_event("畫圖 一隻橘貓")])
+
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+
+    assert outcome.action == "accepted"
+    assert outcome.job is not None
+    assert outcome.job.media_kind is MediaKind.IMAGE
+    assert outcome.job.text == "一隻橘貓"
+    assert "排隊第 1 位" in replier.sent[0][1][0]
+
+
+@pytest.mark.asyncio
+async def test_the_video_trigger_still_defaults_to_video(wired) -> None:
+    """Regression: adding the image trigger must not change the existing path."""
+    handler, _queue, _replier = wired
+    body = _body([_text_event("生成 一隻貓")])
+
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+    assert outcome.job is not None
+    assert outcome.job.media_kind is MediaKind.VIDEO
+
+
+@pytest.mark.asyncio
+async def test_image_slash_forms_also_trigger(wired) -> None:
+    handler, _, _ = wired
+    for i, text in enumerate(("/畫圖 一隻貓", "/img a cat")):
+        body = _body([_text_event(text, event_id=f"evt-img-slash-{i}")])
+        (outcome,) = await handler.handle(body, sign(body, SECRET))
+        assert outcome.action == "accepted"
+        assert outcome.job.media_kind is MediaKind.IMAGE
+
+
+@pytest.mark.asyncio
+async def test_a_bare_image_trigger_gets_usage_help_and_is_not_queued(wired) -> None:
+    handler, queue, replier = wired
+    body = _body([_text_event("畫圖")])
+
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+    assert outcome.action == "ignored"
+    assert queue.counts() == {}
+    assert "用法" in replier.sent[0][1][0]
+    assert "畫圖" in replier.sent[0][1][0]
 
 
 @pytest.mark.asyncio

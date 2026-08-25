@@ -62,6 +62,63 @@ def test_the_api_serves_the_directory_drain_writes_to(
         get_settings(refresh=True)
 
 
+def test_session_drain_constructs_both_the_video_and_image_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`drain.py` was rewritten to dispatch by media_kind, but a queue that only
+    ever gets a `comfyui` provider silently drops every image job forever — the
+    same class of "wired but not actually wired" bug this file exists to catch."""
+    import shutil
+    from datetime import datetime, timedelta, timezone
+
+    from videogen.runtime import session as sess
+
+    # Isolated cwd: session_drain's default JobQueue() and its relative
+    # workflows/ lookup both resolve off the cwd, and this must not touch the
+    # real repo's runs/queue.sqlite3.
+    (tmp_path / "workflows").mkdir()
+    for name in ("h3_fl2va_turbo.json", "h3_fl2va_turbo_fp8.json", "flux_dev.json"):
+        shutil.copy(REPO / "workflows" / name, tmp_path / "workflows" / name)
+    monkeypatch.chdir(tmp_path)
+
+    requested: list[str] = []
+
+    class _Stub:
+        def capabilities(self):
+            class Caps:
+                native_width = 8
+                native_height = 8
+                native_fps = 1
+
+            return Caps()
+
+    def _fake_get_provider(name: str, **kwargs):
+        requested.append(name)
+        return _Stub()
+
+    now = datetime.now(timezone.utc)
+    fake_session = sess.Session(
+        pod_id="pod-1",
+        gpu="NVIDIA GeForce RTX 4090",
+        datacenter="EUR-IS-2",
+        cloud="COMMUNITY",
+        cost_per_hr=0.354,
+        opened_at=(now - timedelta(minutes=5)).isoformat(),
+        window_end=(now + timedelta(hours=2)).isoformat(),
+        tier_label="4090/COMMUNITY",
+        vram_gb=24,
+        low_vram=True,
+    )
+    monkeypatch.setattr(sess, "load_state", lambda: fake_session)
+    monkeypatch.setattr("videogen.cli.main.get_provider", _fake_get_provider)
+
+    result = runner.invoke(app, ["session", "drain"])
+    assert result.exit_code == 0, result.output
+    assert set(requested) == {"comfyui", "flux"}, (
+        "session drain must build a provider for every media_kind the queue can hold"
+    )
+
+
 def test_the_vps_installs_a_drain_timer() -> None:
     """Provisioning must schedule the step that makes videos.
 

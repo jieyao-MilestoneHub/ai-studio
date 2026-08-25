@@ -139,6 +139,21 @@ def test_a_finished_job_shows_a_download_link_and_the_shot_breakdown(client) -> 
     assert "一隻橘貓走在雨中" in body or "解析出的分鏡" in body
 
 
+def test_a_finished_image_job_shows_an_img_tag_not_a_broken_video_tag(client) -> None:
+    c, queue, _ = client
+    _post(c, [_event("畫圖 一隻貓")])
+    job = queue.recent()[0]
+    queue.set_parsed(job.id, {"_rendered": "a cat"})
+    queue.claim_next(gpu_tier="L40S/COMMUNITY")
+    queue.complete(job.id, "files/out.png")
+
+    body = c.get(f"/q/{job.token}").text
+    assert "下載圖片" in body
+    assert "<img" in body
+    assert "<video" not in body
+    assert "/files/out.png" in body
+
+
 def test_the_page_escapes_user_text(client) -> None:
     """Prompts come from strangers in a group chat."""
     c, queue, _ = client
@@ -161,6 +176,18 @@ def test_a_stored_file_downloads(client, tmp_path: Path) -> None:
     response = c.get("/files/clip.mp4")
     assert response.status_code == 200
     assert response.headers["content-type"] == "video/mp4"
+
+
+def test_a_stored_image_downloads_with_the_right_content_type(client, tmp_path: Path) -> None:
+    """Regression: this route used to hardcode video/mp4 for every file, which
+    would mislabel an image the moment Flux jobs landed in the same directory."""
+    c, _, _ = client
+    (tmp_path / "files").mkdir(exist_ok=True)
+    (tmp_path / "files" / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    response = c.get("/files/pic.png")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
 
 
 @pytest.mark.parametrize(

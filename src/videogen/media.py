@@ -122,6 +122,52 @@ def probe(path: Path) -> MediaInfo:
     )
 
 
+@dataclass(frozen=True)
+class ImageInfo:
+    """What ffprobe says about a still image. No fps/duration — there is none."""
+
+    width: int
+    height: int
+    size_bytes: int
+
+    @property
+    def aspect(self) -> float:
+        return self.width / self.height if self.height else 0.0
+
+
+def probe_image(path: Path) -> ImageInfo:
+    """Describe an image file. `probe()` raises on a file with no video stream,
+    which every still image is, so this is a deliberate sibling rather than a
+    branch inside it."""
+    path = Path(path)
+    if not path.is_file():
+        raise FFmpegError(f"cannot probe missing file: {path}")
+
+    settings = get_settings()
+    proc = run(
+        [
+            settings.ffprobe_bin,
+            "-v", "error",
+            "-print_format", "json",
+            "-show_streams",
+            str(path),
+        ],
+        timeout_s=60.0,
+    )
+    payload = json.loads(proc.stdout)
+    streams = payload.get("streams", [])
+
+    image = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if image is None:
+        raise FFmpegError(f"{path} contains no image/video stream")
+
+    return ImageInfo(
+        width=int(image.get("width", 0)),
+        height=int(image.get("height", 0)),
+        size_bytes=path.stat().st_size,
+    )
+
+
 def missing_filters(binary: str | None = None) -> list[str]:
     """Which of `REQUIRED_FILTERS` this ffmpeg build lacks."""
     binary = binary or get_settings().ffmpeg_bin

@@ -4,6 +4,11 @@ One pod, one window a day. The window exists because a session's fixed cost is
 ~20 minutes (boot, 51GB weight download, node install) while a clip is ~5
 minutes — so opening a pod per request would spend 80% of the money on setup.
 
+Since the LINE bot's image trigger (`畫圖`/`/img`, see [line-bot.md](line-bot.md))
+shares this same pod, both model sets — H3 and Flux.1-dev — download on every
+open. See [runpod.md](runpod.md) for the updated download math (~72–78GB
+combined, up from H3's ~54.7GB alone).
+
 ## The window
 
 | | |
@@ -12,6 +17,15 @@ minutes — so opening a pod per request would spend 80% of the money on setup.
 | UTC | 03:00 – 05:00 |
 | Length | 2.0 h |
 | Capacity | ~100 usable minutes ÷ ~5 min = **~20 clips/day**, ~600/month |
+
+One FIFO queue serves both the video trigger (`生成`/`/gen`) and the image
+trigger (`畫圖`/`/img`, see [line-bot.md](line-bot.md)) — `session drain`
+dispatches each claimed job to the H3 or Flux provider by `media_kind`. An
+image job's generation time is `[speculative]` but expected in the 15–40s
+range, negligible against a clip's 2–6 minutes, so mixing images in barely
+dents clip capacity. What it does cost is the extra download at window open
+(above), and a checkpoint swap in ComfyUI whenever the queue alternates
+kinds — not yet measured, worth watching if the queue interleaves heavily.
 
 At the intended volume of ~50 clips a month that is roughly 30x headroom, so the
 window is sized by *how long someone is willing to wait*, not by throughput.
@@ -113,6 +127,50 @@ buffer covers a clip mid-render at the bell.
 
 The reaper matters because a window sized for peak demand is mostly idle at ~50
 clips a month, and idle minutes cost exactly what working ones do.
+
+### The timer fires blindly; `session open` decides whether to spend
+
+The systemd timer (or Task Scheduler entry) that calls `session open` at 11:00
+is deliberately dumb and unconditional — it fires every day, windows or not.
+Two checks live inside the command instead, so "the LINE bot triggers spend"
+and "the pod only ever boots 11:00–13:00" are both true at once rather than in
+tension:
+
+1. **Demand gate.** Before anything else, `session open` checks whether the
+   queue has any `queued`/`parsed` job at all — video or image. An empty queue
+   means skip entirely: no capacity check, no pod, no spend that day. A day
+   with zero LINE messages now costs $0, not one ladder rung's worth of an
+   empty window.
+2. **Monthly budget guard.** `runtime.budget.MonthlyBudgetGuard` reads
+   `VIDEOGEN_MAX_MONTH_USD` (default $50) and `VIDEOGEN_VPS_MONTHLY_USD`
+   (default $5, reserved off the top) against a running ledger
+   (`runs/.spend_ledger.json`, rolled over on the Asia/Taipei calendar month).
+   If what's left this month can't cover even a ~20-minute session at the
+   ladder's *priciest* rung, `session open` refuses outright — the same
+   `PodError`-style loud failure as an empty ladder, logged rather than
+   silently skipped. If there's *some* budget but not enough for the full
+   window at the worst-case rate, the guard shrinks `--until` instead of
+   refusing, so a few expensive early-month days degrade the window length
+   gracefully rather than blow the cap on day three.
+
+This exists because the ladder's own worst case already exceeds $50/month on
+GPU alone — rung 1 at $1.004/hr × 2h × 30d is $60.24 — so "$50/month" was a
+target, not an enforced number, until this guard. It is intentionally
+pessimistic: the guard checks against the *most expensive* rung because which
+rung actually answers isn't known until after `open_session()` has already
+created the pod (and set `--terminate-after`), so refusing or throttling has
+to happen before that, on the worst case. A cheaper rung answering just means
+the real month comes in under budget, never over it.
+
+**The ledger is fed from `close_session()` itself, not from the CLI's
+`session close` command.** At the intended ~50 renders/month, the window is
+almost always closed early by `reap`'s `close_if_idle()` — "~30x headroom"
+above — long before the scheduled 13:00 `session close` ever runs, so by the
+time that command fires, the state file is already gone and there is nothing
+left for it to record. Recording inside `close_session()` means every path
+that actually ends a window — the idle reaper, the past-window check, and the
+explicit scheduled close — books its cost exactly once, in one place,
+regardless of which one happened to fire.
 
 ### Windows Task Scheduler
 

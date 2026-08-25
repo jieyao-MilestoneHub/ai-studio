@@ -7,10 +7,12 @@ same one.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
+from videogen.core.enums import MediaKind
 from videogen.pipeline.queue import Job, JobQueue, JobState
 
 PROMPT = {"integrated_multimodal_description": "[Shot 1] a cat"}
@@ -202,6 +204,65 @@ def test_counts_and_lookup_by_token(q: JobQueue) -> None:
     assert q.counts() == {"queued": 1}
     assert q.by_token(job.token) is not None
     assert q.by_token("nope") is None
+
+
+# ------------------------------------------------------------------ media_kind
+
+
+def test_enqueue_defaults_to_video(q: JobQueue) -> None:
+    job = _add(q)
+    assert job.media_kind is MediaKind.VIDEO
+
+
+def test_enqueue_accepts_an_image_request(q: JobQueue) -> None:
+    job, created = q.enqueue("evt-img", "Cgroup", "畫圖 一隻貓", media_kind=MediaKind.IMAGE)
+    assert created
+    assert job.media_kind is MediaKind.IMAGE
+    assert q.by_token(job.token).media_kind is MediaKind.IMAGE
+
+
+def test_a_database_created_before_media_kind_shipped_migrates_cleanly(tmp_path: Path) -> None:
+    """`CREATE TABLE IF NOT EXISTS` never alters an existing table, so opening
+    an old database must add the column and backfill every existing row to
+    'video' — the only thing any job could have been before this feature."""
+    path = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE jobs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            token       TEXT    NOT NULL UNIQUE,
+            event_id    TEXT    NOT NULL UNIQUE,
+            group_id    TEXT    NOT NULL,
+            user_id     TEXT,
+            text        TEXT    NOT NULL,
+            state       TEXT    NOT NULL DEFAULT 'queued',
+            prompt_json TEXT,
+            output_path TEXT,
+            error       TEXT,
+            gpu_tier    TEXT,
+            created_at  REAL    NOT NULL,
+            parsed_at   REAL,
+            started_at  REAL,
+            finished_at REAL,
+            attempts    INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO jobs (token, event_id, group_id, text, state, created_at)"
+        " VALUES ('tok1', 'evt-old', 'Cgroup', '一隻貓', 'queued', 1.0)"
+    )
+    conn.commit()
+    conn.close()
+
+    with JobQueue(path) as queue:
+        columns = {row["name"] for row in queue._conn.execute("PRAGMA table_info(jobs)")}
+        assert "media_kind" in columns
+
+        job = queue.by_token("tok1")
+        assert job is not None
+        assert job.media_kind is MediaKind.VIDEO
 
 
 def test_state_survives_reopening_the_database(tmp_path: Path) -> None:

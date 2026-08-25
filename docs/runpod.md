@@ -96,6 +96,22 @@ $0.11.
 four or five sessions a month, re-downloading is roughly 60× cheaper. Use the
 template's 200 GB container disk.
 
+**This got more expensive to redownload once Flux.1-dev joined the same pod,
+and the conclusion still doesn't flip.** A dual-trigger LINE bot (H3 video +
+Flux image, see [line-bot.md](line-bot.md)) downloads both model sets on every
+window open: H3's measured **54.7 GB** int8 working set plus Flux.1-dev's
+`[speculative]` **~17–23 GB** (fp8 transformer + T5-XXL text encoder + CLIP-L +
+VAE — see [model-flux.md](model-flux.md), unmeasured on this project's own
+hardware). Combined, that's **~72–78 GB** once a day, not 42 GB — call it
+~$0.20/session at datacenter speeds instead of $0.11. A 150–200 GB network
+volume sized to hold both model sets still bills **$10.50–$14/month whether or
+not a window opens that day**, against roughly $6/month for 30 sessions of
+redownloading both sets — the redownload is still the cheaper side by a wide
+margin, and the session opens only once a day (not per LINE message), so the
+volume's main selling point — skipping a redownload on every request — was
+never actually on the table here. It also still pins the pod to one
+datacenter, on top of the already-thin RTX 4090 pool.
+
 A volume also **pins the pod to one datacenter**, which shrinks the GPU pool —
 and 4090 stock is already thin. RunPod's own golden path documents a live case
 where a datacenter pin left workers throttled and a job queued for over four
