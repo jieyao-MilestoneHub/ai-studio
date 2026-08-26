@@ -109,9 +109,15 @@ command -v hf >/dev/null || pip install -q --break-system-packages -U huggingfac
 # filled exits same as a download that finished, and `pgrep` alone cannot
 # tell those apart. Observed live: this volume can come back smaller than
 # requested depending on how the pod was deployed.
+# Counted against what is still to come, not the whole set: a re-run after a
+# dropped SSH session (observed live -- the link died between "weights
+# complete" and the rename step) finds 68GB already on disk and 11GB free, and
+# must not refuse to finish what it started.
 AVAIL_KB="$(df -k /workspace | awk 'NR==2{print $4}')"
-[ "$AVAIL_KB" -ge $((75 * 1024 * 1024)) ] || die \
-  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~75GB headroom for ~52GB of H3 weights + ~17GB of Flux weights"
+HAVE_KB="$(du -sk "$M" 2>/dev/null | cut -f1)"
+NEED_KB=$((75 * 1024 * 1024 - ${HAVE_KB:-0}))
+[ "$AVAIL_KB" -ge "$NEED_KB" ] || die \
+  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~$((NEED_KB / 1048576))GB more headroom (~52GB of H3 weights + ~17GB of Flux weights, $((${HAVE_KB:-0} / 1048576))GB already present)"
 
 DL_PIDS=()
 dl() {  # repo file destdir

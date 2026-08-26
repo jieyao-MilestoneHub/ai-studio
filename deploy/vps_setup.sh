@@ -156,7 +156,7 @@ for phase in reap close; do
   case "$phase" in
     # Close early once the pod has gone quiet. Also the second line of defence
     # for a worker that died still holding one.
-    reap)  cmd="session reap --idle-minutes 10"; when="*:0/5" ;;
+    reap)  cmd="session reap --idle-minutes 30"; when="*:0/5" ;;
     # The hard close at the end of business hours.
     close) cmd="session close";                  when="05:05" ;;
   esac

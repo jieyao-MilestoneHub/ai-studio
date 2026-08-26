@@ -4,7 +4,7 @@ One pod, one window a day. The window exists because a session's fixed cost is
 ~20 minutes (boot, 51GB weight download, node install) while a clip is ~5
 minutes — so opening a pod per request would spend 80% of the money on setup.
 
-Since the LINE bot's image trigger (`畫圖`/`/img`, see [line-bot.md](line-bot.md))
+Since the LINE bot's image trigger (`/圖片`, see [line-bot.md](line-bot.md))
 shares this same pod, both model sets — H3 and Flux.1-dev — download on every
 open. See [runpod.md](runpod.md) for the updated download math (~72–78GB
 combined, up from H3's ~54.7GB alone).
@@ -18,8 +18,8 @@ combined, up from H3's ~54.7GB alone).
 | Length | 2.0 h |
 | Capacity | ~100 usable minutes ÷ ~5 min = **~20 clips/day**, ~600/month |
 
-One FIFO queue serves both the video trigger (`生成`/`/gen`) and the image
-trigger (`畫圖`/`/img`, see [line-bot.md](line-bot.md)) — `ai-studio worker`
+One FIFO queue serves both the video trigger (`/影片`, and `/圖影` for image-to-video) and the image
+trigger (`/圖片`, see [line-bot.md](line-bot.md)) — `ai-studio worker`
 dispatches each claimed job to the H3 or Flux provider by `media_kind`. An
 image job's generation time is `[speculative]` but expected in the 15–40s
 range, negligible against a clip's 2–6 minutes, so mixing images in barely
@@ -147,7 +147,7 @@ functions by protocol and `cli.main` injects them.
 
 ```bash
 # every 5 min — close early if the pod has gone quiet
-ai-studio session reap --idle-minutes 10
+ai-studio session reap --idle-minutes 30
 
 # 13:00 — close, unconditionally. Idempotent and safe when nothing is up.
 ai-studio session close
@@ -162,15 +162,30 @@ the reaper never fires, if this code crashes — the pod still terminates
 itself.** The buffer covers a clip mid-render at the bell. Three independent
 ways for a machine to stop billing, and only the last needs no process alive.
 
-The reaper's idle window dropped from 20 minutes to **10**, for a different
-reason than it was set the first time. The old number was about not wasting
-the tail of a window that was going to be paid for anyway. Now that the pod is
-opened by a request, the window is only as long as the work needs, and the
-first real run cannot afford two hours (PLAN.md Phase 7: $1.556 of approved
-budget against $1.004/hr). Ten is a guess pending the one measurement that
-settles it — the cold-open time. A cold open that turns out to be expensive
-argues for a *longer* grace, not a shorter one, because every reopen pays it
-again `[speculative]`.
+The reaper's idle window is **30 minutes**, and the number is now measured
+rather than guessed. It was 10 for one evening (2026-08-26), on the reasoning
+that a request-opened window should be only as long as the work needs. That
+evening's cold open settled it the other way: creating the pod, pulling 68 GB
+of weights and restarting ComfyUI took 📏 **~15 minutes and $0.18** on an RTX
+4090, while a Flux image then took 📏 12 s — and the 10-minute reaper closed
+the first pod of the night *before its first job*, so the whole cold open was
+paid twice. Every reopen pays it again, so the grace has to be longer than the
+cold open, not shorter. Thirty is the cold open plus the gap between two
+messages in a group chat. The pod's own `--terminate-after` and the 13:05
+`close` timer still bound the worst case.
+
+### The network volume, and why the cold open stopped mattering
+
+With `AI_STUDIO_NETWORK_VOLUME_ID` set, every window pod mounts that volume
+at `/workspace` and `deploy/pod_setup.sh` finds the weights already there, so
+a cold open is a ComfyUI restart, not a 68 GB download. The price is the
+placement: network volumes are secure-cloud only and mount only in their own
+datacenter, so the ladder collapses to the 4090 secure rung in that
+datacenter (`runtime.session.candidates_for_volume`), with `wait=True`
+because waiting for stock there is cheaper than a full download elsewhere.
+Iceland's `EUR-IS-2`, where the 4090 stock usually is, does not offer
+volumes; `EUR-IS-1` does, and is equally licence-safe. 100 GB there is
+$7/month `[reported]`, against $0.18 and fifteen minutes per open without it.
 
 ### What `ensure_pod` checks before it creates anything
 
@@ -227,7 +242,7 @@ $repo = "C:\Users\USER\Desktop\Develop\ai-studio"
 $uv   = (Get-Command uv).Source
 
 schtasks /Create /TN "ai-studio-reap"  /SC MINUTE /MO 5 /F `
-  /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session reap --idle-minutes 10"
+  /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session reap --idle-minutes 30"
 
 schtasks /Create /TN "ai-studio-close" /SC DAILY /ST 13:00 /F `
   /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session close"
@@ -236,7 +251,9 @@ schtasks /Create /TN "ai-studio-close" /SC DAILY /ST 13:00 /F `
 `ai-studio worker` is not a scheduled task — it is a service that stays up. On
 Windows that means a console you leave running, or NSSM; on the VPS it is
 `ai-studio-worker.service` with `Restart=always` (see
-[`deploy/vps_setup.sh`](../deploy/vps_setup.sh)).
+[`deploy/vps_setup.sh`](../deploy/vps_setup.sh)); on the Jetson it is the same
+unit written by [`deploy/jetson_setup.sh`](../deploy/jetson_setup.sh), which
+also masks the systemd sleep targets so the box cannot suspend under it.
 
 ⚠️ Task Scheduler does not run while the machine is asleep, and neither does
 the worker. `--terminate-after` guarantees a pod gets *closed*, never that one
@@ -247,7 +264,7 @@ on whatever host serves the LINE webhook.
 
 ```cron
 # UTC. 13:00 Asia/Taipei = 05:00 UTC. Nothing here opens a pod.
-*/5 * * * * cd /srv/ai-studio && uv run ai-studio session reap --idle-minutes 10
+*/5 * * * * cd /srv/ai-studio && uv run ai-studio session reap --idle-minutes 30
 0  5 * * *  cd /srv/ai-studio && uv run ai-studio session close
 ```
 
