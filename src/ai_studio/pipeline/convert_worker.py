@@ -34,7 +34,27 @@ the first frame to the last. 294 frames is the next grid step; it was not
 adopted because the community guide puts drift risk above ~10 s and nothing
 here has measured it yet."""
 
+MAX_FRAMES = 362
+"""17*21+5 = 15.08 s at 24fps. Measured on an RTX 4090 (2026-08-26): 362
+frames rendered in 📏 317 s with a 📏 22.8 GB peak of 24 -- stable, no OOM,
+the subject consistent first frame to last -- but four times the render time
+of the 243-frame default, so it is the ceiling a user may ask for, not the
+default. Above it VRAM headroom is unmeasured and the model's own limit is
+near, so requests are clamped here."""
+
 DEFAULT_DURATION_S = DEFAULT_FRAMES / 24
+MAX_DURATION_S = MAX_FRAMES / 24
+
+
+def clamp_duration(seconds: float | None) -> float:
+    """A requested length, clamped to what the model and the card allow and
+    snapped to the frame grid. None -> the default. Below the floor or above
+    the ceiling is pulled into range rather than refused: a user who types a
+    number just wants the nearest clip that exists."""
+    if seconds is None:
+        return DEFAULT_DURATION_S
+    frames = snap_frames(round(seconds * 24))
+    return min(max(frames, MIN_FRAMES), MAX_FRAMES) / 24
 
 
 def snap_frames(frames: int) -> int:
@@ -90,9 +110,10 @@ async def convert_job(
     if job is None:
         return "skipped: not queued"
 
+    length = clamp_duration(job.requested_seconds) if job.requested_seconds else duration_s
     mode_setting = prompt_mode or get_settings().prompt_mode
     if mode_setting == "raw":
-        queue.set_parsed(job.id, raw_payload(job, duration_s=duration_s))
+        queue.set_parsed(job.id, raw_payload(job, duration_s=length))
         return "raw"
 
     prompt: FluxPrompt | H3Prompt
@@ -102,7 +123,7 @@ async def convert_job(
         # A cached photo makes this image-to-video: the picture is the first
         # frame, and the prompt has to be about it rather than a fresh scene.
         mode = H3Mode.I2VA if job.first_frame_path else H3Mode.T2VA
-        prompt, how = await convert(job.text, client, duration_s=duration_s, mode=mode)
+        prompt, how = await convert(job.text, client, duration_s=length, mode=mode)
     payload = prompt.model_dump(mode="json")
     payload["_rendered"] = prompt.render()
     payload["_built_by"] = how

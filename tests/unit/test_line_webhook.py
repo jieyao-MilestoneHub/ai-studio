@@ -711,3 +711,48 @@ async def test_a_message_without_a_quote_token_is_still_accepted(wired) -> None:
     body = _body([_text_event("/影片 一隻貓", event_id="evt-nq")])
     (outcome,) = await handler.handle(body, sign(body, SECRET))
     assert outcome.action == "accepted" and outcome.job.quote_token is None
+
+
+# ------------------------------------------------------------- clip length
+
+
+@pytest.mark.asyncio
+async def test_a_length_suffix_on_a_video_trigger_is_captured(wired) -> None:
+    """`/影片15s a cat` asks for a 15-second clip; the number rides on the
+    trigger and the rest is the prompt."""
+    handler, queue, _ = wired
+    body = _body([_text_event("/影片15s 一隻貓", event_id="evt-15")])
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+
+    assert outcome.action == "accepted"
+    assert outcome.job.text == "一隻貓", "the length is stripped, not left in the prompt"
+    assert outcome.job.requested_seconds == 15.0
+    assert queue.by_id(outcome.job.id).requested_seconds == 15.0
+
+
+@pytest.mark.asyncio
+async def test_the_cjk_seconds_suffix_also_works(wired) -> None:
+    handler, _, _ = wired
+    body = _body([_text_event("/圖影10秒 讓照片動起來", event_id="evt-10")])
+    # no photo cached, so it is refused -- but the parse still had to succeed
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+    assert outcome.detail == "no pending photo"
+
+
+@pytest.mark.asyncio
+async def test_no_suffix_leaves_requested_seconds_none(wired) -> None:
+    handler, _, _ = wired
+    body = _body([_text_event("/影片 一隻貓", event_id="evt-none")])
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+    assert outcome.job.requested_seconds is None
+
+
+@pytest.mark.asyncio
+async def test_an_image_trigger_ignores_a_number_in_the_prompt(wired) -> None:
+    """`/圖片` has no length. A prompt that starts with a number is prompt,
+    not a length: `3 cats` stays `3 cats`."""
+    handler, _, _ = wired
+    body = _body([_text_event("/圖片3 隻貓", event_id="evt-img3")])
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+    assert outcome.job.requested_seconds is None
+    assert outcome.job.text == "3 隻貓"

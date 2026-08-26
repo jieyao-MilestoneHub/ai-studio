@@ -353,3 +353,32 @@ async def test_raw_mode_for_an_image_is_just_the_text(tmp_path: Path) -> None:
         plan = q.by_id(job.id).prompt
 
     assert plan["_rendered"] == "亞洲辣妹" and "mode" not in plan
+
+
+# --------------------------------------------------------- requested length
+
+
+def test_clamp_duration_snaps_and_bounds() -> None:
+    from ai_studio.pipeline.convert_worker import (
+        DEFAULT_DURATION_S,
+        MAX_DURATION_S,
+        clamp_duration,
+    )
+
+    assert clamp_duration(None) == DEFAULT_DURATION_S
+    assert clamp_duration(15) == MAX_DURATION_S            # the offered ceiling
+    assert clamp_duration(999) == MAX_DURATION_S           # above -> clamped
+    assert clamp_duration(1) == 124 / 24                   # below floor -> floor
+    assert abs(clamp_duration(8) - 192 / 24) < 1e-6        # snapped to the grid
+
+
+@pytest.mark.asyncio
+async def test_raw_mode_honours_a_requested_length(tmp_path: Path) -> None:
+    from ai_studio.pipeline.convert_worker import MAX_DURATION_S
+
+    with JobQueue(tmp_path / "q.sqlite3") as q:
+        job, _ = q.enqueue("evt-15s", "Cgroup", "一隻貓", requested_seconds=15.0)
+        await convert_job(q, job.id, None, prompt_mode="raw")
+        plan = q.by_id(job.id).prompt
+
+    assert plan["duration_s"] == MAX_DURATION_S

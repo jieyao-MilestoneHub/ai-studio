@@ -13,6 +13,14 @@ thing for anyone who wants to look again later.
 | a photo, then `/圖影 <描述>` | a video clip whose first frame is that photo | MiniMax H3 (I2V graph) |
 | a photo, then `/圖圖 <描述>` | that photo re-rendered under the description | Flux.1-dev (img2img graph) |
 
+**Length is optional, on the video triggers.** `/影片15s` or `/圖影15秒`
+asks for a 15-second clip; the number sits flush against the trigger and the
+rest is the prompt. The default is 10.1 s (243 frames), the ceiling 15.08 s
+(362) — both 📏 measured on a 4090 to be stable in 24 GB, with 15 s costing
+about four times the render time. Anything off the model's 17k+5 frame grid
+or out of range is snapped and clamped, never refused. Image triggers have no
+length: a number in a `/圖片` prompt is prompt.
+
 **One spelling per trigger, no aliases.** `生成`, `畫圖`, `/gen` and `/img`
 used to work and were retired together: a bare word that is also ordinary
 Chinese is a request nobody meant, paid for in GPU-minutes, and a leading

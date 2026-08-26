@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -64,6 +65,9 @@ IMAGE_PAIRING_TTL_S = 300.0
 Five minutes: long enough for someone to send a photo, think for a moment,
 and type a description, short enough that a photo from an unrelated part of
 the conversation an hour ago cannot surface as a first frame nobody meant."""
+
+_LENGTH_RE = re.compile(r"\s*(\d{1,2})\s*(?:s|秒)", re.IGNORECASE)
+"""Matches a `15s` / `15秒` length flush against a video trigger."""
 
 STATUS_WORDS = ("好了嗎", "好了没", "進度", "status", "查詢")
 """A free way to ask again. Replies are not billed, so a user can poll by
@@ -206,7 +210,7 @@ class WebhookHandler:
         stripped = self._strip_trigger(text)
         if stripped is None:
             return Outcome("ignored", detail="no trigger word")
-        prompt, media_kind, wants_photo = stripped
+        prompt, media_kind, wants_photo, requested_seconds = stripped
         if not prompt:
             await self._safe_reply(reply_token, self._usage(media_kind, wants_photo))
             return Outcome("ignored", detail="empty prompt")
@@ -256,6 +260,7 @@ class WebhookHandler:
             reply_token,
             media_kind=media_kind,
             first_frame_path=first_frame_path,
+            requested_seconds=requested_seconds,
         )
 
     def _membership(self, event: dict[str, Any]) -> Outcome:
@@ -338,6 +343,7 @@ class WebhookHandler:
         *,
         media_kind: MediaKind = MediaKind.VIDEO,
         first_frame_path: str | None = None,
+        requested_seconds: float | None = None,
     ) -> Outcome:
         # webhookEventId is LINE's own idempotency key. Using it means a
         # redelivery cannot enqueue — and pay for — the same clip twice.
@@ -349,6 +355,7 @@ class WebhookHandler:
         job, created = self.queue.enqueue(
             event_id, group_id, prompt, user_id=user_id, media_kind=media_kind,
             first_frame_path=first_frame_path, quote_token=quote_token,
+            requested_seconds=requested_seconds,
         )
 
         if not created:
@@ -440,10 +447,18 @@ class WebhookHandler:
 
     # -------------------------------------------------------------- helpers
 
-    def _strip_trigger(self, text: str) -> tuple[str, MediaKind, bool] | None:
-        """The prompt after the trigger, which kind it asked for, and whether
-        it asked for the cached photo as a first frame — or None if it is not
-        a request at all. Exactly one spelling per trigger, no aliases."""
+    def _strip_trigger(self, text: str) -> tuple[str, MediaKind, bool, float | None] | None:
+        """The prompt after the trigger, which kind it asked for, whether it
+        wants the cached photo as a first frame, and any requested length in
+        seconds — or None if it is not a request at all. Exactly one spelling
+        per trigger, no aliases.
+
+        A length rides on the trigger itself: `/影片15s` or `/圖影15秒`. It is
+        read only off video triggers (an image has no length), and only when
+        it sits flush against the trigger, so an ordinary prompt that happens
+        to start with a number is untouched. The value is clamped to the
+        model's range at conversion; here it is just the number the user typed.
+        """
         for prefix, kind, wants_photo in (
             (self.i2v_trigger, MediaKind.VIDEO, True),
             (self.i2i_trigger, MediaKind.IMAGE, True),
@@ -451,7 +466,14 @@ class WebhookHandler:
             (self.image_trigger, MediaKind.IMAGE, False),
         ):
             if text.startswith(prefix):
-                return text[len(prefix) :].strip(), kind, wants_photo
+                rest = text[len(prefix) :]
+                seconds: float | None = None
+                if kind is MediaKind.VIDEO:
+                    match = _LENGTH_RE.match(rest)
+                    if match:
+                        seconds = float(match.group(1))
+                        rest = rest[match.end() :]
+                return rest.strip(), kind, wants_photo, seconds
         return None
 
     def _photo_trigger(self, media_kind: MediaKind) -> str:
