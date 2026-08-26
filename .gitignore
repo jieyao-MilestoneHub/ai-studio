@@ -4,6 +4,8 @@
 # OSS repo leaks material is a .gitignore that was edited and never verified.
 runs/
 out/
+files/
+incoming/
 *.mp4
 *.mov
 *.mkv
@@ -11,6 +13,9 @@ out/
 *.wav
 *.mp3
 *.m4a
+*.jpg
+*.jpeg
+*.png
 
 # --- model weights ---------------------------------------------------------
 *.safetensors
