@@ -34,6 +34,7 @@ https://developers.line.biz/en/docs/messaging-api/pricing/
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Protocol
 
 import httpx
@@ -147,8 +148,14 @@ class LinePushClient:
 
         `retry_key` becomes `X-Line-Retry-Key`, which is what makes a retry
         after a timeout safe: LINE treats a repeat of the same key as the same
-        send rather than a second one. The job token is the natural value —
-        it is already unique per request and already in the queue.
+        send rather than a second one. Every caller's natural value for this
+        (the job token, "preflight", a token with "-text" appended) is a
+        short, non-UUID string -- and LINE rejects the header outright unless
+        it is shaped like one. `uuid5` derives a stable UUID from whatever
+        string the caller passes, so the same logical retry always maps to
+        the same key without every call site needing to know LINE's format
+        requirement. Observed live: a real push 400'd on this before the fix
+        existed, with the media object never even evaluated.
         """
         if not messages:
             return
@@ -157,7 +164,7 @@ class LinePushClient:
 
         headers = {"Authorization": f"Bearer {self._token}"}
         if retry_key:
-            headers["X-Line-Retry-Key"] = retry_key
+            headers["X-Line-Retry-Key"] = str(uuid.uuid5(uuid.NAMESPACE_URL, retry_key))
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             try:

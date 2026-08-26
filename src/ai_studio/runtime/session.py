@@ -317,21 +317,35 @@ def ensure_pod(
     now: datetime | None = None,
     max_opens_per_day: int | None = None,
 ) -> Session:
-    """Return a live window, opening one if business hours allow it.
+    """Return a live window: the open one if there is one, else open one if
+    business hours allow it.
 
     This is the request-driven replacement for the 03:00 UTC `open` timer. The
-    timer opened a pod whether or not anyone had asked for anything; this opens
-    one only when a caller has work in hand, and refuses outright outside
-    business hours. `open_session` itself is unchanged — the deploy logic was
-    already the right shape, only the moment it runs has moved.
+    timer opened a pod whether or not anyone had asked for anything; this
+    *creates* one only when a caller has work in hand and business hours
+    allow it. Reusing an already-open pod is not gated on the clock at all --
+    that pod is billing either way, and the gate exists to stop new spend, not
+    to idle spend that already happened. `open_session` itself is unchanged —
+    the deploy logic was already the right shape, only the moment it runs has
+    moved.
 
     The lease is the end of business hours, so `--terminate-after` lands at
     13:10 without anybody inventing a second deadline for it.
 
-    Three gates, cheapest first, all of them before anything is created:
+    Checked in this order, and the order is deliberate:
 
-    1. **Business hours.** Raises `OutsideBusinessHours`, its own type, because
-       the caller's answer to it is specific: hold the request for tomorrow.
+    0. **An already-open window is reused, not doubled, and not gated on the
+       clock at all.** A pod that is already live is already billing; refusing
+       to render against it outside business hours would not save a cent; it
+       would only leave paid-for GPU-minutes idle. `open_session` would refuse
+       a second pod under the same name anyway, but that refusal is an error
+       and this is the ordinary case: the second request of the day, or a
+       manually-extended window running past the bell.
+    1. **Business hours.** Only reached when there is nothing live yet. Raises
+       `OutsideBusinessHours`, its own type, because the caller's answer to it
+       is specific: hold the request for tomorrow. This is the gate that
+       actually protects money — it is what stops a request from *opening* a
+       pod at 03:00, not what stops one already open from being used.
     2. **Opens per day.** The failure the monthly guard cannot see — a worker
        that crash-loops opens a fresh pod on every restart, and each one is
        individually inside budget.
@@ -339,19 +353,16 @@ def ensure_pod(
        `session open`: same guard, same pessimistic worst-rung arithmetic, now
        on the path that actually creates pods.
     """
+    live = load_state()
+    if live is not None and not live.past_window():
+        return live
+
     if not hours.is_open(now):
         raise hours.OutsideBusinessHours(
             f"business hours are {hours.OPEN_LOCAL:%H:%M}-{hours.CLOSE_LOCAL:%H:%M} "
             f"{hours.TZ}; next open {hours.next_open(now).astimezone(hours.TZ):%Y-%m-%d %H:%M}. "
             "Nothing was created and nothing is billing."
         )
-
-    # An open window is reused, not doubled. `open_session` would refuse a
-    # second pod under the same name anyway, but that refusal is an error and
-    # this is the ordinary case: the second request of the day.
-    live = load_state()
-    if live is not None and not live.past_window():
-        return live
 
     settings = get_settings()
     limit = settings.max_pod_opens_per_day if max_opens_per_day is None else max_opens_per_day
