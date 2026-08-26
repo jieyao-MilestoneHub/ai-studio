@@ -136,6 +136,15 @@ class Settings(BaseSettings):
         ),
     )
     files_dir: Path = Field(default=Path("files"), alias="AI_STUDIO_FILES_DIR")
+    incoming_dir: Path = Field(default=Path("incoming"), alias="AI_STUDIO_INCOMING_DIR")
+    files_retention_days: float = Field(
+        default=7.0,
+        ge=0.0,
+        alias="AI_STUDIO_FILES_RETENTION_DAYS",
+        description="Delete delivered media and received photos older than this "
+        "many days. `ai-studio gc` and the daily timer enforce it. 0 keeps "
+        "everything (and lets the disk fill -- only for a short-lived host).",
+    )
 
     llm_endpoint_id: str | None = Field(default=None, alias="AI_STUDIO_LLM_ENDPOINT_ID")
     llm_model: str = Field(default="Qwen/Qwen2.5-7B-Instruct", alias="AI_STUDIO_LLM_MODEL")

@@ -84,6 +84,17 @@ def doctor() -> None:
     table.add_row("cost ceiling", "-", f"${settings.max_cost_usd:.2f} per run")
     table.add_row("month ceiling", "-", f"${settings.max_month_usd:.2f} (VPS ${settings.vps_monthly_usd:.2f})")
 
+    import shutil as _shutil
+
+    usage = _shutil.disk_usage(settings.files_dir if settings.files_dir.exists() else ".")
+    free_gb = usage.free / 1_073_741_824
+    table.add_row(
+        "disk free",
+        _mark(free_gb >= 5.0, warn_only=True),
+        f"{free_gb:.0f} GB free of {usage.total / 1_073_741_824:.0f} GB "
+        f"(retention {settings.files_retention_days:.0f}d, `ai-studio gc`)",
+    )
+
     console.print(table)
     if not ok:
         console.print(
@@ -93,6 +104,57 @@ def doctor() -> None:
         )
         raise typer.Exit(1)
     console.print("\n[green]Environment looks good.[/green]")
+
+
+@app.command()
+def gc(
+    days: float = typer.Option(
+        None, help="Delete media older than this. Default: AI_STUDIO_FILES_RETENTION_DAYS."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would go, delete nothing."),
+) -> None:
+    """Prune old delivered media and received photos. Schedule this daily.
+
+    `files/` gains an mp4/png plus a jpg poster per finished request and
+    `incoming/` a jpg per photo sent, and nothing removed either -- on an
+    always-on host that is a slow disk leak. A photo a still-live
+    image-to-video job points at is protected regardless of age.
+    """
+    from ai_studio.pipeline.queue import JobQueue
+    from ai_studio.storage.retention import sweep_old_files
+
+    settings = get_settings()
+    max_age = settings.files_retention_days if days is None else days
+    if max_age <= 0:
+        console.print("retention is 0 (disabled); nothing pruned. [dim]The disk will fill.[/dim]")
+        return
+
+    protected: set[str] = set()
+    try:
+        with JobQueue() as queue:
+            protected = {
+                str(Path(j.first_frame_path).resolve())
+                for j in queue.pending()
+                if j.first_frame_path
+            }
+    except Exception as exc:  # a missing queue must not stop a disk sweep
+        console.print(f"[yellow]could not read the queue ({exc}); protecting nothing[/yellow]")
+
+    total_removed = total_freed = 0
+    for label, directory in (("files", settings.files_dir), ("incoming", settings.incoming_dir)):
+        result = sweep_old_files(
+            directory, max_age_days=max_age, dry_run=dry_run, keep=protected
+        )
+        verb = "would remove" if dry_run else "removed"
+        console.print(f"  {label}: {verb} {result.removed}, kept {result.kept} "
+                      f"({result.freed_bytes / 1_048_576:.1f} MB)")
+        total_removed += result.removed
+        total_freed += result.freed_bytes
+    console.print(
+        f"[green]gc[/green] {'(dry run) ' if dry_run else ''}"
+        f"{total_removed} file(s), {total_freed / 1_048_576:.1f} MB, "
+        f"older than {max_age:.0f}d"
+    )
 
 
 @app.command("preflight")

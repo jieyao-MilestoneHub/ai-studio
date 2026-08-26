@@ -125,10 +125,14 @@ say "window timers"
 # Both timers only ever close things. Nothing on a schedule opens a pod; the
 # worker does, on demand. --terminate-after on the pod itself is the last
 # backstop and closes a pod even if this box dies entirely.
-for phase in reap close; do
+for phase in reap close gc; do
   case "$phase" in
     reap)  cmd="session reap";  when="*:0/1" ;;
     close) cmd="session close"; when="20:05" ;;
+    # Daily disk sweep: prune delivered media and received photos past the
+    # retention window (AI_STUDIO_FILES_RETENTION_DAYS). 18:30 UTC = 02:30
+    # Asia/Taipei, a quiet hour.
+    gc)    cmd="gc";            when="18:30" ;;
   esac
   cat > /etc/systemd/system/ai-studio-${phase}.service <<UNIT
 [Unit]
@@ -168,7 +172,7 @@ systemctl daemon-reload
 systemctl enable --now ai-studio-ngrok.service >/dev/null 2>&1 || true
 systemctl enable --now ai-studio.service >/dev/null 2>&1 || true
 systemctl enable --now ai-studio-worker.service >/dev/null 2>&1 || true
-for phase in reap close; do
+for phase in reap close gc; do
   systemctl enable --now ai-studio-${phase}.timer >/dev/null 2>&1 || true
 done
 
@@ -179,7 +183,7 @@ cat <<NEXT
   2. curl https://${DOMAIN}/healthz                 -> {"ok":true,...}
   3. LINE console webhook URL: https://${DOMAIN}/callback  -> Verify
   4. systemctl is-active ai-studio-ngrok ai-studio ai-studio-worker -> three active
-  5. systemctl list-timers 'ai-studio-*'            -> two timers armed
+  5. systemctl list-timers 'ai-studio-*'            -> three timers armed
   6. cd ${APP_DIR} && uv run ai-studio preflight
 
   Logs: journalctl -u ai-studio -f    journalctl -u ai-studio-worker -f

@@ -306,7 +306,7 @@ def test_the_flags_are_never_passed_unconditionally() -> None:
 
 VPS_SETUP = REPO / "deploy" / "vps_setup.sh"
 
-REMOVAL_LOOP = ["open", "drain", "reap", "close"]
+REMOVAL_LOOP = ["open", "drain", "reap", "close", "gc"]
 """Every unit this script has ever installed, which is what it must remove."""
 
 
@@ -350,7 +350,7 @@ def test_the_generate_and_enable_loops_use_the_same_unit_list() -> None:
     assert len(loops) == 3, f"expected remove/generate/enable, found {len(loops)}"
     generate, enable = loops[1], loops[2]
     assert generate == enable, f"generate={generate} enable={enable}"
-    assert generate == ["reap", "close"]
+    assert generate == ["reap", "close", "gc"]
 
 
 def test_the_next_steps_text_matches_how_many_timers_are_created() -> None:
@@ -388,7 +388,7 @@ def test_the_worker_is_enabled_after_the_removal_loop() -> None:
     the box with nothing that renders."""
     body = VPS_SETUP.read_text(encoding="utf-8")
 
-    assert body.index("for phase in open drain reap close") < body.index(
+    assert body.index("for phase in open drain reap close gc") < body.index(
         "systemctl enable --now ai-studio-worker.service"
     )
 
