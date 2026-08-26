@@ -110,8 +110,8 @@ command -v hf >/dev/null || pip install -q --break-system-packages -U huggingfac
 # tell those apart. Observed live: this volume can come back smaller than
 # requested depending on how the pod was deployed.
 AVAIL_KB="$(df -k /workspace | awk 'NR==2{print $4}')"
-[ "$AVAIL_KB" -ge $((55 * 1024 * 1024)) ] || die \
-  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~55GB headroom for ~52GB of weights"
+[ "$AVAIL_KB" -ge $((75 * 1024 * 1024)) ] || die \
+  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~75GB headroom for ~52GB of H3 weights + ~17GB of Flux weights"
 
 DL_PIDS=()
 dl() {  # repo file destdir
@@ -120,7 +120,7 @@ dl() {  # repo file destdir
   DL_PIDS+=("$!:$(basename "$2")")
   log "  downloading $(basename "$2")"
 }
-log "starting weight downloads (~52GB)"
+log "starting weight downloads (~52GB H3 + ~17GB Flux)"
 dl Comfy-Org/MiniMax-H3 "$DIT" "$M"
 dl Comfy-Org/MiniMax-H3 text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors "$M"
 dl Comfy-Org/MiniMax-H3 vae/minimax_h3_video_vae_fp16.safetensors "$M"
@@ -130,6 +130,16 @@ dl larryvrh/MiniMax-H3-Turbo-Lora minimax_h3_turbo_v4_step600_ema.safetensors "$
 # Needs no trigger word: neither candidate's model card declares an
 # instance_prompt -- this is an "unrestrain" adapter, not a concept LoRA.
 dl Heartsync/Flux-NSFW-uncensored lora.safetensors "$M/loras"
+# Flux.1-dev itself. black-forest-labs/FLUX.1-dev is the canonical source but
+# is HF-gated (401 with no token, and this script has none configured).
+# comfyanonymous's repackaging is the same fp8-scaled weights, ungated.
+dl comfyanonymous/flux_dev_scaled_fp8_test flux_dev_fp8_scaled_diffusion_model.safetensors "$M/diffusion_models"
+dl comfyanonymous/flux_text_encoders clip_l.safetensors "$M/text_encoders"
+dl comfyanonymous/flux_text_encoders t5xxl_fp8_e4m3fn.safetensors "$M/text_encoders"
+# The Flux VAE (ae.safetensors) ships inside the same gated black-forest-labs
+# repo. Comfy-Org/z_image re-hosts the byte-identical file ungated -- checked
+# against several such repackagings, all serving the same file with no auth.
+dl Comfy-Org/z_image split_files/vae/ae.safetensors "$M/vae"
 
 # ── 4. wait for the weights, then restart ComfyUI ─────────────────────────
 while pgrep -f 'hf download' >/dev/null; do
@@ -161,7 +171,30 @@ if [ -f "$M/loras/lora.safetensors" ]; then
   mv "$M/loras/lora.safetensors" "$FLUX_LORA"
 fi
 [ -f "$FLUX_LORA" ] || die "flux LoRA missing: $FLUX_LORA (check dl-logs/lora.safetensors.log)"
-find "$M" -name '*minimax*.safetensors' -printf '%s %p\n' \
+
+# Same reasoning, two more files: the repackaged repos keep their own names
+# and their own in-repo layout, neither of which matches what UNETLoader and
+# VAELoader in workflows/flux_dev.json actually ask for.
+FLUX_UNET="$M/diffusion_models/flux1-dev.safetensors"
+if [ -f "$M/diffusion_models/flux_dev_fp8_scaled_diffusion_model.safetensors" ]; then
+  mv "$M/diffusion_models/flux_dev_fp8_scaled_diffusion_model.safetensors" "$FLUX_UNET"
+fi
+[ -f "$FLUX_UNET" ] || die "flux unet missing: $FLUX_UNET (check dl-logs/flux_dev_fp8_scaled_diffusion_model.safetensors.log)"
+
+FLUX_VAE="$M/vae/ae.safetensors"
+if [ -f "$M/vae/split_files/vae/ae.safetensors" ]; then
+  mv "$M/vae/split_files/vae/ae.safetensors" "$FLUX_VAE"
+  rm -rf "$M/vae/split_files"
+fi
+[ -f "$FLUX_VAE" ] || die "flux vae missing: $FLUX_VAE (check dl-logs/ae.safetensors.log)"
+
+[ -f "$M/text_encoders/clip_l.safetensors" ] || die "flux clip_l missing"
+[ -f "$M/text_encoders/t5xxl_fp8_e4m3fn.safetensors" ] || die "flux t5xxl missing"
+
+find "$M" \( -name '*minimax*.safetensors' -o -name 'flux1-dev.safetensors' \
+  -o -name 'flux_nsfw_uncensored_v1.safetensors' -o -name 'ae.safetensors' \
+  -o -name 'clip_l.safetensors' -o -name 't5xxl_fp8_e4m3fn.safetensors' \) \
+  -printf '%s %p\n' \
   | awk '{printf "[setup]   %7.2f GB  %s\n", $1/1073741824, $2}'
 
 log "restarting ComfyUI"
