@@ -30,6 +30,11 @@ def wired(tmp_path: Path):
         channel_secret=SECRET,
         allowed_group_id=GROUP,
         base_url="https://vg.example.com/",
+        # Fixed inside business hours: the accepted-message wording branches
+        # on the clock, and this fixture's tests care about the in-hours
+        # text, not about whichever branch the real wall clock happens to
+        # land on whenever the suite runs.
+        clock=lambda: OPEN_INSTANT,
     )
     yield handler, queue, replier
     queue.close()
@@ -166,7 +171,7 @@ async def test_a_trigger_message_is_queued_and_acknowledged_with_a_link(wired) -
     assert outcome.job.state is JobState.QUEUED
 
     (_, texts) = replier.sent[0]
-    assert "排隊第 1 位" in texts[0]
+    assert "想查進度可以看" in texts[0]
     assert f"https://vg.example.com/q/{outcome.job.token}" in texts[0]
 
 
@@ -190,7 +195,7 @@ async def test_the_image_trigger_enqueues_an_image_job(wired) -> None:
     assert outcome.job is not None
     assert outcome.job.media_kind is MediaKind.IMAGE
     assert outcome.job.text == "一隻橘貓"
-    assert "排隊第 1 位" in replier.sent[0][1][0]
+    assert "想查進度可以看" in replier.sent[0][1][0]
 
 
 @pytest.mark.asyncio
@@ -578,11 +583,13 @@ async def test_a_request_out_of_hours_is_still_accepted(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_same_request_gets_a_different_answer_in_and_out_of_hours(
+async def test_the_same_request_gets_the_same_answer_in_and_out_of_hours(
     tmp_path: Path,
 ) -> None:
-    """Same message, same outcome, different promise. The queue position is
-    true either way; on its own at 03:00 it reads as "shortly"."""
+    """Same message, same outcome, same reply -- a deliberate choice: the
+    accepted-message text no longer varies with the clock, only the status
+    page behind the link does. Out-of-hours users get no ETA in the reply
+    text itself any more; the link is the only place that distinction lives."""
     open_handler, open_queue, open_replier = _at(tmp_path, OPEN_INSTANT, name="open")
     shut_handler, shut_queue, shut_replier = _at(tmp_path, CLOSED_INSTANT, name="shut")
 
@@ -595,10 +602,9 @@ async def test_the_same_request_gets_a_different_answer_in_and_out_of_hours(
 
     open_text = open_replier.sent[0][1][0]
     shut_text = shut_replier.sent[0][1][0]
-    assert open_text != shut_text
-    assert "排隊第 1 位" in open_text and "排隊第 1 位" in shut_text
-    assert "11:00-13:00" in shut_text and "11:00-13:00" not in open_text
-    assert "08/25 11:00" in shut_text, "03:00 is before today's opening, so today's"
+    assert "想查進度可以看" in open_text
+    assert "想查進度可以看" in shut_text
+    assert open_text.split("/q/")[0] == shut_text.split("/q/")[0]
 
     open_queue.close()
     shut_queue.close()

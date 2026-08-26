@@ -35,6 +35,7 @@ from typing import Any
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 
+from ai_studio.bots.line.content import LineContentClient
 from ai_studio.bots.line.reply import LineReplyClient, NullReplyClient
 from ai_studio.bots.line.webhook import InvalidSignature, WebhookHandler
 from ai_studio.config.settings import get_settings
@@ -93,6 +94,12 @@ def create_app(
         replier: Any = (
             LineReplyClient(token.get_secret_value()) if token else NullReplyClient()
         )
+        # Same token as the reply/push clients -- LINE's Content API is just
+        # another endpoint under the one channel access token, not a
+        # separate credential. None (not a null client) is "image-to-video is
+        # off": a photo with nothing able to fetch it behind it must not
+        # pretend to cache one.
+        content = LineContentClient(token.get_secret_value()) if token else None
         handler = WebhookHandler(
             app.state.queue,
             replier,
@@ -105,6 +112,8 @@ def create_app(
             # a guard that does not exist. See tests/unit/test_drain_wiring.py
             # for the last time that distinction cost this project something.
             max_jobs_per_user_per_day=settings.max_jobs_per_user_per_day,
+            content=content,
+            incoming_dir=Path("incoming"),
         )
     app.state.handler = handler
 

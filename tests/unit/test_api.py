@@ -99,7 +99,7 @@ def test_a_trigger_message_is_accepted_and_converted_in_the_background(client) -
     c, queue, replier = client
     assert _post(c, [_event("生成 一隻橘貓走在雨中")]).status_code == 200
     assert queue.counts() == {"parsed": 1}
-    assert "排隊第 1 位" in replier.sent[0][1][0]
+    assert "想查進度可以看" in replier.sent[0][1][0]
 
     job = queue.recent()[0]
     assert job.prompt is not None

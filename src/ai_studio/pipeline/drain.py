@@ -224,13 +224,14 @@ async def render_clip(
     frames = round(getattr(caps, "min_clip_s", 5.0) * caps.native_fps)
     request = ClipRequest(
         shot_id=f"job{job.id}",
-        mode=GenMode.T2V,
+        mode=GenMode.I2V if job.first_frame_path else GenMode.T2V,
         prompt=str(rendered),
         width=caps.native_width,
         height=caps.native_height,
         duration_s=max(frames, 124) / caps.native_fps,
         fps=caps.native_fps,
         seed=job.id,
+        first_frame_path=job.first_frame_path,
     )
 
     clip_job = await provider.submit(request)

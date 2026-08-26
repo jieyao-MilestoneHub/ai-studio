@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     text        TEXT    NOT NULL,
     state       TEXT    NOT NULL DEFAULT 'queued',
     media_kind  TEXT    NOT NULL DEFAULT 'video',
+    first_frame_path TEXT,
     prompt_json TEXT,
     output_path TEXT,
     error       TEXT,
@@ -122,6 +123,7 @@ class Job:
     text: str
     state: JobState
     media_kind: MediaKind
+    first_frame_path: str | None
     prompt_json: str | None
     output_path: str | None
     error: str | None
@@ -158,6 +160,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         text=row["text"],
         state=JobState(row["state"]),
         media_kind=MediaKind(row["media_kind"]),
+        first_frame_path=row["first_frame_path"],
         prompt_json=row["prompt_json"],
         output_path=row["output_path"],
         error=row["error"],
@@ -196,6 +199,8 @@ class JobQueue:
             conn.execute("ALTER TABLE jobs ADD COLUMN media_kind TEXT NOT NULL DEFAULT 'video'")
         if "delivered_at" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN delivered_at REAL")
+        if "first_frame_path" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN first_frame_path TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         """One connection per thread, all pointing at the same file.
@@ -251,6 +256,7 @@ class JobQueue:
         user_id: str | None = None,
         *,
         media_kind: MediaKind = MediaKind.VIDEO,
+        first_frame_path: str | None = None,
     ) -> tuple[Job, bool]:
         """Insert a request. Returns `(job, created)`.
 
@@ -258,17 +264,23 @@ class JobQueue:
         redelivery. The caller should reply with the existing job's status rather
         than making a second one. This is the load-bearing dedupe: it is enforced
         by the unique index, so it holds even across processes.
+
+        `first_frame_path` carries a locally-saved image through to whenever
+        this job actually renders -- which may be hours later, in the next
+        business window -- so it has to be a path on disk, not the request's
+        in-memory bytes.
         """
         token = secrets.token_urlsafe(8)
         now = time.time()
         try:
             cur = self._conn.execute(
                 "INSERT INTO jobs"
-                " (token, event_id, group_id, user_id, text, state, media_kind, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+                " (token, event_id, group_id, user_id, text, state, media_kind,"
+                "  first_frame_path, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
                 (
                     token, event_id, group_id, user_id, text,
-                    JobState.QUEUED.value, media_kind.value, now,
+                    JobState.QUEUED.value, media_kind.value, first_frame_path, now,
                 ),
             )
             row = cur.fetchone()
