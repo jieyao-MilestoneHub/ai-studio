@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from ai_studio.config.settings import get_settings
 from ai_studio.core.errors import PodError
 from ai_studio.runtime import session as sess
 
@@ -334,3 +335,65 @@ def test_the_docs_and_the_skill_name_the_same_template_id() -> None:
         assert "2lv7ev3wfp" not in body.replace("(`2lv7ev3wfp`)", ""), (
             f"{doc.name} still points at the renamed Blackwell template"
         )
+
+
+# ------------------------------------------------------------ network volume
+
+
+def test_a_volume_puts_the_ladder_in_its_datacenter_on_secure_cloud_and_waits() -> None:
+    """Network volumes are secure-only and datacenter-bound: the L40S/OC-AU-1
+    and community rungs cannot mount one, so the ladder becomes the 4090
+    secure rung where the volume is -- worth waiting for, because waiting
+    beats paying another 68GB download."""
+    (tier,) = sess.candidates_for_volume("EUR-IS-1")
+    assert tier.datacenter == "EUR-IS-1"
+    assert tier.cloud == "SECURE"
+    assert tier.wait is True
+
+
+def test_a_volume_in_a_licence_unsafe_datacenter_is_refused() -> None:
+    with pytest.raises(PodError, match="not licence-safe"):
+        sess.candidates_for_volume("EU-RO-1")
+
+
+def test_open_mounts_the_volume_instead_of_a_fresh_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen, fake = _calls_recorder([{"items": []}, {"id": "pod9", "costPerHr": 0.754}])
+    monkeypatch.setattr(sess, "_runpodctl", fake)
+
+    sess.open_session(
+        _end(), name="w", candidates=sess.candidates_for_volume("EUR-IS-1"),
+        network_volume_id="vol123",
+    )
+
+    create = next(c for c in seen if c[:2] == ["pod", "create"])
+    assert create[create.index("--network-volume-id") + 1] == "vol123"
+    assert "--volume-in-gb" not in create
+    assert create[create.index("--data-center-ids") + 1] == "EUR-IS-1"
+
+
+def test_placement_reads_the_volume_datacenter_from_runpod(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen, fake = _calls_recorder([{"id": "vol123", "dataCenterId": "EUR-IS-1"}])
+    monkeypatch.setattr(sess, "_runpodctl", fake)
+    monkeypatch.setenv("AI_STUDIO_NETWORK_VOLUME_ID", "vol123")
+    get_settings(refresh=True)
+    try:
+        candidates, volume_id = sess.placement()
+    finally:
+        monkeypatch.delenv("AI_STUDIO_NETWORK_VOLUME_ID")
+        get_settings(refresh=True)
+
+    assert volume_id == "vol123"
+    assert [t.datacenter for t in candidates] == ["EUR-IS-1"]
+    assert seen == [["network-volume", "get", "vol123"]]
+
+
+def test_placement_without_a_volume_is_the_plain_ladder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patched at the settings accessor rather than the environment: the
+    developer's own .env may carry a volume id, and this test is about the
+    code path, not the machine it runs on."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(sess, "get_settings", lambda: SimpleNamespace(network_volume_id=None))
+    assert sess.placement() == (sess.CANDIDATES, None)

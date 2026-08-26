@@ -131,6 +131,47 @@ CANDIDATES: tuple[Tier, ...] = (
     ),
 )
 
+def candidates_for_volume(datacenter: str) -> tuple[Tier, ...]:
+    """The ladder when a network volume is in play: one rung, in the volume's
+    datacenter, on secure cloud, and worth waiting for.
+
+    Network volumes are secure-cloud only and mount only in their own
+    datacenter, so the community rungs and OC-AU-1's L40S cannot be used with
+    one. That leaves the 4090 secure rung wherever the volume lives -- and
+    since waiting for it beats paying another full weight download, `wait`
+    is on. The datacenter still has to be licence-safe; a volume created in
+    the wrong region would otherwise smuggle a pod into it.
+    """
+    from ai_studio.runtime.pod import LICENCE_SAFE_DATACENTERS
+
+    if datacenter not in LICENCE_SAFE_DATACENTERS:
+        raise PodError(
+            f"network volume lives in {datacenter}, which is not licence-safe for H3 "
+            f"({', '.join(LICENCE_SAFE_DATACENTERS)})"
+        )
+    return (
+        Tier("NVIDIA GeForce RTX 4090", datacenter, "SECURE", vram_gb=24, usd_per_hr=0.754, wait=True),
+    )
+
+
+def volume_datacenter(volume_id: str) -> str:
+    """Where a network volume lives, from RunPod, so nothing here has to be
+    told twice and drift."""
+    info = _runpodctl("network-volume", "get", volume_id)
+    datacenter = str(info.get("dataCenterId") or "")
+    if not datacenter:
+        raise PodError(f"network volume {volume_id}: no dataCenterId in {info}")
+    return datacenter
+
+
+def placement() -> tuple[tuple[Tier, ...], str | None]:
+    """(ladder, network volume id) for this deployment, from settings."""
+    volume_id = get_settings().network_volume_id
+    if not volume_id:
+        return CANDIDATES, None
+    return candidates_for_volume(volume_datacenter(volume_id)), volume_id
+
+
 WAIT_RETRY_INTERVAL_S = 30.0
 WAIT_MAX_S = 45 * 60
 """How long the cheapest rung is retried before the window is given up.
@@ -229,8 +270,13 @@ def open_session(
     name: str = "ai-studio-window",
     volume_gb: int = 80,
     candidates: tuple[Tier, ...] = CANDIDATES,
+    network_volume_id: str | None = None,
 ) -> Session:
     """Deploy a pod for this window, or raise if nothing is available.
+
+    With `network_volume_id` the pod mounts that volume at /workspace instead
+    of a fresh `volume_gb` disk; pair it with `candidates_for_volume(...)`,
+    since the volume only mounts in its own datacenter (see `placement()`).
 
     Deliberately raises rather than queueing: asking Runpod for a GPU with no
     stock can leave a standing order that starts billing whenever capacity turns
@@ -258,7 +304,11 @@ def open_session(
                     "--gpu-id", tier.gpu,
                     "--data-center-ids", tier.datacenter,
                     "--cloud-type", tier.cloud,
-                    "--volume-in-gb", str(volume_gb),
+                    *(
+                        ("--network-volume-id", network_volume_id)
+                        if network_volume_id
+                        else ("--volume-in-gb", str(volume_gb))
+                    ),
                     "--ports", "8188/http,8888/http,22/tcp",
                     "--ssh",
                     "--min-cuda-version", "13.0",
@@ -313,7 +363,7 @@ def ensure_pod(
     queue: JobQueue,
     *,
     name: str = "ai-studio-window",
-    candidates: tuple[Tier, ...] = CANDIDATES,
+    candidates: tuple[Tier, ...] | None = None,
     now: datetime | None = None,
     max_opens_per_day: int | None = None,
 ) -> Session:
@@ -365,6 +415,9 @@ def ensure_pod(
         )
 
     settings = get_settings()
+    network_volume_id: str | None = None
+    if candidates is None:
+        candidates, network_volume_id = placement()
     limit = settings.max_pod_opens_per_day if max_opens_per_day is None else max_opens_per_day
     opened = queue.opens_today(since=hours.day_start(now).timestamp())
     if limit and opened >= limit:
@@ -386,11 +439,19 @@ def ensure_pod(
         max(tier.usd_per_hr for tier in candidates),
     )
 
-    session = open_session(window_end, name=name, candidates=candidates)
+    session = open_session(
+        window_end, name=name, candidates=candidates, network_volume_id=network_volume_id
+    )
     # Recorded before the caller does anything else with the session: a pod
     # that exists but was never counted is one the daily cap cannot see.
     queue.record_pod_open(session.pod_id)
     return session
+
+
+READY_NODE = "MiniMaxH3TurboLoRA"
+"""The node whose presence means `deploy/pod_setup.sh` has finished. It is
+the last thing the script installs before its own readiness check, and it is
+the node the H3 graphs cannot run without."""
 
 
 def wait_ready(
@@ -411,11 +472,19 @@ def wait_ready(
     RunPod's proxy is severed by Cloudflare at ~100 seconds, so a request that
     blocks for longer is not patience, it is a hang.
 
+    "Answers" means answers *with the H3 node pack installed*: the stock
+    template's ComfyUI comes up in seconds and returns 200 on `/system_stats`
+    long before `deploy/pod_setup.sh` has installed the turbo nodes, and a
+    submission in that gap is rejected with `missing_node_type` -- observed
+    live, and it burned two of a job's three attempts before setup finished.
+    So the probe is `/object_info/<node>`, which only lists a node ComfyUI can
+    actually run.
+
     Raises `PodError` on timeout — the pod is up and billing but unusable, and
     that is precisely the state that must not be mistaken for "nothing is
     wrong".
     """
-    url = f"{session.comfy_url}/system_stats"
+    url = f"{session.comfy_url}/object_info/{READY_NODE}"
     deadline = time.monotonic() + timeout_s
     started = time.monotonic()
     last = "no attempt made"
@@ -423,10 +492,14 @@ def wait_ready(
     while True:
         try:
             response = httpx.get(url, timeout=request_timeout_s)
-            if response.status_code == 200:
+            if response.status_code == 200 and READY_NODE in response.json():
                 return time.monotonic() - started
-            last = f"HTTP {response.status_code}"
-        except httpx.HTTPError as exc:
+            last = (
+                f"HTTP {response.status_code}"
+                if response.status_code != 200
+                else f"ComfyUI is up but {READY_NODE} is not installed yet (pod_setup.sh?)"
+            )
+        except (httpx.HTTPError, ValueError) as exc:
             last = f"{type(exc).__name__}: {exc}"
 
         if time.monotonic() >= deadline:
@@ -482,7 +555,7 @@ def close_session(*, name: str = "ai-studio-window") -> list[str]:
     return terminated
 
 
-def close_if_idle(idle_minutes: int = 10, *, name: str = "ai-studio-window") -> str:
+def close_if_idle(idle_minutes: int = 30, *, name: str = "ai-studio-window") -> str:
     """Close early when the window has gone quiet.
 
     A window sized for peak demand is mostly idle at low volume, and idle

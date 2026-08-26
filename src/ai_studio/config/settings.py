@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------- RunPod
 
     runpod_api_key: SecretStr | None = Field(default=None, alias="RUNPOD_API_KEY")
+    network_volume_id: str | None = Field(
+        default=None,
+        alias="AI_STUDIO_NETWORK_VOLUME_ID",
+        description="A RunPod network volume holding the model weights. When set, "
+        "every window pod mounts it at /workspace and is placed in its datacenter, "
+        "so a cold open is a ComfyUI restart instead of a 68GB download "
+        "(measured 2026-08-26: ~15 minutes and $0.18 per open without one).",
+    )
 
     # ---------------------------------------------------------- ComfyUI
 

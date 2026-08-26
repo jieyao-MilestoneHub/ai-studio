@@ -133,3 +133,43 @@ def test_the_vps_runbook_documents_manual_drain_recovery() -> None:
     assert "ai-studio session drain" in script, (
         "the runbook no longer tells an operator how to recover a wedged worker"
     )
+
+
+# ---------------------------------------------------- an open pod after hours
+
+
+def _session_until(window_end: str):
+    from ai_studio.runtime.session import Session
+
+    return Session(
+        pod_id="pod1", gpu="NVIDIA GeForce RTX 4090", datacenter="EUR-IS-2", cloud="SECURE",
+        cost_per_hr=0.74, opened_at="2026-08-26T14:00:00+00:00", window_end=window_end,
+    )
+
+
+def test_the_worker_host_is_open_while_a_pod_is_open_after_hours(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ensure_pod` reuses an open pod outside business hours, but the worker
+    asks `is_open` first. If this said no, the pod sat billing all evening
+    with two requests parsed and waiting — which is what happened."""
+    from datetime import datetime, timezone
+
+    from ai_studio.cli.main import _RuntimeHost
+    from ai_studio.runtime import session as sess
+
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+    get_settings(refresh=True)
+    host = _RuntimeHost(name="t", poll_seconds=1.0)
+    evening = datetime(2026, 8, 26, 14, 30, tzinfo=timezone.utc)  # 22:30 Taipei
+
+    monkeypatch.setattr(sess, "load_state", lambda: None)
+    assert host.is_open(evening) is False
+
+    monkeypatch.setattr(sess, "load_state", lambda: _session_until("2026-08-26T15:59:00+00:00"))
+    assert host.is_open(evening) is True
+    assert host.claim_deadline(evening) == datetime(2026, 8, 26, 15, 59, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(sess, "load_state", lambda: _session_until("2026-08-26T14:00:00+00:00"))
+    assert host.is_open(evening) is False, "a pod past its window is not a reason to claim"
+    get_settings(refresh=True)
