@@ -198,14 +198,21 @@ def _probe_block() -> str:
     return "\n".join(body[1:])
 
 
-def _run_probe(help_text: str) -> subprocess.CompletedProcess[str]:
+def _run_probe(help_text: str, *, sageattention_importable: bool = True) -> subprocess.CompletedProcess[str]:
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("bash not available")
+    # $PY is assigned earlier in the real script, outside this extracted
+    # range, and the probe now shells out to it to check whether
+    # sageattention is actually importable -- not just whether argparse
+    # recognises the flag. `true`/`false` stand in for "the import succeeded"
+    # / "it didn't", ignoring the `-c ...` argument exactly like the real
+    # check only cares about the exit status.
     script = "\n".join(
         [
             "log() { echo \"[setup] $*\"; }",
-            f"HELP={help_text!r}".replace("HELP='", "HELP='"),
+            f"PY={'true' if sageattention_importable else 'false'}",
+            f"HELP={help_text!r}",
             _probe_block(),
             'echo "EXTRA=[$EXTRA]"',
         ]
@@ -222,6 +229,21 @@ def test_both_flags_are_used_when_comfyui_supports_them() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "EXTRA=[ --fast-disk --use-sage-attention]" in result.stdout
+
+
+def test_sage_attention_is_dropped_when_the_package_is_not_installed() -> None:
+    """The failure this check exists to prevent: argparse accepting a flag
+    whose runtime dependency was never installed, and ComfyUI refusing to
+    start at all -- discovered as an empty /object_info response with no
+    other clue which flag caused it."""
+    result = _run_probe(
+        "usage: main.py [--listen] [--fast-disk] [--use-sage-attention] [--port PORT]",
+        sageattention_importable=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "EXTRA=[ --fast-disk]" in result.stdout
+    assert "sageattention is not installed" in result.stdout
 
 
 def test_no_flag_is_passed_when_comfyui_supports_none() -> None:

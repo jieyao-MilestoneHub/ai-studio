@@ -182,8 +182,22 @@ HELP="$("$PY" main.py --help 2>&1 || true)"
 EXTRA=""
 for flag in --fast-disk --use-sage-attention; do
   case "$HELP" in
-    *"$flag"*) EXTRA="$EXTRA $flag" ;;
-    *)         log "  $flag not supported by this ComfyUI, skipping" ;;
+    *"$flag"*)
+      # argparse recognising a flag and its dependency actually being
+      # importable are two different questions. --use-sage-attention passed
+      # this case on an image whose venv had no `sageattention` package, and
+      # ComfyUI refused to start at all rather than warning and continuing --
+      # discovered as an empty /object_info response with no other clue.
+      case "$flag" in
+        --use-sage-attention)
+          "$PY" -c 'import sageattention' 2>/dev/null \
+            && EXTRA="$EXTRA $flag" \
+            || log "  --use-sage-attention supported but sageattention is not installed, skipping"
+          ;;
+        *) EXTRA="$EXTRA $flag" ;;
+      esac
+      ;;
+    *) log "  $flag not supported by this ComfyUI, skipping" ;;
   esac
 done
 log "  launch flags:${EXTRA} --reserve-vram 0.7"
