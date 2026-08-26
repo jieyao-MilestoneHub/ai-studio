@@ -68,7 +68,12 @@ cd "$CU" || die "cannot cd $CU"
 [ -x .venv-cu128/bin/pip ] || die ".venv-cu128 is missing — see trap 1 in this file's header"
 
 log "upgrading ComfyUI to $COMFY_TAG (its own venv, no stash)"
-git fetch --tags --quiet origin || die "git fetch failed"
+# --force: the image ships a baked-in v0.26.2 tag that does not match the
+# object the remote has at that name, and a plain `fetch --tags` refuses to
+# clobber a local tag pointing elsewhere -- exit 1, no other refs updated
+# either. Observed live on runpod/comfyui:cuda12.8. We want whatever origin
+# has, unconditionally, so force is correct here rather than a narrower fix.
+git fetch --tags --force --quiet origin || die "git fetch failed"
 git -c advice.detachedHead=false checkout --quiet -f "tags/$COMFY_TAG" \
   || die "checkout $COMFY_TAG failed"
 log "  now $(git describe --tags)"
@@ -98,9 +103,21 @@ python3 -c 'import hf_transfer' 2>/dev/null ||
 export HF_XET_HIGH_PERFORMANCE=1 HF_HUB_ENABLE_HF_TRANSFER=1 HF_HOME=/workspace/.hf
 command -v hf >/dev/null || pip install -q --break-system-packages -U huggingface_hub
 
+# ~52GB of weights against whatever /workspace actually has. Caught here,
+# loudly, before it is caught 30 minutes later as two silently-missing
+# safetensors files: a download that dies mid-transfer because the disk
+# filled exits same as a download that finished, and `pgrep` alone cannot
+# tell those apart. Observed live: this volume can come back smaller than
+# requested depending on how the pod was deployed.
+AVAIL_KB="$(df -k /workspace | awk 'NR==2{print $4}')"
+[ "$AVAIL_KB" -ge $((55 * 1024 * 1024)) ] || die \
+  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~55GB headroom for ~52GB of weights"
+
+DL_PIDS=()
 dl() {  # repo file destdir
   nohup hf download "$1" "$2" --local-dir "$3" \
     > "/workspace/dl-logs/$(basename "$2").log" 2>&1 &
+  DL_PIDS+=("$!:$(basename "$2")")
   log "  downloading $(basename "$2")"
 }
 log "starting weight downloads (~52GB)"
@@ -116,9 +133,22 @@ dl Heartsync/Flux-NSFW-uncensored lora.safetensors "$M/loras"
 
 # ── 4. wait for the weights, then restart ComfyUI ─────────────────────────
 while pgrep -f 'hf download' >/dev/null; do
-  log "  weights: $(du -sh "$M" 2>/dev/null | cut -f1)"
+  log "  weights: $(du -sh "$M" 2>/dev/null | cut -f1), $(df -h /workspace | awk 'NR==2{print $4}') free"
   sleep 30
 done
+# `pgrep` above only proves every download process has *exited* -- not that
+# it exited zero. Reap each one by the PID captured at launch and check its
+# actual status; a process that dies from ENOSPC exits nonzero same as any
+# other failure, and silently declaring victory here is exactly how the
+# turbo LoRA custom node ends up loaded against a diffusion model that was
+# never actually written to disk.
+FAILED_DL=()
+for entry in "${DL_PIDS[@]}"; do
+  pid="${entry%%:*}"; name="${entry#*:}"
+  wait "$pid" 2>/dev/null || FAILED_DL+=("$name")
+done
+[ "${#FAILED_DL[@]}" -eq 0 ] || die \
+  "download(s) failed: ${FAILED_DL[*]} -- see /workspace/dl-logs/<name>.log ($(df -h /workspace | awk 'NR==2{print $4}') free)"
 log "weights complete: $(du -sh "$M" | cut -f1)"
 # hf download keeps the remote filename, and "lora.safetensors" says nothing
 # in a directory that also holds the H3 turbo LoRA -- and does not match the
