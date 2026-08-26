@@ -103,6 +103,11 @@ Schema:
 
 Rules:
 - Always English, however the request is written.
+- The request is the spec: translate it faithfully, do not embellish or
+  "improve" it. Every concrete word the user used (objects, colours, clothing,
+  styles, places, names, numbers) survives as its plain English equivalent;
+  proper nouns stay verbatim. A thin request gives a short prompt -- never one
+  padded with invented detail.
 - Describe only what is visible: subject, appearance, pose, clothing, setting,
   lighting, composition. Concrete and observable, never abstract mood words.
 - Keep every concrete detail the request gives. Do not invent a subject it did

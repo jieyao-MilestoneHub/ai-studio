@@ -167,7 +167,49 @@ The run was terminated rather than pushed through, at a cost of $0.44 for the
 whole session. The measurement is worth redoing; it is not worth paying for a
 run that was not going to finish inside its window.
 
-## Prompting is the quality lever, not resolution
+## Clip length: 10.1 s by default, measured
+
+📏 RTX 4090, 864×480, int8 + merged LoRA, 6-step turbo, 2026-08-26, one run
+each (`ai-studio generate --seconds N` against a warm pod):
+
+| frames (17k+5) | seconds | ComfyUI "Prompt executed" | VRAM peak (nvidia-smi, 500 ms) |
+|---|---|---|---|
+| 124 | 5.17 | 79–100 s (seven production jobs) | — |
+| 192 | 8.0 | 170 s, of which ~60 s was a model reload (ComfyUI's RAM-pressure cache had evicted it) | 23.5 GB, during the reload |
+| 243 | 10.1 | **79 s** | **22.1 GB** |
+| 294 | 12.25 | 215 s (a reload is likely inside that, like the 192 run; not separated) | 23.0 GB |
+
+Length barely moves the clock: the turbo path's time is dominated by the
+32B text encoder and the VAE, not by frame count, and the VRAM peak comes
+from loading, not from activations. At 10.1 s the subject, clothing and
+street were the same in the first and last frame. 294 frames (12.25 s) also
+rendered, slower and closer to the 24 GB ceiling; the default stops at 243
+because the community guide puts drift risk above ~10 s, one run is not a
+measurement of drift, and 23.0 GB leaves no room for a bigger text encoder.
+`pipeline.convert_worker.DEFAULT_FRAMES` is the single place this number
+lives; `snap_frames` keeps any other request on the grid.
+
+## Prompting
+
+**The request is the spec.** The conversion (`prompts/convert.py`) translates
+the user's words into the schema below; it does not improve them. Every
+concrete word the user typed survives as its plain English equivalent, proper
+nouns and on-screen text stay verbatim, and a thin request produces a short
+description rather than one padded with invented detail. The reason is
+accountability: when a clip is wrong, the user has to be able to see their own
+words in the prompt to know whether the model or the translation lost them.
+
+The shot discipline follows the H3 community guide `[reported]`
+(<https://www.aiposthub.com/minimax-h3-tutorial-prompt-multimodal-video/>):
+first shot opens with the one-sentence core idea (who, where, doing what,
+style); every shot names its timing, restates the subject, its framing and
+one action; at most two cuts under ten seconds; a person who is not speaking
+is said to be not speaking with lips closed; the user's 「不要…」 list becomes
+explicit "no ..." phrases; music is tied to events, not only to seconds. For
+image-to-video the picture already fixes appearance and framing, so the
+prompt states that role up front and describes only what happens next.
+
+ is the quality lever, not resolution
 
 Same seed, same 1344×768, same scene, changing only the prompt:
 

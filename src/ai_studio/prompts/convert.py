@@ -85,14 +85,50 @@ rhythm and dynamics, or exactly N/A. Never abstract mood words.>"
 }
 
 Rules:
-- At most __MAX_SHOTS__ shots. One shot is fine and often better.
+- The request is the spec. Translate it faithfully; do not embellish, do not
+  "improve", do not add subjects, props, settings or moods it did not name.
+  Every concrete word the user used (objects, colours, clothing, styles,
+  places, names, numbers) must survive into the description as its plain
+  English equivalent. Proper nouns and on-screen text stay verbatim, in
+  double quotes. If the request is thin, the description is short -- never
+  padded with invented detail.
+- The first shot's description opens with the core idea in one sentence:
+  who, where, doing what, in what style. Only visible things; never abstract
+  praise like "stunning", "high-end", "cinematic masterpiece".
+- Each shot names four things: when it starts (cut_at_s), the subject
+  (restate the same character or object every cut so it does not change
+  face), the framing (wide / medium / close-up), and the one action.
+- At most __MAX_SHOTS__ shots, and for clips of 10 seconds or less at most 2
+  cuts. One shot is fine and often better.
 - The first shot has no cut_at_s. Every later shot must have one, strictly
   increasing, and strictly less than the total duration given below.
 - description and all audio fields are English even when the request is Chinese.
-- Omit dialogue entirely unless the request implies someone speaks.
-- Preserve any on-screen text the user names, in double quotes, verbatim.
+- Omit dialogue entirely unless the request implies someone speaks. When a
+  person is the subject and nobody speaks, say they are not speaking, lips
+  closed, and give them something to do (walking, looking, reading).
+- If the request lists things that must not appear ("不要..."), carry them into
+  the description as explicit "no ..." phrases (no subtitles, no logos, no
+  extra people, no fast cuts).
+- Music: tie it to events rather than only to seconds ("no music until the
+  door opens, enters as it opens, stops when it shuts"), or exactly N/A.
 - If the request implies a style change part-way through, make it a second shot.
 """.replace("__MAX_SHOTS__", str(MAX_SHOTS))
+
+I2V_BRIEF = """\
+A reference photo is supplied as Picture 1 and it IS the first frame of the
+video: it already fixes the subject, setting, framing and style. Open the
+first shot by stating that role -- "Picture 1 is the opening frame; keep the
+same person, clothing, setting and framing" -- and then describe only what
+happens next: the action and camera, not a re-description of the picture.
+Do not invent a different scene, subject or setting: the request is about
+this photo. If the request names a style change (e.g. "become an oil
+painting"), describe the picture's own content transforming into that style
+over the clip, starting from the photo exactly as it is. Nobody speaks unless
+the request says so."""
+"""What the model is told on top of SYSTEM_PROMPT for image-to-video. Without
+it, "變油畫風格" against a portrait came back as "a traditional Chinese painting
+of a bustling market" -- a perfectly good shot plan for a scene that was not
+in the picture H3 was then told to animate. Observed live, 2026-08-26."""
 
 _MOTIONS = {m.name.lower(): m for m in CameraMotion}
 _AMPLITUDES = {"small": Amplitude.SMALL, "medium": Amplitude.MEDIUM, "large": Amplitude.LARGE}
@@ -165,7 +201,9 @@ def _dialogue(items: Any) -> tuple[Dialogue, ...]:
     return tuple(lines)
 
 
-def build_prompt(payload: dict[str, Any], duration_s: float) -> H3Prompt:
+def build_prompt(
+    payload: dict[str, Any], duration_s: float, *, mode: H3Mode = H3Mode.T2VA
+) -> H3Prompt:
     """Turn model JSON into an `H3Prompt`. Raises on anything unusable."""
     raw_shots = payload.get("shots")
     if not isinstance(raw_shots, list) or not raw_shots:
@@ -193,7 +231,7 @@ def build_prompt(payload: dict[str, Any], duration_s: float) -> H3Prompt:
 
     try:
         return H3Prompt(
-            mode=H3Mode.T2VA,
+            mode=mode,
             duration_s=duration_s,
             shots=tuple(shots),
             overall_soundscape=str(payload.get("overall_soundscape") or "").strip()
@@ -210,7 +248,7 @@ def build_prompt(payload: dict[str, Any], duration_s: float) -> H3Prompt:
 # -------------------------------------------------------------------- fallback
 
 
-def template_prompt(text: str, duration_s: float) -> H3Prompt:
+def template_prompt(text: str, duration_s: float, *, mode: H3Mode = H3Mode.T2VA) -> H3Prompt:
     """A single-shot prompt built without a model.
 
     Used when the LLM is unavailable or keeps producing invalid JSON. The result
@@ -219,7 +257,7 @@ def template_prompt(text: str, duration_s: float) -> H3Prompt:
     it keeps the whole pipeline runnable with no LLM at all.
     """
     return H3Prompt(
-        mode=H3Mode.T2VA,
+        mode=mode,
         duration_s=duration_s,
         shots=(
             PromptShot(
@@ -245,19 +283,24 @@ async def convert(
     client: LlmClient | None,
     *,
     duration_s: float,
+    mode: H3Mode = H3Mode.T2VA,
     attempts: int = 2,
 ) -> tuple[H3Prompt, str]:
     """Convert `text` into an `H3Prompt`. Returns `(prompt, how)`.
+
+    `mode=H3Mode.I2VA` means a photo will be the first frame: the model is
+    briefed to describe *that* picture moving, not to invent a scene.
 
     `how` is "llm", "llm-retry" or "template", and is recorded so a run's quality
     can be traced back to how its prompt was built. Never raises: a request that
     cannot be converted still gets a template prompt rather than being dropped.
     """
     if client is None:
-        return template_prompt(text, duration_s), "template"
+        return template_prompt(text, duration_s, mode=mode), "template"
 
     user = (
-        f"Total duration: {duration_s:.2f} seconds.\n"
+        (I2V_BRIEF + "\n\n" if mode is H3Mode.I2VA else "")
+        + f"Total duration: {duration_s:.2f} seconds.\n"
         f"Request: {text.strip()}\n"
         "Reply with the JSON object only."
     )
@@ -266,11 +309,11 @@ async def convert(
     for attempt in range(attempts):
         try:
             reply = await client.complete(SYSTEM_PROMPT, user)
-            prompt = build_prompt(_extract_json(reply), duration_s)
+            prompt = build_prompt(_extract_json(reply), duration_s, mode=mode)
             return prompt, "llm" if attempt == 0 else "llm-retry"
         except (ConversionError, ValidationError) as exc:
             last_error = str(exc)
         except Exception as exc:  # network, timeout, anything at all
             last_error = f"{type(exc).__name__}: {exc}"
 
-    return template_prompt(text, duration_s), f"template (llm failed: {last_error[:200]})"
+    return template_prompt(text, duration_s, mode=mode), f"template (llm failed: {last_error[:200]})"

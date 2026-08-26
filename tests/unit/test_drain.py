@@ -59,6 +59,7 @@ class FakeProvider:
         self.fail_with = fail_with
         self.never_finish = never_finish
         self.submitted: list[str] = []
+        self.requests: list[Any] = []
         self.cancelled = 0
 
     def capabilities(self) -> ProviderCapabilities:
@@ -66,6 +67,7 @@ class FakeProvider:
 
     async def submit(self, request: Any) -> ClipJob:
         self.submitted.append(request.shot_id)
+        self.requests.append(request)
         if self.fail_with is not None:
             raise self.fail_with
         state = ClipState.RUNNING if self.never_finish else ClipState.COMPLETED
@@ -97,12 +99,14 @@ class FakeImageProvider:
 
     def __init__(self) -> None:
         self.submitted: list[str] = []
+        self.requests: list[Any] = []
 
     def capabilities(self) -> ImageProviderCapabilities:
         return IMAGE_CAPS
 
     async def submit(self, request: Any) -> ClipJob:
         self.submitted.append(request.shot_id)
+        self.requests.append(request)
         return ClipJob(
             provider="fake-flux", job_id=f"j-{request.shot_id}", shot_id=request.shot_id,
             state=ClipState.COMPLETED, submitted_at=0.0, updated_at=0.0,
@@ -382,3 +386,35 @@ async def test_the_breaker_stops_the_window_after_three_failures_in_a_row(
         assert report.failed == MAX_CONSECUTIVE_FAILURES
         assert report.stopped_early is not None
         assert q.counts().get("parsed") == 6 - MAX_CONSECUTIVE_FAILURES, "the rest survive"
+
+
+# ------------------------------------------------------------- clip length
+
+
+@pytest.mark.asyncio
+async def test_the_clip_is_as_long_as_the_prompt_was_planned_for(tmp_path: Path) -> None:
+    """Conversion places every cut inside `duration_s`; rendering another
+    length would put cuts outside the clip. The default is 243 frames
+    (10.1 s), measured to cost the same time and VRAM as 124 on a 4090."""
+    from ai_studio.pipeline.convert_worker import DEFAULT_FRAMES
+
+    with JobQueue(tmp_path / "q.sqlite3") as q:
+        job, _ = q.enqueue("evt-len", "Cgroup", "貓")
+        q.set_parsed(job.id, PROMPT)
+        provider = FakeProvider()
+        await drain_window(
+            q, {MediaKind.VIDEO: provider, MediaKind.IMAGE: FakeImageProvider()},
+            window_end=_end(60), files_dir=tmp_path / "files",
+        )
+    (request,) = provider.requests
+    assert round(request.duration_s * request.fps) == DEFAULT_FRAMES
+
+
+def test_frame_counts_snap_up_to_the_17k_plus_5_grid() -> None:
+    from ai_studio.pipeline.convert_worker import MIN_FRAMES, snap_frames
+
+    assert snap_frames(124) == 124
+    assert snap_frames(125) == 141
+    assert snap_frames(240) == 243
+    assert snap_frames(243) == 243
+    assert snap_frames(10) == MIN_FRAMES

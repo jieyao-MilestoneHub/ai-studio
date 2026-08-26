@@ -12,12 +12,37 @@ from ai_studio.pipeline.queue import JobQueue, JobState
 from ai_studio.prompts import flux as flux_prompts
 from ai_studio.prompts.convert import LlmClient, convert
 from ai_studio.prompts.flux import FluxPrompt
-from ai_studio.prompts.h3 import H3Prompt
+from ai_studio.prompts.h3 import H3Mode, H3Prompt
 
-DEFAULT_DURATION_S = 124 / 24
-"""124 frames at 24fps. The turbo node pack documents that frame counts snap to
-a 17k+5 grid and that 124 is the validated floor, so this is the shortest clip
-the model will actually produce rather than a round number."""
+FRAME_GRID = 17
+"""The turbo node pack documents that frame counts snap to a 17k+5 grid."""
+
+MIN_FRAMES = 124
+"""17*7+5: the validated floor, the shortest clip the model actually produces."""
+
+DEFAULT_FRAMES = 243
+"""17*14+5 = 10.1 s at 24fps, the default clip length.
+
+Measured on an RTX 4090 (864x480, int8, 2026-08-26): 243 frames rendered in
+📏 79 s with a 📏 22.1 GB VRAM peak -- the same time and the same peak as
+124 frames, because the turbo path's cost is dominated by the text encoder
+and VAE rather than by frame count -- and the subject stayed consistent from
+the first frame to the last. 294 frames is the next grid step; it was not
+adopted because the community guide puts drift risk above ~10 s and nothing
+here has measured it yet."""
+
+DEFAULT_DURATION_S = DEFAULT_FRAMES / 24
+
+
+def snap_frames(frames: int) -> int:
+    """The nearest frame count the model accepts, at or above `frames`.
+
+    17k+5, never below MIN_FRAMES. A count off the grid is not an error the
+    node pack raises; it is a clip silently cut to the grid step below.
+    """
+    frames = max(frames, MIN_FRAMES)
+    k = -(-(frames - 5) // FRAME_GRID)  # ceil
+    return FRAME_GRID * k + 5
 
 
 async def convert_job(
@@ -41,7 +66,10 @@ async def convert_job(
     if job.media_kind is MediaKind.IMAGE:
         prompt, how = await flux_prompts.convert(job.text, client)
     else:
-        prompt, how = await convert(job.text, client, duration_s=duration_s)
+        # A cached photo makes this image-to-video: the picture is the first
+        # frame, and the prompt has to be about it rather than a fresh scene.
+        mode = H3Mode.I2VA if job.first_frame_path else H3Mode.T2VA
+        prompt, how = await convert(job.text, client, duration_s=duration_s, mode=mode)
     payload = prompt.model_dump(mode="json")
     payload["_rendered"] = prompt.render()
     payload["_built_by"] = how

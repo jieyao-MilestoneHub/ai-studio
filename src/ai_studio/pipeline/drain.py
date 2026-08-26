@@ -36,6 +36,7 @@ from ai_studio.core.enums import GenMode, MediaKind
 from ai_studio.core.errors import AIStudioError, ProviderError
 from ai_studio.core.image_provider_spec import ImageRequest
 from ai_studio.core.provider_spec import ClipRequest
+from ai_studio.pipeline.convert_worker import DEFAULT_DURATION_S, snap_frames
 from ai_studio.pipeline.queue import Job, JobQueue
 
 STOP_CLAIMING_BEFORE_S = 8 * 60
@@ -221,14 +222,19 @@ async def render_clip(
     if not rendered:
         raise AIStudioError("job has no rendered prompt; conversion did not run")
 
-    frames = round(getattr(caps, "min_clip_s", 5.0) * caps.native_fps)
+    # The clip is as long as the prompt was planned for: conversion chose
+    # `duration_s` and placed every cut inside it, so rendering a different
+    # length would put cuts outside the clip. Snapped to the model's frame
+    # grid, then the prompt's own value is the single source of that number.
+    planned_s = float(plan.get("duration_s") or DEFAULT_DURATION_S)
+    frames = snap_frames(round(planned_s * caps.native_fps))
     request = ClipRequest(
         shot_id=f"job{job.id}",
         mode=GenMode.I2V if job.first_frame_path else GenMode.T2V,
         prompt=str(rendered),
         width=caps.native_width,
         height=caps.native_height,
-        duration_s=max(frames, 124) / caps.native_fps,
+        duration_s=frames / caps.native_fps,
         fps=caps.native_fps,
         seed=job.id,
         first_frame_path=job.first_frame_path,
@@ -266,13 +272,16 @@ async def render_image(
     if not rendered:
         raise AIStudioError("job has no rendered prompt; conversion did not run")
 
+    # `first_frame_path` is the queue's one "photo attached to this request"
+    # column; for an image job it is the picture to re-render, not a frame.
     request = ImageRequest(
         shot_id=f"job{job.id}",
-        mode=GenMode.T2I,
+        mode=GenMode.I2I if job.first_frame_path else GenMode.T2I,
         prompt=str(rendered),
         width=caps.native_width,
         height=caps.native_height,
         seed=job.id,
+        source_image_path=job.first_frame_path,
     )
 
     image_job = await provider.submit(request)

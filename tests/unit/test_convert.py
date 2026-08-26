@@ -218,3 +218,89 @@ async def test_convert_pending_catches_up_a_backlog(tmp_path: Path) -> None:
 async def test_convert_job_on_an_unknown_id_is_a_no_op(tmp_path: Path) -> None:
     with JobQueue(tmp_path / "q.sqlite3") as q:
         assert "skipped" in await convert_job(q, 999, ScriptedLlmClient(_good()))
+
+
+# ------------------------------------------------------------ image-to-video
+
+
+@pytest.mark.asyncio
+async def test_i2v_briefs_the_model_about_the_photo_and_sets_the_mode() -> None:
+    """Without the brief, "變油畫風格" against a portrait came back as a market
+    scene in traditional-painting style -- a plan for a picture H3 was never
+    shown. The photo is the first frame; the prompt must be about it."""
+    from ai_studio.prompts.convert import I2V_BRIEF
+    from ai_studio.prompts.h3 import H3Mode
+
+    client = ScriptedLlmClient(_good())
+    prompt, how = await convert(
+        "變油畫風格", client, duration_s=DURATION, mode=H3Mode.I2VA
+    )
+
+    assert how == "llm"
+    assert prompt.mode is H3Mode.I2VA
+    assert "<Picture 1>" in prompt.render()
+    user_message = client.calls[0][1]
+    assert user_message.startswith(I2V_BRIEF)
+    assert "Do not invent a different scene" in user_message
+
+
+@pytest.mark.asyncio
+async def test_t2v_does_not_mention_a_photo() -> None:
+    from ai_studio.prompts.h3 import H3Mode
+
+    client = ScriptedLlmClient(_good())
+    prompt, _ = await convert("一隻橘貓走在雨中", client, duration_s=DURATION)
+    assert prompt.mode is H3Mode.T2VA
+    assert "Picture 1" not in client.calls[0][1]
+    assert "Picture 1" not in prompt.render()
+
+
+@pytest.mark.asyncio
+async def test_the_template_fallback_keeps_the_i2v_mode() -> None:
+    from ai_studio.prompts.h3 import H3Mode
+
+    prompt, how = await convert("變油畫風格", None, duration_s=DURATION, mode=H3Mode.I2VA)
+    assert how == "template" and prompt.mode is H3Mode.I2VA
+
+
+@pytest.mark.asyncio
+async def test_convert_job_uses_i2v_when_the_request_carries_a_photo(tmp_path: Path) -> None:
+    from ai_studio.prompts.h3 import H3Mode
+
+    with JobQueue(tmp_path / "q.sqlite3") as q:
+        job, _ = q.enqueue("evt-p", "Cgroup", "變油畫風格", first_frame_path="/incoming/x.jpg")
+        client = ScriptedLlmClient(_good())
+        await convert_job(q, job.id, client)
+        assert q.by_id(job.id).prompt["mode"] == H3Mode.I2VA.value
+        assert "Picture 1" in client.calls[0][1]
+
+
+# ------------------------------------------------------ prompt-writing rules
+
+
+def test_the_system_prompt_forbids_embellishment_and_keeps_the_users_words() -> None:
+    """The brief that the LLM works from. Pinned because a prompt rewrite that
+    quietly drops "do not embellish" is exactly how a user's 「橘貓」 becomes
+    "a majestic feline" -- the model would still validate, the clip would
+    still render, and nobody would know why it was the wrong cat."""
+    from ai_studio.prompts.convert import I2V_BRIEF, SYSTEM_PROMPT
+
+    for rule in (
+        "do not embellish",
+        "Every concrete word the user used",
+        "Proper nouns and on-screen text stay verbatim",
+        "not speaking, lips",
+        "at most 2",
+        "cuts. One shot is fine",
+        "\"no ...\" phrases",
+    ):
+        assert rule in SYSTEM_PROMPT, rule
+    assert "describe only what\nhappens next" in I2V_BRIEF
+    assert "Picture 1 is the opening frame" in I2V_BRIEF
+
+
+def test_the_flux_system_prompt_keeps_the_users_words_too() -> None:
+    from ai_studio.prompts.flux import SYSTEM_PROMPT
+
+    assert "translate it faithfully, do not embellish" in SYSTEM_PROMPT
+    assert "proper nouns stay verbatim" in SYSTEM_PROMPT
