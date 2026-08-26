@@ -16,6 +16,7 @@ from ai_studio.api.main import create_app
 from ai_studio.bots.line.reply import NullReplyClient
 from ai_studio.bots.line.verify import sign
 from ai_studio.bots.line.webhook import WebhookHandler
+from ai_studio.config.settings import get_settings
 from ai_studio.pipeline.queue import JobQueue
 
 SECRET = "test-channel-secret"
@@ -37,6 +38,17 @@ def _build(tmp_path: Path, *, allowed_group: str | None = GROUP):
     # get_settings() reads whatever real .env happens to sit in the repo root.
     app = create_app(queue=queue, handler=handler, files_dir=tmp_path / "files", llm=None)
     return app, queue, replier
+
+
+@pytest.fixture
+def structured_prompts(monkeypatch: pytest.MonkeyPatch):
+    """These two tests are about the structured conversion path; the default
+    since 2026-08-27 is raw (the user's words verbatim, no LLM)."""
+    monkeypatch.setenv("AI_STUDIO_PROMPT_MODE", "structured")
+    get_settings(refresh=True)
+    yield
+    monkeypatch.delenv("AI_STUDIO_PROMPT_MODE", raising=False)
+    get_settings(refresh=True)
 
 
 @pytest.fixture
@@ -90,7 +102,9 @@ def test_the_verify_button_gets_a_200(client) -> None:
     assert _post(c, []).status_code == 200
 
 
-def test_a_trigger_message_is_accepted_and_converted_in_the_background(client) -> None:
+def test_a_trigger_message_is_accepted_and_converted_in_the_background(
+    client, structured_prompts
+) -> None:
     """The 200 goes out first; conversion runs after, so it reaches `parsed`.
 
     With no LLM configured that conversion is the template fallback, which is
@@ -126,7 +140,9 @@ def test_an_unknown_token_is_404_not_an_error_page(client) -> None:
     assert c.get("/q/does-not-exist").status_code == 404
 
 
-def test_a_finished_job_shows_a_download_link_and_the_shot_breakdown(client) -> None:
+def test_a_finished_job_shows_a_download_link_and_the_shot_breakdown(
+    client, structured_prompts
+) -> None:
     c, queue, _ = client
     _post(c, [_event("/影片 一隻貓")])
     job = queue.recent()[0]

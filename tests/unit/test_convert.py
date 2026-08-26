@@ -192,7 +192,7 @@ async def test_convert_job_makes_a_queued_request_claimable(tmp_path: Path) -> N
         job, _ = q.enqueue("evt-1", "Cgroup", "一隻橘貓走在雨中")
         assert q.claim_next() is None, "unparsed work must not reach a GPU"
 
-        how = await convert_job(q, job.id, ScriptedLlmClient(_good()))
+        how = await convert_job(q, job.id, ScriptedLlmClient(_good()), prompt_mode="structured")
         assert how == "llm"
 
         claimed = q.claim_next()
@@ -209,7 +209,7 @@ async def test_convert_pending_catches_up_a_backlog(tmp_path: Path) -> None:
         for i in range(3):
             q.enqueue(f"evt-{i}", "Cgroup", f"貓 {i}")
 
-        tally = await convert_pending(q, ScriptedLlmClient(_good(), _good(), _good()))
+        tally = await convert_pending(q, ScriptedLlmClient(_good(), _good(), _good()), prompt_mode="structured")
         assert tally == {"llm": 3}
         assert q.counts().get("parsed") == 3
 
@@ -270,7 +270,7 @@ async def test_convert_job_uses_i2v_when_the_request_carries_a_photo(tmp_path: P
     with JobQueue(tmp_path / "q.sqlite3") as q:
         job, _ = q.enqueue("evt-p", "Cgroup", "變油畫風格", first_frame_path="/incoming/x.jpg")
         client = ScriptedLlmClient(_good())
-        await convert_job(q, job.id, client)
+        await convert_job(q, job.id, client, prompt_mode="structured")
         assert q.by_id(job.id).prompt["mode"] == H3Mode.I2VA.value
         assert "Picture 1" in client.calls[0][1]
 
@@ -304,3 +304,52 @@ def test_the_flux_system_prompt_keeps_the_users_words_too() -> None:
 
     assert "translate it faithfully, do not embellish" in SYSTEM_PROMPT
     assert "proper nouns stay verbatim" in SYSTEM_PROMPT
+
+
+# ------------------------------------------------------------------ raw mode
+
+
+@pytest.mark.asyncio
+async def test_raw_mode_sends_the_users_words_verbatim_and_calls_no_llm(tmp_path: Path) -> None:
+    """The default. The person typing knows what they want; every rewrite is
+    a place their words can be lost, and every LLM call is $0.02 of a warm
+    4090 worker."""
+    class _Explodes:
+        async def complete(self, system: str, user: str, *, max_tokens: int = 1200) -> str:
+            raise AssertionError("raw mode must not call the LLM")
+
+    with JobQueue(tmp_path / "q.sqlite3") as q:
+        job, _ = q.enqueue("evt-raw", "Cgroup", "  一隻橘貓走在雨中  ")
+        how = await convert_job(q, job.id, _Explodes(), prompt_mode="raw")
+        plan = q.by_id(job.id).prompt
+
+    assert how == "raw"
+    assert plan["_rendered"] == "一隻橘貓走在雨中"
+    assert plan["_built_by"] == "raw"
+    assert plan["mode"] == "t2va" and plan["duration_s"] == DEFAULT_DURATION_S
+
+
+@pytest.mark.asyncio
+async def test_raw_mode_keeps_the_picture_binding_line_for_image_to_video(tmp_path: Path) -> None:
+    from ai_studio.prompts.h3 import I2VA_INSTRUCTION
+
+    with JobQueue(tmp_path / "q.sqlite3") as q:
+        job, _ = q.enqueue("evt-raw-i2v", "Cgroup", "變油畫風格", first_frame_path="/in/x.jpg")
+        await convert_job(q, job.id, None, prompt_mode="raw")
+        plan = q.by_id(job.id).prompt
+
+    assert plan["mode"] == "i2va"
+    assert plan["_rendered"].startswith(I2VA_INSTRUCTION)
+    assert plan["_rendered"].endswith("變油畫風格")
+
+
+@pytest.mark.asyncio
+async def test_raw_mode_for_an_image_is_just_the_text(tmp_path: Path) -> None:
+    from ai_studio.core.enums import MediaKind
+
+    with JobQueue(tmp_path / "q.sqlite3") as q:
+        job, _ = q.enqueue("evt-raw-img", "Cgroup", "亞洲辣妹", media_kind=MediaKind.IMAGE)
+        await convert_job(q, job.id, None, prompt_mode="raw")
+        plan = q.by_id(job.id).prompt
+
+    assert plan["_rendered"] == "亞洲辣妹" and "mode" not in plan

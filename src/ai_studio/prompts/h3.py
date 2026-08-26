@@ -223,6 +223,15 @@ def format_cut_time(seconds: float) -> str:
 # -------------------------------------------------------------------- prompt
 
 
+I2VA_INSTRUCTION = (
+    "For the target video, at 0.00 seconds into the target video, "
+    "<Picture 1> (from [Shot 1]) is fully referenced."
+)
+"""The mandatory first line of an image-to-video prompt: it is what binds the
+uploaded picture to the first frame. Model protocol, not prompt-writing --
+even the raw prompt mode keeps it."""
+
+
 class H3Prompt(BaseModel):
     """A complete, schema-conformant MiniMax H3 prompt."""
 
@@ -283,10 +292,7 @@ class H3Prompt(BaseModel):
         if self.mode is H3Mode.T2VA:
             return ""
         if self.mode is H3Mode.I2VA:
-            return (
-                "For the target video, at 0.00 seconds into the target video, "
-                "<Picture 1> (from [Shot 1]) is fully referenced."
-            )
+            return I2VA_INSTRUCTION
         if self.mode is H3Mode.FL2VA:
             return (
                 "How the reference pictures align with the target video — "
