@@ -30,16 +30,36 @@ from ai_studio.pipeline.queue import Job, JobQueue, JobState
 
 _log = logging.getLogger("ai_studio.webhook")
 
-DEFAULT_TRIGGER = "生成"
-"""Messages must start with this. Everything else is ignored *silently* — no
-reply at all — so the bot is invisible during ordinary group conversation."""
+DEFAULT_TRIGGER = "/影片"
+"""Text-to-video. Messages must start with this — exactly this, no bare
+Chinese word and no English alias. Everything else is ignored *silently*, no
+reply at all, so the bot is invisible during ordinary group conversation.
 
-DEFAULT_IMAGE_TRIGGER = "畫圖"
-"""The image-generation counterpart to `DEFAULT_TRIGGER`. Same silent-ignore
-rule applies — an unmatched message gets no reply at all."""
+One spelling per trigger on purpose: 生成 used to work bare, and a bare word
+that is also ordinary Chinese ("生成" appears in normal sentences) is a
+request nobody meant, paid for in GPU-minutes. A leading slash is not a word
+anyone types by accident."""
+
+DEFAULT_IMAGE_TRIGGER = "/圖片"
+"""Text-to-image (Flux). Same one-spelling, silent-ignore rule."""
+
+DEFAULT_I2V_TRIGGER = "/圖影"
+"""Image-to-video: the photo this sender posted within `IMAGE_PAIRING_TTL_S`
+becomes the H3 first frame."""
+
+DEFAULT_I2I_TRIGGER = "/圖圖"
+"""Image-to-image: that same cached photo is re-rendered by Flux under the
+prompt.
+
+`/圖影` and `/圖圖` are the ONLY triggers that claim a cached photo. `/影片`
+after a photo is still text-to-video and `/圖片` is still text-to-image; the
+photo stays cached for the photo-trigger that follows. A photo must never be
+silently consumed by a request that did not ask for it, and a request that
+did ask must never silently run without one — it gets a reply saying what to
+do instead."""
 
 IMAGE_PAIRING_TTL_S = 300.0
-"""How long a photo waits for the 生成 that turns it into a first frame.
+"""How long a photo waits for the /圖影 that turns it into a first frame.
 
 Five minutes: long enough for someone to send a photo, think for a moment,
 and type a description, short enough that a photo from an unrelated part of
@@ -81,6 +101,8 @@ class WebhookHandler:
         allowed_user_ids: Iterable[str] = (),
         trigger: str = DEFAULT_TRIGGER,
         image_trigger: str = DEFAULT_IMAGE_TRIGGER,
+        i2v_trigger: str = DEFAULT_I2V_TRIGGER,
+        i2i_trigger: str = DEFAULT_I2I_TRIGGER,
         max_jobs_per_user_per_day: int = 0,
         clock: Callable[[], datetime] | None = None,
         content: ContentClient | None = None,
@@ -94,6 +116,8 @@ class WebhookHandler:
         self.base_url = base_url.rstrip("/")
         self.trigger = trigger
         self.image_trigger = image_trigger
+        self.i2v_trigger = i2v_trigger
+        self.i2i_trigger = i2i_trigger
         self.max_jobs_per_user_per_day = max_jobs_per_user_per_day
         # Injected so a test can stand at 03:00 without the machine having to.
         # `bots` is L6 and `runtime` is L5, so reaching down for the business
@@ -105,7 +129,7 @@ class WebhookHandler:
         self.content = content
         self.incoming_dir = Path(incoming_dir)
         # (group_id, user_id) -> (saved path, received-at). In-process and
-        # short-lived on purpose: this is a "send a photo, then say 生成"
+        # short-lived on purpose: this is a "send a photo, then say /圖影"
         # pairing window, not durable state -- a restart within the window
         # just means resending the photo, which costs nothing.
         self._pending_images: dict[tuple[str, str], tuple[str, float]] = {}
@@ -176,10 +200,9 @@ class WebhookHandler:
         stripped = self._strip_trigger(text)
         if stripped is None:
             return Outcome("ignored", detail="no trigger word")
-        prompt, media_kind = stripped
+        prompt, media_kind, wants_photo = stripped
         if not prompt:
-            trigger = self.trigger if media_kind is MediaKind.VIDEO else self.image_trigger
-            await self._safe_reply(reply_token, f"用法:{trigger} <想看的畫面>")
+            await self._safe_reply(reply_token, self._usage(media_kind, wants_photo))
             return Outcome("ignored", detail="empty prompt")
 
         user_id = source.get("userId")
@@ -202,14 +225,22 @@ class WebhookHandler:
             )
             return Outcome("rate_limited", detail=str(user_id))
 
-        # Image-to-video only: a Flux job has no first-frame concept, and
-        # popping the cache here regardless of media_kind would let a photo
-        # meant for the next 生成 be silently eaten by an intervening 畫圖.
-        first_frame_path = (
-            self._take_pending_image(group_id or "", user_id)
-            if media_kind is MediaKind.VIDEO
-            else None
-        )
+        # Only the photo-triggers touch the photo cache. Popping it for any
+        # request would let /影片 or /圖片 silently eat a photo meant for the
+        # /圖影 or /圖圖 after them. And a photo-trigger with nothing cached is
+        # told so rather than quietly rendered from text: the user asked for
+        # their picture, and a picture of something else is not that.
+        first_frame_path: str | None = None
+        if wants_photo:
+            first_frame_path = self._take_pending_image(group_id or "", user_id)
+            if first_frame_path is None:
+                trigger = self._photo_trigger(media_kind)
+                await self._safe_reply(
+                    reply_token,
+                    f"找不到你的照片。先傳一張照片到群組,再說「{trigger} <想看的畫面>」"
+                    f"(照片 {int(IMAGE_PAIRING_TTL_S // 60)} 分鐘內有效)。",
+                )
+                return Outcome("ignored", detail="no pending photo")
 
         return await self._accept(
             event,
@@ -242,7 +273,7 @@ class WebhookHandler:
         return Outcome(kind, detail=" ".join(ids) or "unknown")
 
     async def _remember_image(self, event: dict[str, Any], message: dict[str, Any]) -> Outcome:
-        """Download and cache a photo, waiting to see if a 生成 claims it.
+        """Download and cache a photo, waiting to see if a /圖影 claims it.
 
         Deliberately silent either way -- someone sharing a photo in ordinary
         group conversation must not get a bot reply for it, the same rule
@@ -305,9 +336,13 @@ class WebhookHandler:
         # webhookEventId is LINE's own idempotency key. Using it means a
         # redelivery cannot enqueue — and pay for — the same clip twice.
         event_id = str(event.get("webhookEventId") or f"{group_id}:{event.get('timestamp')}")
+        # The request's quote token rides along so the finished media can be
+        # delivered as a *reply to that message* -- the quoted-message card a
+        # person gets when someone answers them -- rather than an @-mention.
+        quote_token = (event.get("message") or {}).get("quoteToken") or None
         job, created = self.queue.enqueue(
             event_id, group_id, prompt, user_id=user_id, media_kind=media_kind,
-            first_frame_path=first_frame_path,
+            first_frame_path=first_frame_path, quote_token=quote_token,
         )
 
         if not created:
@@ -376,7 +411,9 @@ class WebhookHandler:
             await self._safe_reply(
                 reply_token,
                 f"目前沒有排隊中的工作。用「{self.trigger} …」生成影片,"
-                f"或「{self.image_trigger} …」生成圖片。",
+                f"「{self.image_trigger} …」生成圖片,"
+                f"或先傳照片再「{self.i2v_trigger} …」讓照片動起來、"
+                f"「{self.i2i_trigger} …」重畫照片。",
             )
             return Outcome("status")
 
@@ -392,16 +429,28 @@ class WebhookHandler:
 
     # -------------------------------------------------------------- helpers
 
-    def _strip_trigger(self, text: str) -> tuple[str, MediaKind] | None:
-        """The prompt after the trigger word and which kind it asked for, or
-        None if it is not a request at all."""
-        for prefix in (self.trigger, f"/{self.trigger}", "/gen"):
+    def _strip_trigger(self, text: str) -> tuple[str, MediaKind, bool] | None:
+        """The prompt after the trigger, which kind it asked for, and whether
+        it asked for the cached photo as a first frame — or None if it is not
+        a request at all. Exactly one spelling per trigger, no aliases."""
+        for prefix, kind, wants_photo in (
+            (self.i2v_trigger, MediaKind.VIDEO, True),
+            (self.i2i_trigger, MediaKind.IMAGE, True),
+            (self.trigger, MediaKind.VIDEO, False),
+            (self.image_trigger, MediaKind.IMAGE, False),
+        ):
             if text.startswith(prefix):
-                return text[len(prefix) :].strip(), MediaKind.VIDEO
-        for prefix in (self.image_trigger, f"/{self.image_trigger}", "/img"):
-            if text.startswith(prefix):
-                return text[len(prefix) :].strip(), MediaKind.IMAGE
+                return text[len(prefix) :].strip(), kind, wants_photo
         return None
+
+    def _photo_trigger(self, media_kind: MediaKind) -> str:
+        return self.i2v_trigger if media_kind is MediaKind.VIDEO else self.i2i_trigger
+
+    def _usage(self, media_kind: MediaKind, wants_photo: bool) -> str:
+        if wants_photo:
+            return f"用法:先傳一張照片,再說 {self._photo_trigger(media_kind)} <想看的畫面>"
+        trigger = self.trigger if media_kind is MediaKind.VIDEO else self.image_trigger
+        return f"用法:{trigger} <想看的畫面>"
 
     def _is_status_query(self, text: str) -> bool:
         return any(text.startswith(w) for w in STATUS_WORDS)

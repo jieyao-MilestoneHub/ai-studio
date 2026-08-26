@@ -94,7 +94,7 @@ def test_wrong_secret_missing_header_and_tampered_body_all_fail() -> None:
 async def test_bad_signature_raises_so_the_route_can_return_400(wired) -> None:
     handler, _, _ = wired
     with pytest.raises(InvalidSignature):
-        await handler.handle(_body([_text_event("生成 一隻貓")]), "not-a-signature")
+        await handler.handle(_body([_text_event("/影片 一隻貓")]), "not-a-signature")
 
 
 # ------------------------------------------------------- LINE's own probes
@@ -114,7 +114,7 @@ async def test_an_empty_events_array_is_accepted(wired) -> None:
 @pytest.mark.asyncio
 async def test_only_the_allowlisted_group_is_served(wired) -> None:
     handler, queue, _ = wired
-    body = _body([_text_event("生成 一隻貓", group=OTHER_GROUP)])
+    body = _body([_text_event("/影片 一隻貓", group=OTHER_GROUP)])
 
     (outcome,) = await handler.handle(body, sign(body, SECRET))
     assert outcome.action == "wrong_group"
@@ -137,7 +137,7 @@ async def test_ordinary_chatter_is_ignored_with_no_reply_at_all(wired) -> None:
 async def test_standby_mode_produces_no_send(wired) -> None:
     """LINE documents that a standby-mode bot must not send anything."""
     handler, _, replier = wired
-    body = _body([_text_event("生成 一隻貓", mode="standby")])
+    body = _body([_text_event("/影片 一隻貓", mode="standby")])
 
     (outcome,) = await handler.handle(body, sign(body, SECRET))
     assert outcome.action == "standby"
@@ -161,7 +161,7 @@ async def test_non_text_messages_are_ignored(wired) -> None:
 @pytest.mark.asyncio
 async def test_a_trigger_message_is_queued_and_acknowledged_with_a_link(wired) -> None:
     handler, _queue, replier = wired
-    body = _body([_text_event("生成 一隻橘貓走在雨中")])
+    body = _body([_text_event("/影片 一隻橘貓走在雨中")])
 
     (outcome,) = await handler.handle(body, sign(body, SECRET))
 
@@ -176,18 +176,25 @@ async def test_a_trigger_message_is_queued_and_acknowledged_with_a_link(wired) -
 
 
 @pytest.mark.asyncio
-async def test_slash_forms_also_trigger(wired) -> None:
-    handler, _, _ = wired
-    for i, text in enumerate(("/生成 一隻貓", "/gen a cat")):
-        body = _body([_text_event(text, event_id=f"evt-slash-{i}")])
+async def test_the_old_aliases_no_longer_trigger(wired) -> None:
+    """One spelling per trigger. 生成/畫圖 bare, their slash forms, and the
+    English aliases were all retired together: a bare word that is also
+    ordinary Chinese is a request nobody meant, paid for in GPU-minutes."""
+    handler, queue, replier = wired
+    for i, text in enumerate(
+        ("生成 一隻貓", "/生成 一隻貓", "/gen a cat", "畫圖 一隻貓", "/畫圖 一隻貓", "/img a cat")
+    ):
+        body = _body([_text_event(text, event_id=f"evt-old-{i}")])
         (outcome,) = await handler.handle(body, sign(body, SECRET))
-        assert outcome.action == "accepted"
+        assert outcome.action == "ignored", text
+    assert queue.counts() == {}
+    assert not replier.sent, "an unmatched message gets no reply at all"
 
 
 @pytest.mark.asyncio
 async def test_the_image_trigger_enqueues_an_image_job(wired) -> None:
     handler, _queue, replier = wired
-    body = _body([_text_event("畫圖 一隻橘貓")])
+    body = _body([_text_event("/圖片 一隻橘貓")])
 
     (outcome,) = await handler.handle(body, sign(body, SECRET))
 
@@ -202,7 +209,7 @@ async def test_the_image_trigger_enqueues_an_image_job(wired) -> None:
 async def test_the_video_trigger_still_defaults_to_video(wired) -> None:
     """Regression: adding the image trigger must not change the existing path."""
     handler, _queue, _replier = wired
-    body = _body([_text_event("生成 一隻貓")])
+    body = _body([_text_event("/影片 一隻貓")])
 
     (outcome,) = await handler.handle(body, sign(body, SECRET))
     assert outcome.job is not None
@@ -210,31 +217,35 @@ async def test_the_video_trigger_still_defaults_to_video(wired) -> None:
 
 
 @pytest.mark.asyncio
-async def test_image_slash_forms_also_trigger(wired) -> None:
+async def test_the_three_triggers_do_not_overlap(wired) -> None:
+    """/圖片 and /圖影 share a first character; each must map to its own
+    kind and neither may shadow the other."""
     handler, _, _ = wired
-    for i, text in enumerate(("/畫圖 一隻貓", "/img a cat")):
-        body = _body([_text_event(text, event_id=f"evt-img-slash-{i}")])
-        (outcome,) = await handler.handle(body, sign(body, SECRET))
-        assert outcome.action == "accepted"
-        assert outcome.job.media_kind is MediaKind.IMAGE
+    body = _body([_text_event("/圖片 一隻貓", event_id="evt-kind-img")])
+    (img,) = await handler.handle(body, sign(body, SECRET))
+    assert img.action == "accepted" and img.job.media_kind is MediaKind.IMAGE
+    body = _body([_text_event("/影片 一隻貓", event_id="evt-kind-vid")])
+    (vid,) = await handler.handle(body, sign(body, SECRET))
+    assert vid.action == "accepted" and vid.job.media_kind is MediaKind.VIDEO
+    assert vid.job.first_frame_path is None
 
 
 @pytest.mark.asyncio
 async def test_a_bare_image_trigger_gets_usage_help_and_is_not_queued(wired) -> None:
     handler, queue, replier = wired
-    body = _body([_text_event("畫圖")])
+    body = _body([_text_event("/圖片")])
 
     (outcome,) = await handler.handle(body, sign(body, SECRET))
     assert outcome.action == "ignored"
     assert queue.counts() == {}
     assert "用法" in replier.sent[0][1][0]
-    assert "畫圖" in replier.sent[0][1][0]
+    assert "/圖片" in replier.sent[0][1][0]
 
 
 @pytest.mark.asyncio
 async def test_a_bare_trigger_word_gets_usage_help_and_is_not_queued(wired) -> None:
     handler, queue, replier = wired
-    body = _body([_text_event("生成")])
+    body = _body([_text_event("/影片")])
 
     (outcome,) = await handler.handle(body, sign(body, SECRET))
     assert outcome.action == "ignored"
@@ -249,7 +260,7 @@ async def test_a_bare_trigger_word_gets_usage_help_and_is_not_queued(wired) -> N
 async def test_a_redelivered_event_does_not_queue_a_second_time(wired) -> None:
     """LINE redelivers when it does not get a 2xx. This must not bill twice."""
     handler, queue, _ = wired
-    body = _body([_text_event("生成 一隻貓", event_id="evt-dup")])
+    body = _body([_text_event("/影片 一隻貓", event_id="evt-dup")])
     signature = sign(body, SECRET)
 
     first = await handler.handle(body, signature)
@@ -266,8 +277,8 @@ async def test_two_events_in_one_delivery_are_both_handled(wired) -> None:
     handler, queue, _ = wired
     body = _body(
         [
-            _text_event("生成 貓", event_id="evt-a"),
-            _text_event("生成 狗", event_id="evt-b"),
+            _text_event("/影片 貓", event_id="evt-a"),
+            _text_event("/影片 狗", event_id="evt-b"),
         ]
     )
     outcomes = await handler.handle(body, sign(body, SECRET))
@@ -282,7 +293,7 @@ async def test_two_events_in_one_delivery_are_both_handled(wired) -> None:
 async def test_asking_for_status_is_answered_from_the_queue(wired) -> None:
     """Replies are free, so polling by asking costs nothing."""
     handler, _queue, replier = wired
-    body = _body([_text_event("生成 一隻貓", event_id="evt-1")])
+    body = _body([_text_event("/影片 一隻貓", event_id="evt-1")])
     await handler.handle(body, sign(body, SECRET))
 
     ask = _body([_text_event("好了嗎", event_id="evt-2")])
@@ -315,7 +326,7 @@ async def test_a_failing_reply_does_not_break_acceptance(wired) -> None:
             raise RuntimeError("LINE is down")
 
     handler.replier = Broken()  # type: ignore[assignment]
-    body = _body([_text_event("生成 一隻貓")])
+    body = _body([_text_event("/影片 一隻貓")])
 
     (outcome,) = await handler.handle(body, sign(body, SECRET))
     assert outcome.action == "accepted"
@@ -345,7 +356,7 @@ def capture_mode(tmp_path: Path):
 async def test_an_unset_allowlist_never_accepts_work(capture_mode) -> None:
     """The hole this closes: unset must not mean 'serve every group'."""
     handler, queue, _ = capture_mode
-    body = _body([_text_event("生成 一隻貓", group=OTHER_GROUP)])
+    body = _body([_text_event("/影片 一隻貓", group=OTHER_GROUP)])
 
     (outcome,) = await handler.handle(body, sign(body, SECRET))
     assert outcome.action == "capture"
@@ -355,7 +366,7 @@ async def test_an_unset_allowlist_never_accepts_work(capture_mode) -> None:
 @pytest.mark.asyncio
 async def test_capture_mode_reports_the_group_id_for_copying(capture_mode) -> None:
     handler, _, replier = capture_mode
-    body = _body([_text_event("生成 一隻貓", group=OTHER_GROUP)])
+    body = _body([_text_event("/影片 一隻貓", group=OTHER_GROUP)])
 
     (outcome,) = await handler.handle(body, sign(body, SECRET))
     assert outcome.detail == OTHER_GROUP
@@ -377,7 +388,7 @@ async def test_capture_mode_stays_quiet_during_ordinary_chatter(capture_mode) ->
 @pytest.mark.asyncio
 async def test_capture_mode_explains_itself_in_a_one_to_one_chat(capture_mode) -> None:
     handler, _, replier = capture_mode
-    event = _text_event("生成 一隻貓")
+    event = _text_event("/影片 一隻貓")
     event["source"] = {"type": "user", "userId": "U" + "2" * 32}
     body = _body([event])
 
@@ -415,7 +426,7 @@ async def _send(handler, event):
 async def test_an_empty_user_allowlist_lets_any_group_member_through(tmp_path: Path) -> None:
     """The documented default. Group membership is the only boundary."""
     handler, queue, _ = _gated(tmp_path, users=())
-    event = _text_event("生成 一隻貓")
+    event = _text_event("/影片 一隻貓")
     del event["source"]["userId"]  # and even an unidentifiable one, by design
 
     outcomes = await _send(handler, event)
@@ -432,7 +443,7 @@ async def test_a_stranger_in_the_right_group_is_refused(tmp_path: Path) -> None:
     anything, and a render costs real GPU time.
     """
     handler, queue, replier = _gated(tmp_path, users=[MEMBER])
-    event = _text_event("生成 一隻貓")
+    event = _text_event("/影片 一隻貓")
     event["source"]["userId"] = STRANGER
 
     outcomes = await _send(handler, event)
@@ -450,7 +461,7 @@ async def test_an_unknown_user_id_fails_closed(tmp_path: Path) -> None:
     Account terms. "We could not tell who this was" must never resolve to
     "let them spend a GPU-hour"."""
     handler, queue, _ = _gated(tmp_path, users=[MEMBER])
-    event = _text_event("生成 一隻貓")
+    event = _text_event("/影片 一隻貓")
     del event["source"]["userId"]
 
     outcomes = await _send(handler, event)
@@ -463,7 +474,7 @@ async def test_an_unknown_user_id_fails_closed(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_an_allowed_member_still_gets_through(tmp_path: Path) -> None:
     handler, queue, _ = _gated(tmp_path, users=[MEMBER, STRANGER])
-    outcomes = await _send(handler, _text_event("生成 一隻貓"))
+    outcomes = await _send(handler, _text_event("/影片 一隻貓"))
     assert outcomes[0].action == "accepted"
     assert queue.counts() == {"queued": 1}
     queue.close()
@@ -574,7 +585,7 @@ async def test_a_request_out_of_hours_is_still_accepted(tmp_path: Path) -> None:
     It waits in the queue for eleven instead."""
     handler, queue, _ = _at(tmp_path, CLOSED_INSTANT)
 
-    outcomes = await _send(handler, _text_event("生成 一隻貓", event_id="evt-night"))
+    outcomes = await _send(handler, _text_event("/影片 一隻貓", event_id="evt-night"))
 
     assert outcomes[0].action == "accepted"
     assert outcomes[0].job is not None
@@ -593,7 +604,7 @@ async def test_the_same_request_gets_the_same_answer_in_and_out_of_hours(
     open_handler, open_queue, open_replier = _at(tmp_path, OPEN_INSTANT, name="open")
     shut_handler, shut_queue, shut_replier = _at(tmp_path, CLOSED_INSTANT, name="shut")
 
-    event = _text_event("生成 一隻貓", event_id="evt-same")
+    event = _text_event("/影片 一隻貓", event_id="evt-same")
     open_outcomes = await _send(open_handler, event)
     shut_outcomes = await _send(shut_handler, event)
 
@@ -622,11 +633,11 @@ async def test_a_user_over_the_daily_cap_is_refused_before_being_enqueued(
     handler, queue, replier = _at(tmp_path, OPEN_INSTANT, cap=2)
 
     for n in range(2):
-        assert (await _send(handler, _text_event("生成 貓", event_id=f"ok-{n}")))[0].action == (
+        assert (await _send(handler, _text_event("/影片 貓", event_id=f"ok-{n}")))[0].action == (
             "accepted"
         )
 
-    outcomes = await _send(handler, _text_event("生成 貓", event_id="over"))
+    outcomes = await _send(handler, _text_event("/影片 貓", event_id="over"))
 
     assert outcomes[0].action == "rate_limited"
     assert outcomes[0].job is None
@@ -638,8 +649,8 @@ async def test_a_user_over_the_daily_cap_is_refused_before_being_enqueued(
 @pytest.mark.asyncio
 async def test_the_cap_counts_per_user_not_per_group(tmp_path: Path) -> None:
     handler, queue, _ = _at(tmp_path, OPEN_INSTANT, cap=1)
-    first = _text_event("生成 貓", event_id="u1")
-    second = _text_event("生成 狗", event_id="u2")
+    first = _text_event("/影片 貓", event_id="u1")
+    second = _text_event("/影片 狗", event_id="u2")
     second["source"]["userId"] = STRANGER
 
     assert (await _send(handler, first))[0].action == "accepted"
@@ -654,7 +665,7 @@ async def test_the_cap_is_off_by_default(tmp_path: Path) -> None:
     handler, queue, _ = _at(tmp_path, OPEN_INSTANT)
 
     for n in range(12):
-        outcomes = await _send(handler, _text_event("生成 貓", event_id=f"many-{n}"))
+        outcomes = await _send(handler, _text_event("/影片 貓", event_id=f"many-{n}"))
         assert outcomes[0].action == "accepted"
     queue.close()
 
@@ -664,11 +675,39 @@ async def test_a_failed_request_still_counts_against_the_cap(tmp_path: Path) -> 
     """The cap is on asking, not on succeeding — otherwise a user whose prompts
     keep failing validation has an unlimited allowance."""
     handler, queue, _ = _at(tmp_path, OPEN_INSTANT, cap=1)
-    outcomes = await _send(handler, _text_event("生成 貓", event_id="doomed"))
+    outcomes = await _send(handler, _text_event("/影片 貓", event_id="doomed"))
     assert outcomes[0].job is not None
     queue.fail(outcomes[0].job.id, "prompt rejected")
 
-    again = await _send(handler, _text_event("生成 貓", event_id="second"))
+    again = await _send(handler, _text_event("/影片 貓", event_id="second"))
 
     assert again[0].action == "rate_limited"
     queue.close()
+
+
+# ------------------------------------------------------------ quoted reply
+
+
+@pytest.mark.asyncio
+async def test_the_request_quote_token_is_kept_for_delivery(wired) -> None:
+    """Delivery replies to the request message (LINE's quoted-message card)
+    rather than @-mentioning, so the token LINE hands us with the message has
+    to survive until the render is done -- hours later, in another process."""
+    handler, queue, _ = wired
+    event = _text_event("/影片 一隻貓", event_id="evt-q")
+    event["message"]["quoteToken"] = "qt-abc"
+    body = _body([event])
+
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+
+    assert outcome.job is not None
+    assert outcome.job.quote_token == "qt-abc"
+    assert queue.by_id(outcome.job.id).quote_token == "qt-abc"
+
+
+@pytest.mark.asyncio
+async def test_a_message_without_a_quote_token_is_still_accepted(wired) -> None:
+    handler, _, _ = wired
+    body = _body([_text_event("/影片 一隻貓", event_id="evt-nq")])
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+    assert outcome.action == "accepted" and outcome.job.quote_token is None

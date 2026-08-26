@@ -23,9 +23,10 @@ from typing import Any
 from ai_studio import media
 from ai_studio.comfy.client import ComfyClient
 from ai_studio.comfy.graph import IMAGE_REQUIRED_BINDINGS, Workflow
-from ai_studio.comfy.jobs import cancel_job, fetch_output, poll_job
+from ai_studio.comfy.jobs import cancel_job, fetch_output, poll_job, upload_reference_image
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import GenMode, JobState
+from ai_studio.core.errors import ProviderSubmitError
 from ai_studio.core.image_provider_spec import (
     ImageAsset,
     ImageJob,
@@ -46,6 +47,13 @@ MEASURED_LATENCY_S = 30.0
 measurement yet at any resolution. Negligible next to H3's 2-6min/clip either
 way, so a rough number is enough for cost estimation until re-measured."""
 
+DEFAULT_I2I_DENOISE = 0.7
+"""[speculative] How much of the source photo image-to-image is allowed to
+repaint: 1.0 ignores it entirely (that is text-to-image), 0.0 returns it
+untouched. 0.7 is the usual starting point for "keep the composition, change
+the content"; re-tune on the pod. Only the `flux_dev_i2i.json` sibling has a
+`denoise` binding — the text-to-image graph runs at 1.0 by construction."""
+
 DEFAULT_LORA_STRENGTH = 1.0
 """Weight given to `flux_nsfw_uncensored_v1.safetensors`, the value its own
 model card uses `[reported]`.
@@ -62,16 +70,19 @@ def flux_capabilities(
     height: int = 1024,
     *,
     hourly_usd: float = DEFAULT_HOURLY_USD,
-    steps: int = DEFAULT_STEPS,
 ) -> ImageProviderCapabilities:
-    """Capabilities for Flux.1-dev at a given native canvas."""
+    """Capabilities for Flux.1-dev at a given native canvas.
+
+    `steps` is not here on purpose: the capabilities snapshot has no field for
+    it, and an argument that is accepted and ignored is the silent kind of
+    wrong. It lives on the provider, which is what binds it into the graph."""
     cost_per_image = round(hourly_usd * MEASURED_LATENCY_S / 3600.0, 6)
     return ImageProviderCapabilities(
         provider="flux",
         model_id=f"flux-dev@{width}x{height}",
         native_width=width,
         native_height=height,
-        modes=frozenset({GenMode.T2I}),
+        modes=frozenset({GenMode.T2I, GenMode.I2I}),
         supports_seed=True,
         supports_negative_prompt=False,
         max_prompt_chars=2000,
@@ -97,16 +108,29 @@ class FluxComfyUIProvider:
         hourly_usd: float = DEFAULT_HOURLY_USD,
         steps: int = DEFAULT_STEPS,
         lora_strength: float = DEFAULT_LORA_STRENGTH,
+        i2i_denoise: float = DEFAULT_I2I_DENOISE,
         **_: Any,
     ) -> None:
         settings = get_settings()
         self.workflow = Workflow.load(workflow, required_bindings=IMAGE_REQUIRED_BINDINGS)
+        # Same pattern as H3's i2va sibling: image-to-image is a second static
+        # graph with a LoadImage in it, found by name next to the text-only one.
+        self._i2i_workflow = Workflow.sibling(
+            workflow, "flux_dev", "flux_dev_i2i",
+            required_bindings=IMAGE_REQUIRED_BINDINGS | {"source_image", "denoise"},
+        )
+        self._i2i_denoise = i2i_denoise
         self.client = ComfyClient(
             base_url or settings.comfy_url, timeout_s=settings.comfy_timeout_s
         )
         self._hourly_usd = hourly_usd
         self._lora_strength = lora_strength
-        self._caps = flux_capabilities(width, height, hourly_usd=hourly_usd, steps=steps)
+        # The sampler step count the graph actually runs. A request may
+        # override it; when it does not (the queue path never does), this is
+        # bound explicitly rather than leaving the JSON's own default to decide,
+        # so re-measuring DEFAULT_STEPS changes what renders.
+        self._steps = steps
+        self._caps = flux_capabilities(width, height, hourly_usd=hourly_usd)
 
     def capabilities(self) -> ImageProviderCapabilities:
         return self._caps
@@ -114,14 +138,28 @@ class FluxComfyUIProvider:
     # ---------------------------------------------------------------- submit
 
     async def submit(self, request: ImageRequest) -> ImageJob:
+        workflow = self.workflow
         values: dict[str, Any] = {
             "prompt": request.prompt,
             "width": request.width,
             "height": request.height,
         }
+
+        if request.source_image_path is not None:
+            if self._i2i_workflow is None:
+                raise ProviderSubmitError(
+                    f"a source image was given but {self.workflow.source} has no "
+                    "image-to-image sibling workflow"
+                )
+            workflow = self._i2i_workflow
+            values["source_image"] = await upload_reference_image(
+                self.client, request.source_image_path
+            )
+            values["denoise"] = self._i2i_denoise
+
         for name, value in (
             ("seed", request.seed),
-            ("steps", request.steps),
+            ("steps", request.steps if request.steps is not None else self._steps),
             # Set explicitly on every submission rather than left to the JSON's
             # own default. The whole failure this guards against is a LoRA that
             # is present in the graph and doing nothing, which produces a
@@ -129,10 +167,10 @@ class FluxComfyUIProvider:
             ("lora_strength", self._lora_strength),
             ("filename", f"ai_studio_{request.shot_id}"),
         ):
-            if value is not None and name in self.workflow.bindings:
+            if value is not None and name in workflow.bindings:
                 values[name] = value
 
-        graph = self.workflow.with_values(values)
+        graph = workflow.with_values(values)
         now = time.time()
         prompt_id = await self.client.queue_prompt(graph)
 

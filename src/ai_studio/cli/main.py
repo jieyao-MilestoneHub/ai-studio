@@ -362,11 +362,10 @@ def line_capture_group(
     console.print("  1. add the official account to the group")
     console.print("  2. point the LINE console Webhook URL at "
                   f"{settings.public_base_url.rstrip('/')}/callback")
-    # Suggest the ASCII alias: a CJK trigger word printed to a cp950 console
-    # comes out as mojibake, which makes the instruction useless. /gen, /生成
-    # and 生成 all trigger, so tell them the one that survives the terminal.
-    console.print("  3. say [cyan]/gen test[/cyan] in the group "
-                  "(the CJK trigger also works, but may not print here)")
+    # The trigger is CJK and has no ASCII alias any more (one spelling per
+    # trigger, see bots.line.webhook). On a cp950 console it may print as
+    # mojibake; the docs carry the same string for copy-pasting.
+    console.print("  3. say [cyan]/影片 test[/cyan] in the group")
     console.print("  the group id will be printed here, and replied into the chat")
     console.print("")
     _run_server(host, port)
@@ -425,17 +424,20 @@ def session_open(
         vps_monthly_usd=settings.vps_monthly_usd,
     )
     try:
-        guard.refuse_if_broke(sess.CANDIDATES)
+        candidates, network_volume_id = sess.placement()
+        guard.refuse_if_broke(candidates)
     except AIStudioError as exc:
         console.print(f"[red]window did not open:[/red] {exc}")
         raise typer.Exit(1) from None
 
     end = _window_end(until, tz)
-    worst_case_hourly = max(tier.usd_per_hr for tier in sess.CANDIDATES)
+    worst_case_hourly = max(tier.usd_per_hr for tier in candidates)
     end = guard.throttle(end, datetime.now(timezone.utc), worst_case_hourly)
 
     try:
-        s = sess.open_session(end, name=name)
+        s = sess.open_session(
+            end, name=name, candidates=candidates, network_volume_id=network_volume_id
+        )
     except AIStudioError as exc:
         console.print(f"[red]window did not open:[/red] {exc}")
         raise typer.Exit(1) from None
@@ -497,7 +499,7 @@ def session_status() -> None:
 
 @session_app.command("reap")
 def session_reap(
-    idle_minutes: int = typer.Option(20, help="Close early after this much idle time."),
+    idle_minutes: int = typer.Option(30, help="Close early after this much idle time. A cold open costs ~15 min, so closing sooner than that throws away more than it saves."),
 ) -> None:
     """Close the window early if it has gone quiet. Schedule this every 5 minutes.
 
@@ -622,19 +624,39 @@ class _RuntimeHost:
 
         return datetime.now(timezone.utc)
 
+    @staticmethod
+    def _live_session(now: datetime | None) -> object | None:
+        """The pod already open, if any. `runtime.session.ensure_pod` reuses
+        one outside business hours rather than leaving paid-for GPU-minutes
+        idle — but the worker asks `is_open` *before* it asks for a pod, so
+        that rule has to be visible here too or the reuse never happens."""
+        from ai_studio.runtime import session as sess
+
+        live = sess.load_state()
+        if live is None or live.past_window(now):
+            return None
+        return live
+
     def is_open(self, now: datetime | None = None) -> bool:
         from ai_studio.runtime import hours
 
-        return hours.is_open(now)
+        return hours.is_open(now) or self._live_session(now) is not None
 
     def claim_deadline(self, now: datetime | None = None) -> datetime:
-        """The end of business hours, not the end of a two-hour lease.
+        """The bell new work must finish before.
 
-        Same reserve as `drain_window`'s, different bell: this is what stops a
-        render being started at 12:58 that `--terminate-after` then throws away.
+        Inside business hours that is the end of the day, not the end of a
+        two-hour lease — this is what stops a render being started at 12:58
+        that `--terminate-after` then throws away. With a pod open past the
+        bell (a manually extended window), it is that pod's own `window_end`,
+        for the same reason.
         """
         from ai_studio.runtime import hours
+        from ai_studio.runtime.session import Session
 
+        live = cast(Session | None, self._live_session(now))
+        if live is not None and not hours.is_open(now):
+            return datetime.fromisoformat(live.window_end)
         return hours.window_end_for(now)
 
     def ensure_pod(self, queue: object) -> object:
@@ -708,7 +730,7 @@ class _RuntimeHost:
         if asset is None:
             messages = line_push.failed_messages(
                 reason=job.error or "unknown", status_url=status_url,
-                prompt=job.text, user_id=job.user_id,
+                prompt=job.text, quote_token=job.quote_token,
             )
             fallback = f"{job.text[:40]} 失敗了\n{status_url}"
         else:
@@ -724,12 +746,12 @@ class _RuntimeHost:
                     status_url=status_url,
                     is_video=job.media_kind is MediaKind.VIDEO,
                     prompt=job.text,
-                    user_id=job.user_id,
+                    quote_token=job.quote_token,
                 )
             fallback = f"{job.text[:40]} 完成了\n{status_url}"
             if not messages:
                 messages = [
-                    line_push.text_message(fallback, mention_user_id=job.user_id)
+                    line_push.text_message(fallback, quote_token=job.quote_token)
                 ]
 
         return await line_push.deliver(
@@ -740,7 +762,7 @@ class _RuntimeHost:
             # LINE treats a repeat of this key as the same send, so a retry
             # after a timeout cannot bill the group twice.
             retry_key=job.token,
-            user_id=job.user_id,
+            quote_token=job.quote_token,
         )
 
 

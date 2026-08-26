@@ -1,8 +1,12 @@
 """LINE Content API client: download a message's attached media.
 
-A separate host from the rest of the Messaging API (`api-data.line.biz`, not
+A separate host from the rest of the Messaging API (`api-data.line.me`, not
 `api.line.me`) -- LINE splits binary content onto its own domain, and hitting
-the wrong one gets a 404 rather than a redirect.
+the wrong one gets a 404 rather than a redirect. And it is `.me`, not `.biz`:
+the docs live on developers.line.biz, the API does not, and `api-data.line.biz`
+does not resolve at all. That typo shipped once and every photo sent to the
+bot was dropped with "Name or service not known" -- hence the test that pins
+the host.
 
 Reference: https://developers.line.biz/en/reference/messaging-api/#get-content
 """
@@ -13,7 +17,7 @@ from typing import Protocol
 
 import httpx
 
-CONTENT_ENDPOINT = "https://api-data.line.biz/v2/bot/message/{message_id}/content"
+CONTENT_ENDPOINT = "https://api-data.line.me/v2/bot/message/{message_id}/content"
 
 
 class LineContentError(Exception):

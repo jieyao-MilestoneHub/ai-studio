@@ -1,6 +1,6 @@
 # Flux.1-dev
 
-The image-generation model behind the LINE bot's `畫圖`/`/img` trigger. Run
+The image-generation model behind the LINE bot's `/圖片` trigger. Run
 through ComfyUI on the same RunPod pod as MiniMax H3 — see
 [line-bot.md](line-bot.md) for the dual-trigger design and [runpod.md](runpod.md)
 for what sharing a pod costs in download time.
@@ -136,6 +136,25 @@ This is **not** being changed on paper. Both are defensible, the difference is
 visible rather than arguable, and two images at the same seed cost seconds of
 GPU time — so it is Phase 7.1's third check, and whichever wins gets written
 back into the workflow with a date.
+
+## Image-to-image (`/圖圖`)
+
+Flux.1-dev does img2img with no extra weights: the photo is VAE-encoded into
+the starting latent and sampling begins part-way down the schedule instead of
+from pure noise. `workflows/flux_dev_i2i.json` is that graph; `denoise` is the
+one new knob — 1.0 would ignore the photo (text-to-image), 0.0 would return it
+untouched, and `providers.flux.DEFAULT_I2I_DENOISE` starts at 0.7
+`[speculative]`. The photo is centre-cropped and scaled to the native canvas
+first so output size and VRAM match text-to-image.
+
+What this is **not**: instruction editing ("swap the cat for a dog, keep the
+background"). Classic img2img keeps composition and colour and repaints
+content in proportion to `denoise`; it does not understand the picture. That
+would be **Flux Kontext** (another ~12 GB of weights, same non-commercial
+licence, fp8 on a 24 GB card) or **Flux Redux** (SigLIP vision encoder plus a
+Redux module, for style/content variations). Neither is wired; if img2img
+turns out too blunt on real requests, Kontext is the next step, not more
+denoise tuning.
 
 ## Three licence and policy facts, in one place
 

@@ -97,7 +97,7 @@ def test_a_trigger_message_is_accepted_and_converted_in_the_background(client) -
     exactly the behaviour that keeps the pipeline runnable with no LLM at all.
     """
     c, queue, replier = client
-    assert _post(c, [_event("生成 一隻橘貓走在雨中")]).status_code == 200
+    assert _post(c, [_event("/影片 一隻橘貓走在雨中")]).status_code == 200
     assert queue.counts() == {"parsed": 1}
     assert "想查進度可以看" in replier.sent[0][1][0]
 
@@ -112,7 +112,7 @@ def test_a_trigger_message_is_accepted_and_converted_in_the_background(client) -
 
 def test_the_status_page_renders_for_a_known_token(client) -> None:
     c, queue, _ = client
-    _post(c, [_event("生成 一隻貓")])
+    _post(c, [_event("/影片 一隻貓")])
     token = queue.recent()[0].token
 
     response = c.get(f"/q/{token}")
@@ -128,7 +128,7 @@ def test_an_unknown_token_is_404_not_an_error_page(client) -> None:
 
 def test_a_finished_job_shows_a_download_link_and_the_shot_breakdown(client) -> None:
     c, queue, _ = client
-    _post(c, [_event("生成 一隻貓")])
+    _post(c, [_event("/影片 一隻貓")])
     job = queue.recent()[0]
     queue.set_parsed(job.id, PROMPT)
     queue.claim_next(gpu_tier="L40S/COMMUNITY")
@@ -143,7 +143,7 @@ def test_a_finished_job_shows_a_download_link_and_the_shot_breakdown(client) -> 
 
 def test_a_finished_image_job_shows_an_img_tag_not_a_broken_video_tag(client) -> None:
     c, queue, _ = client
-    _post(c, [_event("畫圖 一隻貓")])
+    _post(c, [_event("/圖片 一隻貓")])
     job = queue.recent()[0]
     queue.set_parsed(job.id, {"_rendered": "a cat"})
     queue.claim_next(gpu_tier="L40S/COMMUNITY")
@@ -159,7 +159,7 @@ def test_a_finished_image_job_shows_an_img_tag_not_a_broken_video_tag(client) ->
 def test_the_page_escapes_user_text(client) -> None:
     """Prompts come from strangers in a group chat."""
     c, queue, _ = client
-    _post(c, [_event("生成 <script>alert(1)</script>")])
+    _post(c, [_event("/影片 <script>alert(1)</script>")])
     token = queue.recent()[0].token
 
     body = c.get(f"/q/{token}").text
@@ -210,7 +210,7 @@ def test_a_missing_file_is_404(client) -> None:
 
 def test_healthz_reports_the_queue(client) -> None:
     c, _, _ = client
-    _post(c, [_event("生成 一隻貓")])
+    _post(c, [_event("/影片 一隻貓")])
 
     payload = c.get("/healthz").json()
     assert payload["ok"] is True
@@ -224,7 +224,7 @@ def test_capture_mode_reports_the_group_id_and_queues_nothing(tmp_path: Path) ->
     """The shipping default: no allowlist yet, so accept no work."""
     app, queue, replier = _build(tmp_path, allowed_group=None)
     with TestClient(app) as c:
-        assert _post(c, [_event("生成 一隻貓")]).status_code == 200
+        assert _post(c, [_event("/影片 一隻貓")]).status_code == 200
     assert queue.counts() == {}
     assert GROUP in replier.sent[-1][1][0]
     queue.close()
@@ -254,7 +254,7 @@ def test_an_accepted_event_logs_its_token(client, caplog) -> None:
     has to carry it: without it a support question cannot be traced to a job."""
     c, _, replier = client
     with caplog.at_level(logging.INFO, logger="ai_studio.webhook"):
-        _post(c, [_event("生成 一隻貓")])
+        _post(c, [_event("/影片 一隻貓")])
 
     # The reply carries the status URL, so the token it ends with is the same
     # handle the user holds -- the log line has to name that exact one.

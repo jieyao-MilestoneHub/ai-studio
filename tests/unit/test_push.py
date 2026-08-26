@@ -1,4 +1,4 @@
-"""Push delivery: the message objects, the mention, and the two degradations.
+"""Push delivery: the message objects, the quoted reply, and the two degradations.
 
 Push is billed **per recipient**, so every assertion here is either about
 sending the right thing once, or about not going silent when sending fails.
@@ -14,7 +14,6 @@ from typing import Any
 import pytest
 
 from ai_studio.bots.line.push import (
-    MENTION_HANDLE,
     LineMediaRejected,
     LinePushError,
     LineQuotaExhausted,
@@ -30,6 +29,7 @@ from ai_studio.bots.line.push import (
 GROUP = "Cae56f94637c1234567890abcdef12345"
 USER = "U" + "1" * 32
 BASE = "https://vg.example.com"
+QUOTE = "quote-token-from-the-request-message"
 
 
 class FakePushClient:
@@ -53,20 +53,21 @@ class FakePushClient:
 
 def test_a_video_delivery_is_a_video_object_then_a_text_object() -> None:
     """Media first so the group sees the thing before the caption — and the
-    mention has to live on the text, because a video object cannot carry one."""
+    quote has to live on the text, because a video object cannot carry one."""
     messages = delivered_messages(
         media_url=f"{BASE}/files/abc.mp4",
         preview_url=f"{BASE}/files/abc_poster.jpg",
         status_url=f"{BASE}/q/abc",
         is_video=True,
         prompt="一隻橘貓走在雨中",
-        user_id=USER,
+        quote_token=QUOTE,
     )
 
     assert [m["type"] for m in messages] == ["video", "text"]
+    assert messages[1]["quoteToken"] == QUOTE
     assert messages[0]["originalContentUrl"] == f"{BASE}/files/abc.mp4"
     assert messages[0]["previewImageUrl"] == f"{BASE}/files/abc_poster.jpg"
-    assert "mention" not in messages[0]
+    assert "quoteToken" not in messages[0]
 
 
 def test_an_image_delivery_is_an_image_object_then_a_text_object() -> None:
@@ -76,7 +77,7 @@ def test_an_image_delivery_is_an_image_object_then_a_text_object() -> None:
         status_url=f"{BASE}/q/abc",
         is_video=False,
         prompt="a fox",
-        user_id=USER,
+        quote_token=QUOTE,
     )
 
     assert [m["type"] for m in messages] == ["image", "text"]
@@ -93,46 +94,43 @@ def test_a_preview_is_never_the_original() -> None:
         status_url=f"{BASE}/q/abc",
         is_video=False,
         prompt="a fox",
-        user_id=USER,
+        quote_token=QUOTE,
     )
     assert messages[0]["previewImageUrl"] != messages[0]["originalContentUrl"]
 
 
-# ------------------------------------------------------------------ mention
+# -------------------------------------------------------------- quoted reply
 
 
-def test_the_mention_offsets_point_at_the_handle_in_the_text() -> None:
-    """`index` and `length` are offsets into `text`. Off by one and LINE either
-    mentions the wrong substring or rejects the object."""
-    message = text_message("你的影片好了", mention_user_id=USER)
+def test_the_caption_is_a_reply_to_the_request_message() -> None:
+    """Not an @-mention: the legacy mention object shipped as the literal text
+    "@你", and the group asked for the reply UI a person gets when someone
+    answers them. That is `quoteToken` on the text object."""
+    message = text_message("你的影片好了", quote_token=QUOTE)
 
-    (mentionee,) = message["mention"]["mentionees"]
-    body = message["text"]
-    assert mentionee["userId"] == USER
-    assert body[mentionee["index"] : mentionee["index"] + mentionee["length"]] == MENTION_HANDLE
-    assert body.startswith("@")
+    assert message == {"type": "text", "text": "你的影片好了", "quoteToken": QUOTE}
+    assert "mention" not in message and "substitution" not in message
 
 
-def test_no_user_id_means_no_mention_field_at_all() -> None:
-    """LINE omits `source.userId` for a user who has not accepted the Official
-    Account terms. Losing the whole delivery over a missing @ is a far worse
-    trade than delivering it unaddressed."""
-    message = text_message("你的影片好了", mention_user_id=None)
+def test_no_quote_token_means_a_plain_message_not_an_error() -> None:
+    """LINE omits the quote token on some message kinds. Losing the whole
+    delivery over a missing quote is a far worse trade than delivering it
+    unquoted."""
+    message = text_message("你的影片好了", quote_token=None)
 
-    assert "mention" not in message
-    assert not message["text"].startswith("@")
+    assert message == {"type": "text", "text": "你的影片好了"}
 
 
-def test_a_failed_request_still_mentions_the_person_waiting_on_it() -> None:
+def test_a_failed_request_still_replies_to_the_person_waiting_on_it() -> None:
     (message,) = failed_messages(
         reason="provider failed 3x: the pod died",
         status_url=f"{BASE}/q/abc",
         prompt="一隻橘貓",
-        user_id=USER,
+        quote_token=QUOTE,
     )
 
     assert message["type"] == "text"
-    assert message["mention"]["mentionees"][0]["userId"] == USER
+    assert message["quoteToken"] == QUOTE
     assert "the pod died" in message["text"]
     assert f"{BASE}/q/abc" in message["text"]
 
@@ -167,11 +165,11 @@ async def test_quota_exhaustion_degrades_to_text_rather_than_to_silence() -> Non
         client, to=GROUP,
         messages=delivered_messages(
             media_url=f"{BASE}/files/a.mp4", preview_url=f"{BASE}/files/a.jpg",
-            status_url=f"{BASE}/q/a", is_video=True, prompt="cat", user_id=USER,
+            status_url=f"{BASE}/q/a", is_video=True, prompt="cat", quote_token=QUOTE,
         ),
         fallback_text=f"cat 完成了\n{BASE}/q/a",
         retry_key="tok-1",
-        user_id=USER,
+        quote_token=QUOTE,
     )
 
     assert outcome == "quota-exhausted-text-only"
@@ -179,7 +177,7 @@ async def test_quota_exhaustion_degrades_to_text_rather_than_to_silence() -> Non
     fallback = client.sent[1][1]
     assert [m["type"] for m in fallback] == ["text"]
     assert f"{BASE}/q/a" in fallback[0]["text"]
-    assert fallback[0]["mention"]["mentionees"][0]["userId"] == USER
+    assert fallback[0]["quoteToken"] == QUOTE
 
 
 @pytest.mark.asyncio

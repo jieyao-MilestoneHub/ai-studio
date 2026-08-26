@@ -44,13 +44,14 @@ PUSH_ENDPOINT = "https://api.line.me/v2/bot/message/push"
 MAX_TEXT_CHARS = 5000
 MAX_MESSAGES_PER_PUSH = 5
 
-MENTION_HANDLE = "@你"
-"""What a mention renders as before the client substitutes the display name.
+"""Delivery replies to the request instead of @-mentioning the requester.
 
-The text only has to carry an `@`-prefixed token whose offset and length the
-mentionee entry points at; LINE resolves the actual name from `userId`. Using a
-placeholder rather than the real display name avoids a profile API call on the
-delivery path, and avoids being wrong when someone renames themselves.
+`quoteToken` on the caption makes LINE render it as a reply to the original
+message -- the quoted card a person gets when someone answers them -- which
+is what the group asked for after an @-mention shipped as the literal text
+"@你". Only text and sticker objects can carry a quote, so it lives on the
+caption; the media object goes first and unquoted. A token LINE no longer
+honours is not a delivery failure: the caption just arrives unquoted.
 """
 
 _log = logging.getLogger("ai_studio.push")
@@ -88,31 +89,17 @@ class PushClientLike(Protocol):
 # ------------------------------------------------------------------ builders
 
 
-def text_message(text: str, *, mention_user_id: str | None = None) -> dict[str, Any]:
-    """A text message object, optionally opening with a mention.
+def text_message(text: str, *, quote_token: str | None = None) -> dict[str, Any]:
+    """A text message object, optionally as a reply to `quote_token`'s message.
 
-    `index` and `length` are offsets into `text`. LINE counts them in UTF-16
-    code units; every character this builds a mention out of is in the BMP, so
-    Python's `len()` agrees. A caller that puts an emoji before the mention
-    would not be — hence the mention always goes first.
-
-    `mention_user_id` of `None` degrades to a plain message rather than
-    raising: LINE omits `source.userId` for a user who has not accepted the
-    Official Account terms, and losing the whole delivery over a missing @ is a
-    much worse trade than delivering it unaddressed.
+    No token means a plain message rather than an error: LINE omits the
+    quote token on some message kinds, and losing the whole delivery over a
+    missing quote is a far worse trade than delivering it unquoted.
     """
-    if mention_user_id:
-        body = f"{MENTION_HANDLE} {text}"[:MAX_TEXT_CHARS]
-        return {
-            "type": "text",
-            "text": body,
-            "mention": {
-                "mentionees": [
-                    {"index": 0, "length": len(MENTION_HANDLE), "userId": mention_user_id}
-                ]
-            },
-        }
-    return {"type": "text", "text": text[:MAX_TEXT_CHARS]}
+    message: dict[str, Any] = {"type": "text", "text": text[:MAX_TEXT_CHARS]}
+    if quote_token:
+        message["quoteToken"] = quote_token
+    return message
 
 
 def video_message(url: str, preview_url: str) -> dict[str, Any]:
@@ -210,22 +197,22 @@ def delivered_messages(
     status_url: str,
     is_video: bool,
     prompt: str,
-    user_id: str | None,
+    quote_token: str | None,
 ) -> list[dict[str, Any]]:
     """The two message objects a finished request produces: media, then text.
 
     Media first so the group sees the thing itself before the caption, and the
-    mention lives on the text object because a video object cannot carry one.
+    quote lives on the text object because a media object cannot carry one.
     """
     media = video_message(media_url, preview_url) if is_video else image_message(
         media_url, preview_url
     )
-    caption = text_message(f"{prompt[:60]} 完成了\n{status_url}", mention_user_id=user_id)
+    caption = text_message(f"{prompt[:60]} 完成了\n{status_url}", quote_token=quote_token)
     return [media, caption]
 
 
 def failed_messages(
-    *, reason: str, status_url: str, prompt: str, user_id: str | None
+    *, reason: str, status_url: str, prompt: str, quote_token: str | None
 ) -> list[dict[str, Any]]:
     """What a failed request says. More important than the success path.
 
@@ -236,7 +223,7 @@ def failed_messages(
     return [
         text_message(
             f"{prompt[:40]} 失敗了:{reason[:60]}\n{status_url}",
-            mention_user_id=user_id,
+            quote_token=quote_token,
         )
     ]
 
@@ -248,7 +235,7 @@ async def deliver(
     messages: list[dict[str, Any]],
     fallback_text: str,
     retry_key: str | None = None,
-    user_id: str | None = None,
+    quote_token: str | None = None,
 ) -> str:
     """Push `messages`, degrading to plain text rather than failing silently.
 
@@ -286,7 +273,7 @@ async def deliver(
     try:
         await client.push(
             to,
-            [text_message(fallback_text, mention_user_id=user_id)],
+            [text_message(fallback_text, quote_token=quote_token)],
             retry_key=f"{retry_key}-text" if retry_key else None,
         )
     except LinePushError as exc:

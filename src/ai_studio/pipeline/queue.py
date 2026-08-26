@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     state       TEXT    NOT NULL DEFAULT 'queued',
     media_kind  TEXT    NOT NULL DEFAULT 'video',
     first_frame_path TEXT,
+    quote_token TEXT,
     prompt_json TEXT,
     output_path TEXT,
     error       TEXT,
@@ -124,6 +125,10 @@ class Job:
     state: JobState
     media_kind: MediaKind
     first_frame_path: str | None
+    quote_token: str | None
+    """LINE's quote token for the request message, so delivery can be a reply
+    to it -- the same quoted-message UI a person gets by replying -- instead
+    of a broadcast into the group. Expires on LINE's side; None if absent."""
     prompt_json: str | None
     output_path: str | None
     error: str | None
@@ -161,6 +166,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         state=JobState(row["state"]),
         media_kind=MediaKind(row["media_kind"]),
         first_frame_path=row["first_frame_path"],
+        quote_token=row["quote_token"],
         prompt_json=row["prompt_json"],
         output_path=row["output_path"],
         error=row["error"],
@@ -201,6 +207,8 @@ class JobQueue:
             conn.execute("ALTER TABLE jobs ADD COLUMN delivered_at REAL")
         if "first_frame_path" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN first_frame_path TEXT")
+        if "quote_token" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN quote_token TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         """One connection per thread, all pointing at the same file.
@@ -257,6 +265,7 @@ class JobQueue:
         *,
         media_kind: MediaKind = MediaKind.VIDEO,
         first_frame_path: str | None = None,
+        quote_token: str | None = None,
     ) -> tuple[Job, bool]:
         """Insert a request. Returns `(job, created)`.
 
@@ -276,11 +285,12 @@ class JobQueue:
             cur = self._conn.execute(
                 "INSERT INTO jobs"
                 " (token, event_id, group_id, user_id, text, state, media_kind,"
-                "  first_frame_path, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+                "  first_frame_path, quote_token, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
                 (
                     token, event_id, group_id, user_id, text,
-                    JobState.QUEUED.value, media_kind.value, first_frame_path, now,
+                    JobState.QUEUED.value, media_kind.value, first_frame_path,
+                    quote_token, now,
                 ),
             )
             row = cur.fetchone()

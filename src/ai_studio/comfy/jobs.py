@@ -19,7 +19,19 @@ from typing import Any, Protocol, TypeVar
 
 from ai_studio.comfy.client import ComfyClient, ComfyOutput
 from ai_studio.core.enums import JobState
-from ai_studio.core.errors import ProviderError, ProviderJobFailed
+from ai_studio.core.errors import ProviderError, ProviderJobFailed, ProviderSubmitError
+
+
+async def upload_reference_image(client: ComfyClient, path: Path | str) -> str:
+    """Read a local photo and upload it as a `LoadImage` input; returns the
+    name the node loads it back by. Raises `ProviderSubmitError` if the file
+    cannot be read — before anything is queued, so nothing bills for it."""
+    source = Path(path)
+    try:
+        image_bytes = source.read_bytes()
+    except OSError as exc:
+        raise ProviderSubmitError(f"could not read {source}: {exc}") from exc
+    return await client.upload_image(image_bytes, source.name)
 
 
 class _JobLike(Protocol):

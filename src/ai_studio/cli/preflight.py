@@ -193,7 +193,7 @@ def check_signature_and_dedupe() -> CheckResult:
         group = settings.line_allowed_group_id or "Cpreflight"
         client.app.state.handler = _handler(queue, secret=value)
 
-        body, signature = _signed([_event("生成 preflight", event_id="pf-1", group=group)], value)
+        body, signature = _signed([_event("/影片 preflight", event_id="pf-1", group=group)], value)
         good = client.post("/callback", content=body, headers={"x-line-signature": signature})
         if good.status_code != 200:
             return _fail(2, name, f"a correctly signed event got {good.status_code}")
@@ -292,7 +292,7 @@ def check_out_of_hours() -> CheckResult:
         handler = _handler(queue, secret=SYNTHETIC_SECRET, clock=lambda: shut)
         client.app.state.handler = handler
         body, signature = _signed(
-            [_event("生成 preflight", event_id="pf-shut", group=group)], SYNTHETIC_SECRET
+            [_event("/影片 preflight", event_id="pf-shut", group=group)], SYNTHETIC_SECRET
         )
         response = client.post("/callback", content=body, headers={"x-line-signature": signature})
         if response.status_code != 200:
@@ -360,19 +360,16 @@ def check_push(*, send: bool = False) -> CheckResult:
     from ai_studio.bots.line.push import LinePushClient, text_message
 
     client = LinePushClient(token.get_secret_value())
-    users = sorted(settings.allowed_users)
-    mention = users[0] if users else None
-    message = text_message(
-        "preflight check 5: if you can see this and the @ resolves, delivery works.",
-        mention_user_id=mention,
-    )
+    # Plain text: real deliveries quote the request message, and preflight
+    # has no request to quote.
+    message = text_message("preflight check 5: if you can see this, push delivery works.")
     try:
         asyncio.run(client.push(settings.line_allowed_group_id, [message], retry_key="preflight"))
     except Exception as exc:
         return _fail(5, name, f"{type(exc).__name__}: {exc}")
     return _pass(
         5, name,
-        f"sent 1 text message{' with a mention' if mention else ' (no user allowlist, no mention)'}"
+        "sent 1 text message"
         " -- now read the quota consumed off LINE Official Account Manager",
     )
 
@@ -459,6 +456,7 @@ def check_graphs() -> CheckResult:
         (Path("workflows/h3_i2va_turbo.json"), REQUIRED_BINDINGS),
         (Path("workflows/h3_i2va_turbo_fp8.json"), REQUIRED_BINDINGS),
         (Path("workflows/flux_dev.json"), IMAGE_REQUIRED_BINDINGS),
+        (Path("workflows/flux_dev_i2i.json"), IMAGE_REQUIRED_BINDINGS | {"source_image", "denoise"}),
     ]
     loaded: list[str] = []
     for path, required in targets:

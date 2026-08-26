@@ -37,7 +37,14 @@ the provider multiplies duration by fps.
 
 **`flux_dev.json` is the exception**: a still image has no frame count, so it
 loads with `required_bindings=IMAGE_REQUIRED_BINDINGS` (`prompt`/`width`/
-`height` only, no `length`) via `providers.flux.FluxComfyUIProvider`. It is a
+`height` only, no `length`) via `providers.flux.FluxComfyUIProvider`.
+`flux_dev_i2i.json` is its image-to-image sibling, found by name the same way
+`h3_i2va_*.json` is found next to `h3_fl2va_*.json` (`Workflow.sibling`): the
+empty latent is replaced by `LoadImage → ImageScale → VAEEncode`, and
+`BasicScheduler.denoise` is bound so the provider decides how much of the
+photo survives (`DEFAULT_I2I_DENOISE`, `[speculative]` 0.7). Everything else —
+weights, LoRA wiring, steps — is identical, and a test asserts the LoRA still
+sits in front of every model consumer in the copy. It is a
 standard non-turbo Flux.1-dev graph (`UNETLoader` → `DualCLIPLoader` →
 `CLIPTextEncode` → `FluxGuidance` → `BasicGuider`/`BasicScheduler`/
 `SamplerCustomAdvanced` → `VAEDecode` → `SaveImage`) — the turbo trap below

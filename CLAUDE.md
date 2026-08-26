@@ -9,7 +9,8 @@ generated through ComfyUI on a shared GPU pod, then assembled with an editing
 grammar derived from
 [`Hao0321/video-autopilot-kit`](https://github.com/Hao0321/video-autopilot-kit)
 (MIT). A FastAPI service + LINE bot lets a group chat trigger either
-(`生成`/`/gen` for video, `畫圖`/`/img` for image) in natural language — see
+(`/影片` for video, `/圖片` for image, photo then `/圖影` / `/圖圖` for
+image-to-video / image-to-image; one spelling each, no aliases) — see
 `docs/line-bot.md`.
 
 Currently built: core model, format policy, H3 prompt builder, Flux prompt

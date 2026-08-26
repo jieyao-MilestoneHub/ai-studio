@@ -100,6 +100,35 @@ class Workflow:
             raise GraphValidationError(f"{path}: expected a JSON object at the top level")
         return cls(raw, source=str(path), required_bindings=required_bindings)
 
+    @classmethod
+    def sibling(
+        cls,
+        path: Path | str,
+        old: str,
+        new: str,
+        *,
+        required_bindings: frozenset[str] = REQUIRED_BINDINGS,
+    ) -> Workflow | None:
+        """The image-conditioned graph next to a text-only one, if it exists.
+
+        `old` -> `new` is substituted in the file name: `h3_fl2va_turbo.json`
+        finds `h3_i2va_turbo.json`, `flux_dev.json` finds `flux_dev_i2i.json`.
+        A separate file rather than a `LoadImage` left disconnected in one
+        shared graph: ComfyUI's JSON is a static graph, not an expression
+        engine, so there is no way to make one file both wire and not-wire an
+        image input depending on the request.
+
+        `None` rather than raising: a caller that passes some other
+        workflow.json with no sibling should still get ordinary text-to-X. The
+        failure belongs at the moment an image actually needs the sibling and
+        there is nowhere to put it — see the providers' `submit`.
+        """
+        path = Path(path)
+        candidate = path.with_name(path.name.replace(old, new))
+        if candidate == path or not candidate.is_file():
+            return None
+        return cls.load(candidate, required_bindings=required_bindings)
+
     # ---------------------------------------------------------------- checks
 
     def _check_bindings_resolve(self) -> None:

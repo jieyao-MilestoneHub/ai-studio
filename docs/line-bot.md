@@ -1,15 +1,31 @@
 # The LINE bot
 
-Someone says `生成 一隻橘貓走在雨中` in a group; the finished clip is pushed
-back into that group with them @-mentioned, and a status page carries the same
+Someone says `/影片 一隻橘貓走在雨中` in a group; the finished clip is pushed
+back into that group as a reply to their message, and a status page carries the same
 thing for anyone who wants to look again later.
 
-## Two triggers, one queue, one pod
+## Three triggers, one queue, one pod
 
-| trigger | also matches | produces | model |
-|---|---|---|---|
-| `生成` | `/生成`, `/gen` | a video clip | MiniMax H3 |
-| `畫圖` | `/畫圖`, `/img` | a still image | Flux.1-dev |
+| trigger | produces | model |
+|---|---|---|
+| `/影片 <描述>` | a video clip from text | MiniMax H3 |
+| `/圖片 <描述>` | a still image | Flux.1-dev |
+| a photo, then `/圖影 <描述>` | a video clip whose first frame is that photo | MiniMax H3 (I2V graph) |
+| a photo, then `/圖圖 <描述>` | that photo re-rendered under the description | Flux.1-dev (img2img graph) |
+
+**One spelling per trigger, no aliases.** `生成`, `畫圖`, `/gen` and `/img`
+used to work and were retired together: a bare word that is also ordinary
+Chinese is a request nobody meant, paid for in GPU-minutes, and a leading
+slash is not something anyone types by accident. Anything that does not start
+with one of the four strings gets no reply at all.
+
+**Only `/圖影` and `/圖圖` touch the photo cache.** A photo posted to the group
+waits five minutes for a photo-trigger from the same sender, and the first one
+claims it. `/影片` after a photo is still text-to-video and leaves the photo
+where it is; `/圖片` never looks. A photo-trigger with no photo cached (none
+sent, sent by someone else, or older than five minutes) queues nothing and
+replies with what to do, naming the trigger that was used — the user asked for
+*their* picture, and a picture of something else is not that.
 
 Both enqueue into the same SQLite `jobs` table (tagged `media_kind`), both wait
 for the same 11:00–13:00 window, and both render on the same pod —
@@ -21,7 +37,7 @@ downloading two model sets instead of one costs at window open.
 
 **Delivery is identical for both**: the finished media is **pushed back into
 the group** that asked for it, with the requester **@-mentioned** — a video
-message object for `生成`, an image message object for `畫圖`, each with a
+message object for `/影片` and `/圖影`, an image message object for `/圖片` and `/圖圖`, each with a
 JPEG poster, followed by a text message carrying the mention and the status
 link. A Flux image is fast to *generate* (`[speculative]`, ~15–40s) but still
 only happens during the scheduled window, which can be hours after the
@@ -164,7 +180,7 @@ With `LINE_ALLOWED_GROUP_ID` empty the bot runs in **capture mode**: it answers
 the trigger word with the group's id and *accepts no work*. An unset allowlist
 must never mean "serve everyone".
 
-Add the account to the group, say `生成 test`, and the id is printed to the
+Add the account to the group, say `/影片 test`, and the id is printed to the
 console and replied into the chat. Put it in `.env` and restart.
 
 ### 4. Decide who inside the group may spend money
@@ -267,7 +283,33 @@ arriving while it sleeps are lost, and the 11:00 `session open` will not fire
 either — `--terminate-after` guarantees a pod gets closed, never that one gets
 opened.
 
-### A small VPS — the chosen setup
+### ngrok on a box you already own — the Jetson
+
+cloudflared's control channel (UDP/TCP 7844) is blocked egress on the network
+the Jetson sits on; ngrok tunnels over 443 and gets through. Reserve a
+**static domain** in the ngrok dashboard (the free plan includes one): the
+ephemeral hostname changes on every restart, and `AI_STUDIO_PUBLIC_BASE_URL`
+is baked into reply links, `/files` media URLs and the worker's delivery URLs
+at process start, so an ephemeral name means re-pasting the webhook URL and
+restarting both services every time the tunnel bounces.
+
+```bash
+ngrok config add-authtoken <token>            # once, as the service user
+sudo bash deploy/jetson_setup.sh <name>.ngrok-free.app
+```
+
+That writes three services (`ai-studio-ngrok`, `ai-studio`, `ai-studio-worker`)
+and the two closing timers, all running as you from the repo checkout, and
+masks the sleep targets. It installs no tools: `uv`, `runpodctl`, `ngrok` and an
+ffmpeg ≥ 8.0 (for `colordetect`) must already be in `~/.local/bin` — `ai-studio
+doctor` checks the ffmpeg half, the script checks the rest before writing a
+unit. Then `AI_STUDIO_PUBLIC_BASE_URL=https://<name>.ngrok-free.app`.
+
+The service binds `127.0.0.1:8000` only; ngrok forwards to it on the same host.
+`/files` still answers `Range` with 206 through ngrok, which is what LINE's
+video messages need.
+
+### A small VPS — the previous setup
 
 **Hetzner CAX11** (2 vCPU ARM, 4GB, 40GB) is the cheapest thing that works,
 around EUR 3-4/month. Location **Singapore**: closest to LINE's servers for the
@@ -314,7 +356,7 @@ yourself (`chmod 600`), then `systemctl restart ai-studio`.
 ## The flow, end to end
 
 ```
-生成 一隻橘貓走在雨中
+/影片 一隻橘貓走在雨中
   → verify signature over the RAW body
   → group allowlist
   → dedupe on webhookEventId
@@ -445,7 +487,7 @@ obvious next lever if shot splitting matters.
 | GPU pod, up to 2h/day (depends on which ladder rung serves) | $21–60, ~$48 expected |
 | VPS | $4–6 |
 | LLM serverless, ~50 video conversions | ~$0.10 |
-| Image prompt conversion (Flux, no LLM call — see below) | $0 |
+| Image prompt conversion (Flux, one LLM call per request, same endpoint) | ~$0.002 each, in the line above |
 | **LINE messages** | **$0** — replies only |
 | **Object storage** | **$0** — ~50MB on the host |
 
@@ -461,7 +503,8 @@ demand gate and budget guard that make `AI_STUDIO_MAX_MONTH_USD` (default $50)
 an actual ceiling: skip a window with nothing queued, refuse to open one the
 remaining month's budget can't cover, and shrink one it can only partly cover.
 
-Flux's own prompt path is a simple strip/truncate/validate pass with no LLM
-call (`prompts/flux.py`), unlike H3's conversion, which is why it adds $0 to
-the LLM serverless line above — see [model-flux.md](model-flux.md) for why
-Flux doesn't need H3's structured schema.
+Flux's prompt path (`prompts/flux.py`) makes one LLM call per request, like
+H3's — a Chinese-to-English translation validated as JSON, two attempts, then
+a template fallback that costs nothing. It used to be a strip/truncate pass
+with no LLM call; that stopped being true in `9e43143`. What it still does
+not need is H3's structured shot schema — see [model-flux.md](model-flux.md).

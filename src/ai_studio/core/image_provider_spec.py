@@ -64,6 +64,10 @@ class ImageRequest(BaseModel):
     seed: int | None = None
     steps: int | None = None
 
+    source_image_path: str | None = None
+    """Local path of the photo to re-render (`GenMode.I2I`). The image
+    counterpart of `ClipRequest.first_frame_path`; None is plain text-to-image."""
+
     extra: dict[str, Any] = Field(
         default_factory=dict,
         description="Backend-specific knobs. Kept out of the typed surface on purpose.",

@@ -3,8 +3,8 @@
 Generate video clips with **MiniMax H3** and images with **Flux.1-dev** on
 RunPod GPUs, then assemble the video output into a finished piece using a
 rigorous, mechanically-enforced editing grammar. A FastAPI service + LINE bot
-lets a group chat trigger either in natural language — `生成`/`/gen` for
-video, `畫圖`/`/img` for image.
+lets a group chat trigger either — `/影片` for video, `/圖片` for image, a
+photo then `/圖影` or `/圖圖` for image-to-video or image-to-image.
 
 The premise: an AI video model gives you *shots*. It does not give you an
 *edit*. Everything interesting in this repo about the video path is that
@@ -120,8 +120,8 @@ MiniMax H3's geographic exclusion below. See
 
 A FastAPI service runs 24/7 on a small VPS while the GPU pod exists only for a
 scheduled daily window (see [docs/schedule.md](docs/schedule.md)). A LINE
-group triggers either generator in natural language — `生成`/`/gen` queues a
-video, `畫圖`/`/img` queues an image — and gets a link back once the window
+group triggers either generator — `/影片` queues a video, `/圖片` queues an
+image, a photo then `/圖影` or `/圖圖` queues an image-to-video clip or an image-to-image render — and gets a link back once the window
 renders it. Requests land in a SQLite queue immediately, because LINE needs
 its `200` in under two seconds; an LLM converts each one into a structured
 H3 or Flux prompt in the background, so a bad prompt never occupies GPU time.

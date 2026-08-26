@@ -1,0 +1,213 @@
+{
+  "_ai_studio": {
+    "bindings": {
+      "prompt": [
+        "4",
+        "text"
+      ],
+      "width": [
+        "16",
+        "width"
+      ],
+      "height": [
+        "16",
+        "height"
+      ],
+      "seed": [
+        "7",
+        "noise_seed"
+      ],
+      "steps": [
+        "10",
+        "steps"
+      ],
+      "lora_strength": [
+        "14",
+        "strength_model"
+      ],
+      "filename": [
+        "13",
+        "filename_prefix"
+      ],
+      "source_image": [
+        "15",
+        "image"
+      ],
+      "denoise": [
+        "10",
+        "denoise"
+      ]
+    },
+    "comment": "Image-to-image sibling of flux_dev.json (found by name, see Workflow.sibling). The only differences: the empty latent is replaced by LoadImage -> ImageScale (to the bound width/height, centre crop, so output size and VRAM match text-to-image) -> VAEEncode, and BasicScheduler.denoise is bound so the provider decides how much of the photo survives."
+  },
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "flux1-dev.safetensors",
+      "weight_dtype": "fp8_e4m3fn"
+    }
+  },
+  "2": {
+    "class_type": "DualCLIPLoader",
+    "inputs": {
+      "clip_name1": "t5xxl_fp8_e4m3fn.safetensors",
+      "clip_name2": "clip_l.safetensors",
+      "type": "flux"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "",
+      "clip": [
+        "2",
+        0
+      ]
+    }
+  },
+  "6": {
+    "class_type": "FluxGuidance",
+    "inputs": {
+      "conditioning": [
+        "4",
+        0
+      ],
+      "guidance": 3.5
+    }
+  },
+  "7": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 0
+    }
+  },
+  "8": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "14",
+        0
+      ],
+      "conditioning": [
+        "6",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "10": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "model": [
+        "14",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": 28,
+      "denoise": 0.7
+    }
+  },
+  "11": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "7",
+        0
+      ],
+      "guider": [
+        "8",
+        0
+      ],
+      "sampler": [
+        "9",
+        0
+      ],
+      "sigmas": [
+        "10",
+        0
+      ],
+      "latent_image": [
+        "17",
+        0
+      ]
+    }
+  },
+  "12": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "11",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "13": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "12",
+        0
+      ],
+      "filename_prefix": "ai_studio"
+    }
+  },
+  "14": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "lora_name": "flux_nsfw_uncensored_v1.safetensors",
+      "strength_model": 1.0
+    }
+  },
+  "15": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "",
+      "upload": "image"
+    }
+  },
+  "16": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "image": [
+        "15",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "width": 1024,
+      "height": 1024,
+      "crop": "center"
+    }
+  },
+  "17": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "16",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  }
+}

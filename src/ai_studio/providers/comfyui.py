@@ -25,7 +25,7 @@ from typing import Any
 from ai_studio import media
 from ai_studio.comfy.client import ComfyClient
 from ai_studio.comfy.graph import Workflow
-from ai_studio.comfy.jobs import cancel_job, fetch_output, poll_job
+from ai_studio.comfy.jobs import cancel_job, fetch_output, poll_job, upload_reference_image
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import GenMode, JobState
 from ai_studio.core.errors import ProviderSubmitError
@@ -100,29 +100,11 @@ class ComfyUIProvider:
     ) -> None:
         settings = get_settings()
         self.workflow = Workflow.load(workflow)
-        self._i2va_workflow = self._load_i2va_sibling(workflow)
+        self._i2va_workflow = Workflow.sibling(workflow, "fl2va", "i2va")
         self.client = ComfyClient(
             base_url or settings.comfy_url, timeout_s=settings.comfy_timeout_s
         )
         self._caps = h3_capabilities(width, height, hourly_usd=hourly_usd)
-
-    @staticmethod
-    def _load_i2va_sibling(workflow: Path | str) -> Workflow | None:
-        """The image-conditioned graph next to a text-only one, if it exists.
-
-        A separate file rather than a `first_frame` left disconnected in one
-        shared graph: ComfyUI's JSON is a static graph, not an expression
-        engine, so there is no way to make one file both wire and not-wire a
-        `LoadImage` node depending on the request. `None` rather than raising
-        -- a caller that passes some other workflow.json with no i2va sibling
-        should still get ordinary text-to-video; the failure belongs at the
-        moment an image actually needs it and there is nowhere to put it.
-        """
-        path = Path(workflow)
-        sibling = path.with_name(path.name.replace("fl2va", "i2va"))
-        if sibling == path or not sibling.is_file():
-            return None
-        return Workflow.load(sibling)
 
     def capabilities(self) -> ProviderCapabilities:
         return self._caps
@@ -145,12 +127,9 @@ class ComfyUIProvider:
                     "image-conditioned sibling workflow"
                 )
             workflow = self._i2va_workflow
-            source = Path(request.first_frame_path)
-            try:
-                image_bytes = source.read_bytes()
-            except OSError as exc:
-                raise ProviderSubmitError(f"could not read {source}: {exc}") from exc
-            values["first_frame"] = await self.client.upload_image(image_bytes, source.name)
+            values["first_frame"] = await upload_reference_image(
+                self.client, request.first_frame_path
+            )
 
         for name, value in (
             ("seed", request.seed),

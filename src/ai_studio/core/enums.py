@@ -56,6 +56,8 @@ class GenMode(str, Enum):
     """Reference-driven generation for character consistency (H3 ref2va)."""
 
     T2I = "t2i"
+    I2I = "i2i"
+    """Image-to-image: a source photo re-rendered under the prompt (Flux)."""
     """Text-to-image (Flux). No frame-count or fps concept applies."""
 
 
