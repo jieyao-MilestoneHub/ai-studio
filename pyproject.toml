@@ -14,6 +14,10 @@ dependencies = [
     "typer>=0.12",
     "rich>=13.7",
     "pyyaml>=6.0",
+    # Unconditional, not `; platform_system == "Windows"`: budget.py builds
+    # ZoneInfo("Asia/Taipei") at import time, and a slim Linux image is just as
+    # likely to ship without a system tz database as Windows is. ~350KB.
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +37,11 @@ dev = [
     "mypy>=1.10",
     "import-linter>=2.0",
     "types-pyyaml>=6.0",
+    # The api/bots tests import fastapi.testclient directly, so the web stack has
+    # to be present for `uv sync --group dev` alone to collect the whole suite.
+    # Self-referencing the extra rather than repeating the pins keeps the two in
+    # step; `line` stays optional for runtime installs that skip the web stack.
+    "ai-studio[line]",
 ]
 
 [build-system]
