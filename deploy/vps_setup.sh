@@ -70,9 +70,11 @@ fi
 cat > /etc/caddy/Caddyfile <<CADDY
 ${HOSTNAME_ARG} {
     encode zstd gzip
-    # Clips are small (a measured 5s clip is 0.99MB) and delivery is a plain
-    # link, so none of LINE's video-message constraints apply here — no range
-    # requests, no 200MB ceiling, no poster image.
+    # Delivery is a pushed LINE media message, so /files IS a media host and
+    # LINE's video-message constraints do apply: HTTPS with a valid cert (this
+    # block), and HTTP range requests, which Starlette's FileResponse answers
+    # with a 206 and reverse_proxy passes through untouched. Do not put a
+    # buffering or transforming handler in front of it.
     reverse_proxy 127.0.0.1:8000
 }
 CADDY
@@ -100,20 +102,63 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
-say "window timers"
-# One unit per phase. --terminate-after on the pod is still the backstop: it
-# guarantees a pod gets closed even if this box dies mid-window.
+say "worker"
+# The second always-on process. It replaces the old 'open' and 'drain' timers
+# outright: a pod is created by the first request that arrives inside business
+# hours, not by a clock that fires whether or not anybody asked for anything,
+# and work starts within ten seconds instead of at the next five-minute tick.
+# Outside 11:00-13:00 Asia/Taipei this loop sleeps and does nothing else.
+cat > /etc/systemd/system/ai-studio-worker.service <<UNIT
+[Unit]
+Description=ai-studio queue worker: opens the pod on demand and renders
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=${APP_USER}
+WorkingDirectory=${APP_DIR}
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/uv run ai-studio worker
+Restart=always
+# Ten seconds, not one. A crash loop here would ask for a pod on every restart,
+# and although ensure_pod refuses past AI_STUDIO_MAX_POD_OPENS_PER_DAY, the
+# cheapest place to not open a pod is before anything asks.
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+say "removing superseded units"
+# This script is re-run on boxes it has already provisioned, and it used to
+# install four timers. Writing only the two current ones would leave the other
+# two ENABLED AND FIRING: ai-studio-open.timer would keep creating a pod at
+# 03:00 whether or not anyone had asked for anything, and ai-studio-drain.timer
+# would keep claiming jobs out from under the worker, racing it for the same
+# queue. An upgrade that leaves the thing it replaced still running is worse
+# than no upgrade, so every unit this script has ever installed is removed
+# first and only the current set is written back.
 for phase in open drain reap close; do
+  systemctl disable --now "ai-studio-${phase}.timer"   >/dev/null 2>&1 || true
+  systemctl disable --now "ai-studio-${phase}.service" >/dev/null 2>&1 || true
+  rm -f "/etc/systemd/system/ai-studio-${phase}.timer" \
+        "/etc/systemd/system/ai-studio-${phase}.service"
+done
+systemctl daemon-reload
+
+say "window timers"
+# Two timers, and BOTH of them only ever close things. Nothing on a schedule
+# opens a pod any more -- that is the point of the worker above, and it means
+# every scheduled unit left on this box can only reduce what is billing.
+# --terminate-after on the pod itself is still the third and last backstop: it
+# closes a pod even if this box dies entirely.
+for phase in reap close; do
   case "$phase" in
-    open)  cmd="session open --until 13:00 --tz Asia/Taipei"; when="03:00" ;;
-    # The one that actually makes videos. It exits immediately and successfully
-    # when no window is open, so firing every 5 minutes all day is a no-op
-    # outside the window -- and if a drain dies mid-window the next tick picks
-    # the queue back up. systemd will not start a second instance while one is
-    # still running, so the long render is not interrupted by the next tick.
-    drain) cmd="session drain";                               when="*:0/5" ;;
-    reap)  cmd="session reap";                                when="*:0/5" ;;
-    close) cmd="session close";                               when="05:00" ;;
+    # Close early once the pod has gone quiet. Also the second line of defence
+    # for a worker that died still holding one.
+    reap)  cmd="session reap --idle-minutes 10"; when="*:0/5" ;;
+    # The hard close at the end of business hours.
+    close) cmd="session close";                  when="05:05" ;;
   esac
   cat > /etc/systemd/system/ai-studio-${phase}.service <<UNIT
 [Unit]
@@ -131,11 +176,11 @@ UNIT
 Description=ai-studio window ${phase} timer
 
 [Timer]
-# UTC. 11:00 Asia/Taipei is 03:00 UTC.
+# UTC. 11:00 Asia/Taipei is 03:00 UTC; 13:00 is 05:00.
 OnCalendar=${when}
-# Persistent=false on purpose: a missed 'open' must NOT fire late. Booting a
-# GPU pod at 3am because the box was down at 11:00 is exactly the unattended
-# spend this project is built to avoid.
+# Persistent=false on purpose. It mattered more when a timer could open a pod;
+# it still matters, because a missed 'close' firing late is noise and one
+# firing at boot is confusing. Closing is idempotent either way.
 Persistent=false
 
 [Install]
@@ -145,7 +190,8 @@ done
 
 systemctl daemon-reload
 systemctl enable --now ai-studio.service >/dev/null 2>&1 || true
-for phase in open drain reap close; do
+systemctl enable --now ai-studio-worker.service >/dev/null 2>&1 || true
+for phase in reap close; do
   systemctl enable --now ai-studio-${phase}.timer >/dev/null 2>&1 || true
 done
 
@@ -168,9 +214,17 @@ cat <<NEXT
        RUNPOD_API_KEY=...
        AI_STUDIO_PUBLIC_BASE_URL=https://${HOSTNAME_ARG}
        AI_STUDIO_LLM_ENDPOINT_ID=...
-  2. systemctl restart ai-studio
+  2. systemctl restart ai-studio ai-studio-worker
   3. curl https://${HOSTNAME_ARG}/healthz          -> {"ok":true,...}
   4. LINE console webhook URL: https://${HOSTNAME_ARG}/callback  -> Verify
-  5. systemctl list-timers 'ai-studio-*'            -> three timers armed
-  Logs: journalctl -u ai-studio -f
+  5. systemctl is-active ai-studio ai-studio-worker -> two services active
+  6. systemctl list-timers 'ai-studio-*'            -> two timers armed
+     Nothing on a timer opens a pod: the worker does, on demand, 11:00-13:00.
+  7. uv run ai-studio preflight                     -> the nine Phase 4 checks
+
+  If the worker ever wedges while a pod is open, empty the queue by hand with
+  'uv run ai-studio session drain' -- it claims nothing when no pod is up, so
+  it is safe to try. That is the only reason drain_window still exists.
+
+  Logs: journalctl -u ai-studio -f    journalctl -u ai-studio-worker -f
 NEXT
