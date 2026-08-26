@@ -127,13 +127,16 @@ Every expensive mistake here is a quiet one.
   terminates a short host.
 - `AI_STUDIO_MAX_COST_USD` is checked before submission — a **per-run** ceiling.
 - `AI_STUDIO_MAX_MONTH_USD` (default $50) is a **calendar-month** ceiling,
-  enforced by `runtime.budget.MonthlyBudgetGuard` before `session open` creates
-  a pod — necessary because the capacity ladder's own worst case already
-  exceeds $50/month on GPU alone. It refuses the window outright if the
-  month's remaining budget can't cover even a minimal session at the ladder's
-  priciest rung, or shrinks the window if it can only partly cover the full
-  one. `session open` also skips entirely — no budget check needed — when the
-  queue has no pending work; see `docs/schedule.md`.
+  enforced by `runtime.budget.MonthlyBudgetGuard` inside `runtime.session.
+  ensure_pod` — the single path that ever creates a pod, called by the worker
+  loop the moment a `parsed` job shows up inside business hours — necessary
+  because the capacity ladder's own worst case already exceeds $50/month on
+  GPU alone. It refuses the window outright if the month's remaining budget
+  can't cover even a minimal session at the ladder's priciest rung, or shrinks
+  the window if it can only partly cover the full one. There is no more
+  "skip if the queue is empty" gate on `session open` — nothing opens a pod
+  except a request, so that gate has nothing left to guard; see
+  `docs/schedule.md`.
 - **Flux.1-dev's licence is non-commercial**, separate from its geographic
   restriction (there is none) — see `docs/model-flux.md`.
 
