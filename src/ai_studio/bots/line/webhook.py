@@ -459,6 +459,12 @@ class WebhookHandler:
         to start with a number is untouched. The value is clamped to the
         model's range at conversion; here it is just the number the user typed.
         """
+        # A Chinese mobile IME turns a leading "/" into the fullwidth solidus
+        # (U+FF0F) more often than not, and such a message matches no trigger
+        # and is silently ignored -- which reads to the user as a dead bot.
+        # Normalise a leading fullwidth solidus to ASCII before matching.
+        if text[:1] == "\uff0f":
+            text = "/" + text[1:]
         for prefix, kind, wants_photo in (
             (self.i2v_trigger, MediaKind.VIDEO, True),
             (self.i2i_trigger, MediaKind.IMAGE, True),

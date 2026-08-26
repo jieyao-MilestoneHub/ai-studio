@@ -756,3 +756,16 @@ async def test_an_image_trigger_ignores_a_number_in_the_prompt(wired) -> None:
     (outcome,) = await handler.handle(body, sign(body, SECRET))
     assert outcome.job.requested_seconds is None
     assert outcome.job.text == "3 隻貓"
+
+
+@pytest.mark.asyncio
+async def test_a_fullwidth_slash_from_a_mobile_ime_still_triggers(wired) -> None:
+    """A Chinese IME renders a leading "/" as the fullwidth solidus (U+FF0F)
+    more often than not. Without normalising it the message matched nothing
+    and the bot looked dead to the user."""
+    handler, _, _ = wired
+    body = _body([_text_event("\uff0f圖片 一隻貓", event_id="evt-fw")])
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+    assert outcome.action == "accepted"
+    assert outcome.job.media_kind is MediaKind.IMAGE
+    assert outcome.job.text == "一隻貓"
