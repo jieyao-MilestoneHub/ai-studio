@@ -102,7 +102,8 @@ Flux image, see [line-bot.md](line-bot.md)) downloads both model sets on every
 window open: H3's measured **54.7 GB** int8 working set plus Flux.1-dev's
 `[speculative]` **~17–23 GB** (fp8 transformer + T5-XXL text encoder + CLIP-L +
 VAE — see [model-flux.md](model-flux.md), unmeasured on this project's own
-hardware). Combined, that's **~72–78 GB** once a day, not 42 GB — call it
+hardware) plus the NSFW LoRA's measured **0.69 GB** 📏. Combined, that's
+**~72.7–78.7 GB** once a day, not 42 GB — call it
 ~$0.20/session at datacenter speeds instead of $0.11. A 150–200 GB network
 volume sized to hold both model sets still bills **$10.50–$14/month whether or
 not a window opens that day**, against roughly $6/month for 30 sessions of

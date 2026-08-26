@@ -200,3 +200,85 @@ def test_load_roundtrips_a_real_file(tmp_path: Path) -> None:
     wf = Workflow.load(path)
     assert wf.expect_turbo is True
     assert "prompt" in wf.bindings
+
+
+# ------------------------------------------------------ the Flux LoRA wiring
+
+# `UNETLoader` feeds TWO consumers in the Flux graph: BasicGuider ("8") and
+# BasicScheduler ("10"). The LoRA node ("14") goes between, and BOTH have to be
+# rewired to it. Rewire only "10" and the LoRA has **no effect at all and
+# raises no error** — the file loads, the graph validates, the picture comes
+# out fine, and the adapter is simply not in the path that guides sampling.
+#
+# That is why this is a structural assertion and not a comment. The live check
+# (same seed, lora_strength 1.0 vs 0.0, two images that must differ) costs
+# GPU-seconds and only happens once, in Phase 7.1.
+
+FLUX_WORKFLOW = Path("workflows/flux_dev.json")
+LORA_NODE = "14"
+
+
+def _flux() -> Workflow:
+    return Workflow.load(FLUX_WORKFLOW, required_bindings=IMAGE_REQUIRED_BINDINGS)
+
+
+def test_the_flux_workflow_loads_and_validates_with_the_lora_in_it() -> None:
+    """`STOCK_LORA_NODES` contains `LoraLoaderModelOnly`, which reads like a
+    tripwire for this graph. It is not: the H3 ban is scoped by
+    `uses_turbo_lora`, and an ordinary LoRA is fine. Asserted rather than left
+    to a comment in `validate.py` that says so."""
+    workflow = _flux()
+
+    validate_graph(workflow.graph)
+    assert workflow.graph[LORA_NODE]["class_type"] == "LoraLoaderModelOnly"
+    assert uses_turbo_lora(workflow.graph) is False
+
+
+def test_every_consumer_of_the_base_model_goes_through_the_lora() -> None:
+    """The one that catches a half-rewire. Any node still reading ["1", 0] is
+    a path the LoRA does not affect."""
+    graph = _flux().graph
+    unet = next(n for n, node in graph.items() if node["class_type"] == "UNETLoader")
+
+    direct = [
+        node_id
+        for node_id, node in graph.items()
+        if node_id != LORA_NODE
+        for value in node.get("inputs", {}).values()
+        if isinstance(value, list) and len(value) == 2 and str(value[0]) == unet
+    ]
+
+    assert direct == [], f"nodes still bypassing the LoRA: {direct}"
+    assert graph["8"]["inputs"]["model"] == [LORA_NODE, 0]
+    assert graph["10"]["inputs"]["model"] == [LORA_NODE, 0]
+    assert graph[LORA_NODE]["inputs"]["model"] == [unet, 0]
+
+
+def test_the_lora_filename_is_the_one_the_pod_actually_writes() -> None:
+    """`hf download` keeps the remote name (`lora.safetensors`);
+    `deploy/pod_setup.sh` renames it. These two strings have to be the same
+    string or ComfyUI loads nothing and says so only in a log."""
+    lora_name = _flux().graph[LORA_NODE]["inputs"]["lora_name"]
+    setup = Path("deploy/pod_setup.sh").read_text(encoding="utf-8")
+
+    assert lora_name == "flux_nsfw_uncensored_v1.safetensors"
+    assert lora_name in setup, "pod_setup.sh does not produce this filename"
+    assert "Heartsync/Flux-NSFW-uncensored" in setup
+
+
+def test_lora_strength_is_bindable_so_the_ab_test_is_a_parameter() -> None:
+    """Phase 7.1 renders the same seed at 1.0 and 0.0. If those two images are
+    identical, the wiring above is wrong — and it fails silently, so the check
+    has to be cheap enough to actually run."""
+    workflow = _flux()
+
+    assert "lora_strength" in workflow.bindings
+    off = workflow.with_values(
+        {"prompt": "a fox", "width": 1024, "height": 1024, "lora_strength": 0.0}
+    )
+    on = workflow.with_values(
+        {"prompt": "a fox", "width": 1024, "height": 1024, "lora_strength": 1.0}
+    )
+
+    assert off[LORA_NODE]["inputs"]["strength_model"] == 0.0
+    assert on[LORA_NODE]["inputs"]["strength_model"] == 1.0

@@ -6,6 +6,7 @@
       "height": ["5", "height"],
       "seed": ["7", "noise_seed"],
       "steps": ["10", "steps"],
+      "lora_strength": ["14", "strength_model"],
       "filename": ["13", "filename_prefix"]
     }
   },
@@ -43,7 +44,7 @@
   },
   "8": {
     "class_type": "BasicGuider",
-    "inputs": { "model": ["1", 0], "conditioning": ["6", 0] }
+    "inputs": { "model": ["14", 0], "conditioning": ["6", 0] }
   },
   "9": {
     "class_type": "KSamplerSelect",
@@ -51,7 +52,7 @@
   },
   "10": {
     "class_type": "BasicScheduler",
-    "inputs": { "model": ["1", 0], "scheduler": "simple", "steps": 28, "denoise": 1.0 }
+    "inputs": { "model": ["14", 0], "scheduler": "simple", "steps": 28, "denoise": 1.0 }
   },
   "11": {
     "class_type": "SamplerCustomAdvanced",
@@ -70,5 +71,13 @@
   "13": {
     "class_type": "SaveImage",
     "inputs": { "images": ["12", 0], "filename_prefix": "ai_studio" }
+  },
+  "14": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": ["1", 0],
+      "lora_name": "flux_nsfw_uncensored_v1.safetensors",
+      "strength_model": 1.0
+    }
   }
 }

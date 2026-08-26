@@ -46,6 +46,16 @@ MEASURED_LATENCY_S = 30.0
 measurement yet at any resolution. Negligible next to H3's 2-6min/clip either
 way, so a rough number is enough for cost estimation until re-measured."""
 
+DEFAULT_LORA_STRENGTH = 1.0
+"""Weight given to `flux_nsfw_uncensored_v1.safetensors`, the value its own
+model card uses `[reported]`.
+
+Deliberately a constructor argument rather than a constant baked into the
+graph: the first live check for this LoRA is two images at the same seed with
+this at 1.0 and 0.0 (PLAN.md Phase 7.1). If they come out identical, the LoRA
+is wired to nothing — and that failure is silent, because a graph whose LoRA
+feeds no consumer renders perfectly happily."""
+
 
 def flux_capabilities(
     width: int = 1024,
@@ -86,6 +96,7 @@ class FluxComfyUIProvider:
         height: int = 1024,
         hourly_usd: float = DEFAULT_HOURLY_USD,
         steps: int = DEFAULT_STEPS,
+        lora_strength: float = DEFAULT_LORA_STRENGTH,
         **_: Any,
     ) -> None:
         settings = get_settings()
@@ -94,6 +105,7 @@ class FluxComfyUIProvider:
             base_url or settings.comfy_url, timeout_s=settings.comfy_timeout_s
         )
         self._hourly_usd = hourly_usd
+        self._lora_strength = lora_strength
         self._caps = flux_capabilities(width, height, hourly_usd=hourly_usd, steps=steps)
 
     def capabilities(self) -> ImageProviderCapabilities:
@@ -110,6 +122,11 @@ class FluxComfyUIProvider:
         for name, value in (
             ("seed", request.seed),
             ("steps", request.steps),
+            # Set explicitly on every submission rather than left to the JSON's
+            # own default. The whole failure this guards against is a LoRA that
+            # is present in the graph and doing nothing, which produces a
+            # perfectly good picture of the wrong thing and raises no error.
+            ("lora_strength", self._lora_strength),
             ("filename", f"ai_studio_{request.shot_id}"),
         ):
             if value is not None and name in self.workflow.bindings:

@@ -103,12 +103,16 @@ dl() {  # repo file destdir
     > "/workspace/dl-logs/$(basename "$2").log" 2>&1 &
   log "  downloading $(basename "$2")"
 }
-log "starting weight downloads (~51GB)"
+log "starting weight downloads (~52GB)"
 dl Comfy-Org/MiniMax-H3 "$DIT" "$M"
 dl Comfy-Org/MiniMax-H3 text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors "$M"
 dl Comfy-Org/MiniMax-H3 vae/minimax_h3_video_vae_fp16.safetensors "$M"
 dl Comfy-Org/MiniMax-H3 vae/minimax_h3_audio_vae_fp32.safetensors "$M"
 dl larryvrh/MiniMax-H3-Turbo-Lora minimax_h3_turbo_v4_step600_ema.safetensors "$M/loras"
+# The Flux image LoRA. 687,476,088 bytes measured from the HF blobs API.
+# Needs no trigger word: neither candidate's model card declares an
+# instance_prompt -- this is an "unrestrain" adapter, not a concept LoRA.
+dl Heartsync/Flux-NSFW-uncensored lora.safetensors "$M/loras"
 
 # ── 4. wait for the weights, then restart ComfyUI ─────────────────────────
 while pgrep -f 'hf download' >/dev/null; do
@@ -116,6 +120,17 @@ while pgrep -f 'hf download' >/dev/null; do
   sleep 30
 done
 log "weights complete: $(du -sh "$M" | cut -f1)"
+# hf download keeps the remote filename, and "lora.safetensors" says nothing
+# in a directory that also holds the H3 turbo LoRA -- and does not match the
+# lora_name in workflows/flux_dev.json. Renaming here is what makes those two
+# strings the same string. Fail loudly rather than leaving the graph pointing
+# at a file that is not there: ComfyUI's own error for a missing LoRA is a
+# line in a log nobody is reading at 11:04.
+FLUX_LORA="$M/loras/flux_nsfw_uncensored_v1.safetensors"
+if [ -f "$M/loras/lora.safetensors" ]; then
+  mv "$M/loras/lora.safetensors" "$FLUX_LORA"
+fi
+[ -f "$FLUX_LORA" ] || die "flux LoRA missing: $FLUX_LORA (check dl-logs/lora.safetensors.log)"
 find "$M" -name '*minimax*.safetensors' -printf '%s %p\n' \
   | awk '{printf "[setup]   %7.2f GB  %s\n", $1/1073741824, $2}'
 
