@@ -33,7 +33,9 @@ def _build(tmp_path: Path, *, allowed_group: str | None = GROUP):
         allowed_group_id=allowed_group,
         base_url="https://vg.example.com",
     )
-    app = create_app(queue=queue, handler=handler, files_dir=tmp_path / "files")
+    # llm=None: this file's whole premise is "no network, no credentials", and
+    # get_settings() reads whatever real .env happens to sit in the repo root.
+    app = create_app(queue=queue, handler=handler, files_dir=tmp_path / "files", llm=None)
     return app, queue, replier
 
 
