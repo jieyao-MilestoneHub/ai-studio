@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from ai_studio.bots.line.verify import sign, verify
 from ai_studio.bots.line.webhook import InvalidSignature, WebhookHandler
 from ai_studio.core.enums import MediaKind
 from ai_studio.pipeline.queue import JobQueue, JobState
+from ai_studio.runtime import hours
 
 SECRET = "test-channel-secret"
 GROUP = "Cae56f94637c1234567890abcdef12345"
@@ -533,4 +535,134 @@ async def test_a_join_in_another_group_is_not_reported(tmp_path: Path) -> None:
     }
     outcomes = await _send(handler, event)
     assert outcomes[0].action == "ignored"
+    queue.close()
+
+
+# ---------------------------------------------------------- business hours
+
+# 11:00-13:00 Asia/Taipei is the whole of "instant". These pin the two things
+# the hours must never change: a request is accepted at any hour, and the
+# acknowledgement stops promising "shortly" when it is eight hours away.
+
+OPEN_INSTANT = datetime(2026, 8, 25, 12, 0, tzinfo=hours.TZ)
+CLOSED_INSTANT = datetime(2026, 8, 25, 3, 0, tzinfo=hours.TZ)
+
+
+def _at(tmp_path: Path, when: datetime, *, name: str = "hours", cap: int = 0):
+    queue = JobQueue(tmp_path / f"{name}.sqlite3")
+    replier = NullReplyClient()
+    handler = WebhookHandler(
+        queue,
+        replier,
+        channel_secret=SECRET,
+        allowed_group_id=GROUP,
+        base_url="https://vg.example.com/",
+        max_jobs_per_user_per_day=cap,
+        clock=lambda: when,
+    )
+    return handler, queue, replier
+
+
+@pytest.mark.asyncio
+async def test_a_request_out_of_hours_is_still_accepted(tmp_path: Path) -> None:
+    """Refusing would mean whatever someone thought of at midnight is lost.
+    It waits in the queue for eleven instead."""
+    handler, queue, _ = _at(tmp_path, CLOSED_INSTANT)
+
+    outcomes = await _send(handler, _text_event("生成 一隻貓", event_id="evt-night"))
+
+    assert outcomes[0].action == "accepted"
+    assert outcomes[0].job is not None
+    assert queue.by_token(outcomes[0].job.token).state is JobState.QUEUED
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_the_same_request_gets_a_different_answer_in_and_out_of_hours(
+    tmp_path: Path,
+) -> None:
+    """Same message, same outcome, different promise. The queue position is
+    true either way; on its own at 03:00 it reads as "shortly"."""
+    open_handler, open_queue, open_replier = _at(tmp_path, OPEN_INSTANT, name="open")
+    shut_handler, shut_queue, shut_replier = _at(tmp_path, CLOSED_INSTANT, name="shut")
+
+    event = _text_event("生成 一隻貓", event_id="evt-same")
+    open_outcomes = await _send(open_handler, event)
+    shut_outcomes = await _send(shut_handler, event)
+
+    assert open_outcomes[0].action == "accepted"
+    assert shut_outcomes[0].action == "accepted"
+
+    open_text = open_replier.sent[0][1][0]
+    shut_text = shut_replier.sent[0][1][0]
+    assert open_text != shut_text
+    assert "排隊第 1 位" in open_text and "排隊第 1 位" in shut_text
+    assert "11:00-13:00" in shut_text and "11:00-13:00" not in open_text
+    assert "08/25 11:00" in shut_text, "03:00 is before today's opening, so today's"
+
+    open_queue.close()
+    shut_queue.close()
+
+
+# ------------------------------------------------------------- per-user cap
+
+
+@pytest.mark.asyncio
+async def test_a_user_over_the_daily_cap_is_refused_before_being_enqueued(
+    tmp_path: Path,
+) -> None:
+    """Refused *before* the insert: accepting and then dropping it would still
+    have spent an LLM conversion on a request that never runs."""
+    handler, queue, replier = _at(tmp_path, OPEN_INSTANT, cap=2)
+
+    for n in range(2):
+        assert (await _send(handler, _text_event("生成 貓", event_id=f"ok-{n}")))[0].action == (
+            "accepted"
+        )
+
+    outcomes = await _send(handler, _text_event("生成 貓", event_id="over"))
+
+    assert outcomes[0].action == "rate_limited"
+    assert outcomes[0].job is None
+    assert len(queue.recent(10)) == 2, "the refused request was never inserted"
+    assert "每日上限" in replier.sent[-1][1][0]
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_the_cap_counts_per_user_not_per_group(tmp_path: Path) -> None:
+    handler, queue, _ = _at(tmp_path, OPEN_INSTANT, cap=1)
+    first = _text_event("生成 貓", event_id="u1")
+    second = _text_event("生成 狗", event_id="u2")
+    second["source"]["userId"] = STRANGER
+
+    assert (await _send(handler, first))[0].action == "accepted"
+    assert (await _send(handler, second))[0].action == "accepted"
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_the_cap_is_off_by_default(tmp_path: Path) -> None:
+    """A handler built without the setting must not silently throttle. The
+    composition root passes the real value; the default here is `off`."""
+    handler, queue, _ = _at(tmp_path, OPEN_INSTANT)
+
+    for n in range(12):
+        outcomes = await _send(handler, _text_event("生成 貓", event_id=f"many-{n}"))
+        assert outcomes[0].action == "accepted"
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_request_still_counts_against_the_cap(tmp_path: Path) -> None:
+    """The cap is on asking, not on succeeding — otherwise a user whose prompts
+    keep failing validation has an unlimited allowance."""
+    handler, queue, _ = _at(tmp_path, OPEN_INSTANT, cap=1)
+    outcomes = await _send(handler, _text_event("生成 貓", event_id="doomed"))
+    assert outcomes[0].job is not None
+    queue.fail(outcomes[0].job.id, "prompt rejected")
+
+    again = await _send(handler, _text_event("生成 貓", event_id="second"))
+
+    assert again[0].action == "rate_limited"
     queue.close()

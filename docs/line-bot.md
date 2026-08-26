@@ -259,12 +259,57 @@ yourself (`chmod 600`), then `systemctl restart ai-studio`.
   → dedupe on webhookEventId
   → enqueue, reply with a link, return 200        (< 2s)
   → background: LLM turns it into an H3 prompt    (seconds)
-  → 11:00: the window opens, the drainer renders  (~5 min each)
+  → the worker sees `parsed` work and opens a pod (inside business hours)
+  → it renders                                    (~5 min each)
   → the status page shows the download
 ```
 
 A user can also ask `好了嗎` at any time — that is a free reply, so polling by
 asking costs nothing.
+
+### Outside business hours
+
+Business hours are **11:00-13:00 Asia/Taipei**
+([schedule.md](schedule.md)). Outside them the bot **still accepts the
+request** — it goes into the queue and waits for the next window. Refusing
+would mean whatever someone thought of at midnight is simply lost, which is a
+worse outcome than waiting until eleven, and the request costs nothing to hold.
+
+What changes is only the acknowledgement. In hours:
+
+```
+收到 ✓ 排隊第 1 位,正在解析你的描述
+進度與下載 → https://<host>/q/<token>
+```
+
+Out of hours:
+
+```
+收到 ✓ 排隊第 1 位
+營業時間 11:00-13:00,已排入下一個時段(約 08/26 11:00),完成後會在群組通知你
+進度與下載 → https://<host>/q/<token>
+```
+
+The queue position is true either way; on its own at 03:00 it reads as
+"shortly" and is off by eight hours, so out of hours it is followed by when
+"shortly" actually is. The next opening comes from `runtime.hours.next_open`,
+which is also what the worker and the pod lease read — there is one copy of
+11:00 and 13:00 in the codebase, in `runtime/hours.py`.
+
+The status page says the same thing independently (`api/main.py`'s `_STATE_ZH`:
+「已排入佇列,GPU 服務時段 11:00-13:00」), so a user who follows the link out of
+hours is not told something different from what the reply told them.
+
+### The per-user daily cap
+
+`AI_STUDIO_MAX_JOBS_PER_USER_PER_DAY` (default 10, `0` disables) is checked
+**before** the request is enqueued, so a refusal does not also spend an LLM
+conversion on something that will never run. It counts every request the user
+has had accepted since Taipei midnight, failures included — the cap is on
+asking, not on succeeding, or a user whose prompts keep failing validation
+would have an unlimited allowance. Together with the group and user
+allowlists, that is the whole of the authorisation model: no token buckets, no
+priorities, no concurrency above one.
 
 ## The details that bite
 

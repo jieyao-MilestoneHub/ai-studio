@@ -19,7 +19,7 @@ combined, up from H3's ~54.7GB alone).
 | Capacity | ~100 usable minutes ÷ ~5 min = **~20 clips/day**, ~600/month |
 
 One FIFO queue serves both the video trigger (`生成`/`/gen`) and the image
-trigger (`畫圖`/`/img`, see [line-bot.md](line-bot.md)) — `session drain`
+trigger (`畫圖`/`/img`, see [line-bot.md](line-bot.md)) — `ai-studio worker`
 dispatches each claimed job to the H3 or Flux provider by `media_kind`. An
 image job's generation time is `[speculative]` but expected in the 15–40s
 range, negligible against a clip's 2–6 minutes, so mixing images in barely
@@ -33,7 +33,7 @@ window is sized by *how long someone is willing to wait*, not by throughput.
 ## The capacity ladder
 
 Placement is not a preference; it is whatever is available in a licence-permitted
-datacenter at 11:00. Four rungs, price **strictly descending**, and only the
+datacenter at the moment the day's first request arrives. Four rungs, price **strictly descending**, and only the
 cheapest one waits:
 
 | # | GPU | where | VRAM | $/hr | 2h×30 | LoRA mode | on refusal |
@@ -107,51 +107,99 @@ over the proxy, and Sydney is materially closer to Taiwan than Iceland — but t
 pod's own downloads (54.7GB of weights 📏) come from Hugging Face, so setup time
 depends on the host's link rather than on distance from us.
 
-## Three scheduled tasks
+## Who opens the pod
+
+**The first request that arrives inside business hours does.** Not a timer.
+
+The window is unchanged — 11:00–13:00 Asia/Taipei, the table above still
+holds — and so is the reason for it: setup is ~20 minutes against ~5 for a
+clip, so the pod is still opened at most once a day and the queue still
+absorbs everything that arrives in between. What changed is the trigger. A
+timer that fires at 03:00 UTC opens a pod whether or not anybody asked for
+anything, and a `drain` timer that ticks every five minutes makes someone who
+asked at 11:00:10 wait until 11:05 for no reason. "Instant" here means
+*instant inside business hours*, and neither of those was.
+
+`ai-studio worker` is the loop. It runs as a service, always:
 
 ```bash
-# 11:00 — open. Walks the ladder; raises having created nothing if all four fail.
-ai-studio session open --until 13:00
+ai-studio worker
+```
 
-# every 5 min — close early if the window has gone quiet
-ai-studio session reap --idle-minutes 20
+- Outside 11:00–13:00 it sleeps 60s at a time and does nothing else. It does
+  not open a pod, it does not drain, it does not fail.
+- Inside the window it checks the queue every 10 seconds. A `parsed` job — not
+  merely `queued`; an unconverted request may never become a valid prompt —
+  calls `runtime.session.ensure_pod()`, which reuses the day's pod if one is
+  live and otherwise creates it with a lease that runs to 13:00.
+- Concurrency is 1. One pod, one ComfyUI, one model resident in VRAM.
+- It stops claiming new work 8 minutes before 13:00 and only finishes what it
+  holds. Starting a render at 12:58 buys four minutes of GPU that
+  `--terminate-after` then throws away.
+
+The single source of 11:00 and 13:00 is `runtime/hours.py`. It is in `runtime`
+rather than in `session.py` because of the layer contract: `bots` (L6) writes
+the out-of-hours reply and reaches *down* for it, while `pipeline` (L4) sits
+below `runtime` and cannot import it at all — the worker takes those three
+functions by protocol and `cli.main` injects them.
+
+## Two timers, and both of them only close things
+
+```bash
+# every 5 min — close early if the pod has gone quiet
+ai-studio session reap --idle-minutes 10
 
 # 13:00 — close, unconditionally. Idempotent and safe when nothing is up.
 ai-studio session close
 ```
 
-`session open` also passes `--terminate-after` set to window end + 10 minutes.
-That is the backstop, not the mechanism: **if the scheduler never fires, if the
-machine sleeps, if this code crashes — the pod still terminates itself.** The
-buffer covers a clip mid-render at the bell.
+Nothing on a schedule opens anything any more. That is the point: every
+scheduled task left can only ever *reduce* what is billing.
 
-The reaper matters because a window sized for peak demand is mostly idle at ~50
-clips a month, and idle minutes cost exactly what working ones do.
+`ensure_pod` passes `--terminate-after` set to the end of business hours plus
+10 minutes. That is the backstop, not the mechanism: **if the worker dies, if
+the reaper never fires, if this code crashes — the pod still terminates
+itself.** The buffer covers a clip mid-render at the bell. Three independent
+ways for a machine to stop billing, and only the last needs no process alive.
 
-### The timer fires blindly; `session open` decides whether to spend
+The reaper's idle window dropped from 20 minutes to **10**, for a different
+reason than it was set the first time. The old number was about not wasting
+the tail of a window that was going to be paid for anyway. Now that the pod is
+opened by a request, the window is only as long as the work needs, and the
+first real run cannot afford two hours (PLAN.md Phase 7: $1.556 of approved
+budget against $1.004/hr). Ten is a guess pending the one measurement that
+settles it — the cold-open time. A cold open that turns out to be expensive
+argues for a *longer* grace, not a shorter one, because every reopen pays it
+again `[speculative]`.
 
-The systemd timer (or Task Scheduler entry) that calls `session open` at 11:00
-is deliberately dumb and unconditional — it fires every day, windows or not.
-Two checks live inside the command instead, so "the LINE bot triggers spend"
-and "the pod only ever boots 11:00–13:00" are both true at once rather than in
-tension:
+### What `ensure_pod` checks before it creates anything
 
-1. **Demand gate.** Before anything else, `session open` checks whether the
-   queue has any `queued`/`parsed` job at all — video or image. An empty queue
-   means skip entirely: no capacity check, no pod, no spend that day. A day
-   with zero LINE messages now costs $0, not one ladder rung's worth of an
-   empty window.
-2. **Monthly budget guard.** `runtime.budget.MonthlyBudgetGuard` reads
+Three gates, cheapest first, all of them before a pod exists:
+
+1. **Business hours.** Outside them it raises `OutsideBusinessHours` — its own
+   type, because the caller's answer to it is specific and cheap: leave the
+   request in the queue for tomorrow. A generic failure would be
+   indistinguishable from "the ladder is empty", which *is* worth retrying.
+2. **Opens per day.** `AI_STUDIO_MAX_POD_OPENS_PER_DAY` (default 2: the day's
+   window, plus one more if the reaper closed it and a later request needs the
+   shop reopened), counted against `pod_opens` in the queue database on the
+   Asia/Taipei day. This is the failure the monthly guard cannot see — a
+   worker that crash-loops opens a fresh pod on every restart, and every one
+   of them is individually inside budget.
+3. **Monthly budget guard.** `runtime.budget.MonthlyBudgetGuard` reads
    `AI_STUDIO_MAX_MONTH_USD` (default $50) and `AI_STUDIO_VPS_MONTHLY_USD`
    (default $5, reserved off the top) against a running ledger
    (`runs/.spend_ledger.json`, rolled over on the Asia/Taipei calendar month).
    If what's left this month can't cover even a ~20-minute session at the
-   ladder's *priciest* rung, `session open` refuses outright — the same
-   `PodError`-style loud failure as an empty ladder, logged rather than
-   silently skipped. If there's *some* budget but not enough for the full
-   window at the worst-case rate, the guard shrinks `--until` instead of
-   refusing, so a few expensive early-month days degrade the window length
-   gracefully rather than blow the cap on day three.
+   ladder's *priciest* rung, it refuses outright. If there's *some* budget but
+   not enough for the full window at the worst-case rate, the guard shrinks
+   the lease instead of refusing, so a few expensive early-month days degrade
+   the window length gracefully rather than blow the cap on day three.
+
+Same guard and same pessimistic arithmetic as before; it has moved from the
+CLI's `session open` onto the path that actually creates pods. The old demand
+gate ("skip if the queue is empty") is gone because it no longer has anything
+to guard: nothing opens a pod except a request.
 
 This exists because the ladder's own worst case already exceeds $50/month on
 GPU alone — rung 1 at $1.004/hr × 2h × 30d is $60.24 — so "$50/month" was a
@@ -163,7 +211,7 @@ to happen before that, on the worst case. A cheaper rung answering just means
 the real month comes in under budget, never over it.
 
 **The ledger is fed from `close_session()` itself, not from the CLI's
-`session close` command.** At the intended ~50 renders/month, the window is
+`session close` command.** At the intended ~50 renders/month, the pod is
 almost always closed early by `reap`'s `close_if_idle()` — "~30x headroom"
 above — long before the scheduled 13:00 `session close` ever runs, so by the
 time that command fires, the state file is already gone and there is nothing
@@ -178,26 +226,28 @@ regardless of which one happened to fire.
 $repo = "C:\Users\USER\Desktop\Develop\ai-studio"
 $uv   = (Get-Command uv).Source
 
-schtasks /Create /TN "ai-studio-open"  /SC DAILY /ST 11:00 /F `
-  /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session open --until 13:00"
-
 schtasks /Create /TN "ai-studio-reap"  /SC MINUTE /MO 5 /F `
-  /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session reap"
+  /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session reap --idle-minutes 10"
 
 schtasks /Create /TN "ai-studio-close" /SC DAILY /ST 13:00 /F `
   /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session close"
 ```
 
-⚠️ Task Scheduler does not run while the machine is asleep. `--terminate-after`
-guarantees a pod gets *closed*, never that one gets *opened* — so if the machine
-is unreliable, put the scheduler on whatever host serves the LINE webhook.
+`ai-studio worker` is not a scheduled task — it is a service that stays up. On
+Windows that means a console you leave running, or NSSM; on the VPS it is
+`ai-studio-worker.service` with `Restart=always` (see
+[`deploy/vps_setup.sh`](../deploy/vps_setup.sh)).
 
-### cron, if the scheduler lives on the webhook host
+⚠️ Task Scheduler does not run while the machine is asleep, and neither does
+the worker. `--terminate-after` guarantees a pod gets *closed*, never that one
+gets *opened* — so if the machine is unreliable, put the worker and the timers
+on whatever host serves the LINE webhook.
+
+### cron, if these live on the webhook host
 
 ```cron
-# UTC. 11:00 Asia/Taipei = 03:00 UTC.
-0  3 * * *  cd /srv/ai-studio && uv run ai-studio session open --until 13:00 --tz Asia/Taipei
-*/5 * * * * cd /srv/ai-studio && uv run ai-studio session reap
+# UTC. 13:00 Asia/Taipei = 05:00 UTC. Nothing here opens a pod.
+*/5 * * * * cd /srv/ai-studio && uv run ai-studio session reap --idle-minutes 10
 0  5 * * *  cd /srv/ai-studio && uv run ai-studio session close
 ```
 

@@ -14,6 +14,13 @@ The loop is shaped by two facts about the window rather than by the work itself:
    the pod was preempted, the proxy hiccuped. Those go back in the queue
    (`requeue=True`) so the request survives; only a failure that would repeat
    identically — a prompt the model rejects — is terminal.
+
+`drain_window` is no longer what runs on a schedule — `pipeline.worker` is, and
+it owns the loop now. What it does *not* own is the two functions that actually
+turn a job into a file: `render_clip` and `render_image` are shared, so there is
+exactly one submit/poll/fetch sequence per media kind rather than a second copy
+that drifts. `drain_window` stays as the manual, one-shot operator tool: "the
+worker is wedged, empty the queue on the pod that is already open".
 """
 
 from __future__ import annotations
@@ -137,7 +144,7 @@ async def drain_window(
 
     consecutive_failures = 0
 
-    while _may_claim(window_end):
+    while may_claim(window_end):
         if max_clips is not None and report.completed >= max_clips:
             break
         if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
@@ -154,11 +161,11 @@ async def drain_window(
         started = time.monotonic()
         try:
             if job.media_kind is MediaKind.IMAGE:
-                asset = await _render_image(
+                asset = await render_image(
                     job, provider, caps, files_dir, window_end, poll_interval_s
                 )
             else:
-                asset = await _render(job, provider, caps, files_dir, window_end, poll_interval_s)
+                asset = await render_clip(job, provider, caps, files_dir, window_end, poll_interval_s)
         except ProviderError as exc:
             # The backend's problem, so keep the request — but only while it has
             # attempts left, or requeue becomes an infinite loop.
@@ -187,12 +194,20 @@ async def drain_window(
     return report
 
 
-def _may_claim(window_end: datetime) -> bool:
-    remaining = (window_end - datetime.now(timezone.utc)).total_seconds()
+def may_claim(deadline: datetime) -> bool:
+    """Is there enough time left before `deadline` to start something new?
+
+    `deadline` is whatever bell the caller answers to. For `drain_window` it is
+    the window end; for the always-on worker it is the end of business hours.
+    The reserve is the same either way, because what it protects against is the
+    same: paying for four minutes of a render that `--terminate-after` throws
+    away.
+    """
+    remaining = (deadline - datetime.now(timezone.utc)).total_seconds()
     return remaining > STOP_CLAIMING_BEFORE_S
 
 
-async def _render(
+async def render_clip(
     job: Job,
     provider: ClipProviderLike,
     caps: Any,
@@ -236,7 +251,7 @@ async def _render(
     return dest
 
 
-async def _render_image(
+async def render_image(
     job: Job,
     provider: ImageProviderLike,
     caps: Any,
@@ -244,7 +259,7 @@ async def _render_image(
     window_end: datetime,
     poll_interval_s: float,
 ) -> Path:
-    """Submit, poll, fetch. One image. Mirrors `_render` with no frame count."""
+    """Submit, poll, fetch. One image. Mirrors `render_clip` with no frame count."""
     plan = job.prompt or {}
     rendered = plan.get("_rendered")
     if not rendered:

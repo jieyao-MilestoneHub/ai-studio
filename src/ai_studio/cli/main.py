@@ -6,7 +6,7 @@ import asyncio
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import typer
 from rich.console import Console
@@ -14,7 +14,7 @@ from rich.table import Table
 
 from ai_studio import media
 from ai_studio.config.settings import get_settings
-from ai_studio.core.enums import GenMode
+from ai_studio.core.enums import GenMode, MediaKind
 from ai_studio.core.errors import AIStudioError
 from ai_studio.core.ids import new_run_id, scene_id, shot_id
 from ai_studio.core.provider_spec import ClipRequest
@@ -530,6 +530,146 @@ def session_drain(
     finally:
         queue.close()
     console.print(str(report))
+
+
+class _RuntimeHost:
+    """The composition root's half of `pipeline.worker.WindowHost`.
+
+    `pipeline` sits below `runtime` in the layer contract, so the worker loop
+    cannot import business hours, sessions or the provider registry. It takes
+    them by protocol instead, and this is where the two halves are joined —
+    which is exactly what the CLI is for, and why it is the one package
+    exempted from the "phase-2 packages stay leaves" contract.
+    """
+
+    def __init__(self, *, name: str, poll_seconds: float) -> None:
+        self.name = name
+        self.poll_seconds = poll_seconds
+        self._providers: dict[str, dict[MediaKind, object]] = {}
+
+    def now(self) -> datetime:
+        from datetime import timezone
+
+        return datetime.now(timezone.utc)
+
+    def is_open(self, now: datetime | None = None) -> bool:
+        from ai_studio.runtime import hours
+
+        return hours.is_open(now)
+
+    def claim_deadline(self, now: datetime | None = None) -> datetime:
+        """The end of business hours, not the end of a two-hour lease.
+
+        Same reserve as `drain_window`'s, different bell: this is what stops a
+        render being started at 12:58 that `--terminate-after` then throws away.
+        """
+        from ai_studio.runtime import hours
+
+        return hours.window_end_for(now)
+
+    def ensure_pod(self, queue: object) -> object:
+        from ai_studio.pipeline.queue import JobQueue
+        from ai_studio.runtime import session as sess
+
+        session = sess.ensure_pod(cast(JobQueue, queue), name=self.name)
+        console.print(
+            f"[green]window[/green] pod={session.pod_id} {session.tier_label} "
+            f"${session.cost_per_hr:.2f}/hr until {session.window_end}"
+        )
+        return session
+
+    def wait_ready(self, session: object) -> float:
+        from ai_studio.runtime import session as sess
+
+        waited = sess.wait_ready(cast(sess.Session, session))
+        console.print(f"  ComfyUI answered after {waited:.0f}s")
+        return waited
+
+    def providers_for(self, session: object) -> dict[MediaKind, object]:
+        """Backends bound to this pod, built once per pod and then reused.
+
+        Rebuilding them per job would reopen an HTTP client for every render;
+        keying the cache on the pod id is what makes a *new* pod get new ones.
+        """
+        from ai_studio.runtime.session import Session
+
+        live = cast(Session, session)
+        if live.pod_id in self._providers:
+            return self._providers[live.pod_id]
+
+        workflow = Path("workflows") / (
+            "h3_fl2va_turbo.json" if live.low_vram else "h3_fl2va_turbo_fp8.json"
+        )
+        flux_workflow = Path("workflows") / "flux_dev.json"
+        for path in (workflow, flux_workflow):
+            if not path.is_file():
+                raise AIStudioError(f"missing workflow {path} (run from the repo root)")
+
+        built: dict[MediaKind, object] = {
+            MediaKind.VIDEO: get_provider(
+                "comfyui", workflow=workflow, base_url=live.comfy_url,
+                hourly_usd=live.cost_per_hr,
+            ),
+            MediaKind.IMAGE: get_provider(
+                "flux", workflow=flux_workflow, base_url=live.comfy_url,
+                hourly_usd=live.cost_per_hr,
+            ),
+        }
+        self._providers = {live.pod_id: built}
+        return built
+
+    def touch_activity(self) -> None:
+        from ai_studio.runtime import session as sess
+
+        sess.touch_activity()
+
+
+@app.command("worker")
+def worker(
+    name: str = typer.Option("ai-studio-window", help="Pod name to open and reuse."),
+    poll_seconds: float = typer.Option(15.0, help="How often to poll ComfyUI."),
+    idle_seconds: float = typer.Option(10.0, help="Queue check interval while open."),
+    max_ticks: int | None = typer.Option(None, help="Stop after N passes. For testing."),
+) -> None:
+    """Serve the queue: open a pod when work arrives inside business hours.
+
+    This is what replaces the `open` and `drain` timers. It runs as a systemd
+    service with `Restart=always` and sleeps its way through everything outside
+    11:00-13:00 Asia/Taipei, so there is nothing to schedule and nothing that
+    fires when no one has asked for anything.
+
+    Closing is still someone else's job, on purpose: `session reap` every five
+    minutes, `session close` at the bell, and `--terminate-after` on the pod
+    itself. Three independent ways for a machine to stop billing, none of which
+    depends on this process still being alive.
+    """
+    from ai_studio.pipeline.queue import JobQueue
+    from ai_studio.pipeline.worker import serve
+
+    settings = get_settings()
+    host = _RuntimeHost(name=name, poll_seconds=poll_seconds)
+    queue = JobQueue()
+    console.print(
+        f"worker up. business hours 11:00-13:00 Asia/Taipei, "
+        f"files -> {settings.files_dir}"
+    )
+    try:
+        report = asyncio.run(
+            serve(
+                queue,
+                cast(Any, host),
+                files_dir=settings.files_dir,
+                idle_poll_s=idle_seconds,
+                poll_interval_s=poll_seconds,
+                max_ticks=max_ticks,
+            )
+        )
+    except KeyboardInterrupt:
+        console.print("worker stopped. [dim]Any open pod is still billing: session close[/dim]")
+        raise typer.Exit(0) from None
+    finally:
+        queue.close()
+    console.print(report.summary())
 
 
 pod_app = typer.Typer(help="RunPod pod lifecycle. `down` terminates — stopping still bills.")

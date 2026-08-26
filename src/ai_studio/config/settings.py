@@ -84,6 +84,25 @@ class Settings(BaseSettings):
         "max_month_usd before computing what's left for GPU compute.",
     )
 
+    max_pod_opens_per_day: int = Field(
+        default=2,
+        ge=0,
+        alias="AI_STUDIO_MAX_POD_OPENS_PER_DAY",
+        description="How many pods may be created in one Asia/Taipei day. Two: "
+        "the day's window, plus one more if the idle reaper closed it and a "
+        "later request needs the shop reopened. This is the backstop the "
+        "monthly guard cannot provide -- a worker crash-looping opens a fresh "
+        "pod on every restart and each one is individually within budget.",
+    )
+    max_jobs_per_user_per_day: int = Field(
+        default=10,
+        ge=0,
+        alias="AI_STUDIO_MAX_JOBS_PER_USER_PER_DAY",
+        description="How many requests one LINE user may have accepted in an "
+        "Asia/Taipei day. 0 disables the cap. Checked before the request is "
+        "enqueued, so a refusal does not also spend an LLM conversion.",
+    )
+
     ffmpeg_bin: str = Field(default="ffmpeg", alias="AI_STUDIO_FFMPEG_BIN")
     ffprobe_bin: str = Field(default="ffprobe", alias="AI_STUDIO_FFPROBE_BIN")
 
