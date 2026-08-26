@@ -305,8 +305,8 @@ def check_out_of_hours() -> CheckResult:
         if not sent:
             return _fail(4, name, "the request was accepted with no reply at all")
         text = sent[-1][1][0]
-        if "11:00-13:00" not in text:
-            return _fail(4, name, f"the reply does not quote business hours: {text[:80]}")
+        if "/q/" not in text:
+            return _fail(4, name, f"the reply carries no status-page link: {text[:80]}")
 
         # And nothing may reach a pod. Asserted at `ensure_pod`, which is the
         # single place one is ever created -- not at the queue, because the
@@ -326,11 +326,13 @@ def check_out_of_hours() -> CheckResult:
 
         # The reply itself is Chinese; the Windows console is cp950 and turns
         # any of it into mojibake, so this reports *about* the reply rather
-        # than quoting it.
+        # than quoting it. The reply text is deliberately the same in and out
+        # of hours now -- see the git history on _accepted_line for why -- so
+        # a status-page link is what this check has left to verify.
         return _pass(
             4, name,
-            f"accepted and held ({claimable} waiting), reply quotes 11:00-13:00 "
-            "and the next window, no pod created",
+            f"accepted and held ({claimable} waiting), reply carries a status "
+            "link, no pod created",
         )
     finally:
         queue.close()
@@ -443,17 +445,19 @@ def check_poster() -> CheckResult:
 
 
 def check_graphs() -> CheckResult:
-    """8. Both workflows load, bind and validate.
+    """8. All workflows load, bind and validate.
 
     A malformed graph is otherwise discovered at the moment of submission, on a
     pod that is already billing.
     """
-    name = "both ComfyUI graphs load and validate"
+    name = "all ComfyUI graphs load and validate"
     from ai_studio.comfy.graph import IMAGE_REQUIRED_BINDINGS, REQUIRED_BINDINGS, Workflow
 
     targets = [
         (Path("workflows/h3_fl2va_turbo.json"), REQUIRED_BINDINGS),
         (Path("workflows/h3_fl2va_turbo_fp8.json"), REQUIRED_BINDINGS),
+        (Path("workflows/h3_i2va_turbo.json"), REQUIRED_BINDINGS),
+        (Path("workflows/h3_i2va_turbo_fp8.json"), REQUIRED_BINDINGS),
         (Path("workflows/flux_dev.json"), IMAGE_REQUIRED_BINDINGS),
     ]
     loaded: list[str] = []

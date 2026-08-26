@@ -18,8 +18,12 @@ GITIGNORE = REPO_ROOT / ".gitignore"
 MUST_IGNORE = [
     "runs/",
     "out/",
+    "files/",
+    "incoming/",
     "*.mp4",
     "*.wav",
+    "*.jpg",
+    "*.png",
     "*.safetensors",
     "*.ckpt",
     ".env",

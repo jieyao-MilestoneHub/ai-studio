@@ -35,13 +35,23 @@ from typing import Any
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 
+from ai_studio.bots.line.content import LineContentClient
 from ai_studio.bots.line.reply import LineReplyClient, NullReplyClient
 from ai_studio.bots.line.webhook import InvalidSignature, WebhookHandler
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import MediaKind
+from ai_studio.llm.endpoint import RunpodLlmClient
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
 
 _log = logging.getLogger("ai_studio.webhook")
+
+_LLM_UNSET = object()
+"""Distinguishes "no override passed" from "explicitly no LLM" for `llm=`.
+
+`None` is itself a meaningful, valid value for `llm` -- it is what turns on the
+template fallback -- so it cannot double as the "use settings" default without
+making that fallback impossible to select on purpose from a test.
+"""
 
 
 def create_app(
@@ -49,6 +59,7 @@ def create_app(
     queue: JobQueue | None = None,
     handler: WebhookHandler | None = None,
     files_dir: Path | None = None,
+    llm: RunpodLlmClient | None = _LLM_UNSET,  # type: ignore[assignment]
 ) -> FastAPI:
     """Build the app. Dependencies are injectable so tests need no credentials."""
     settings = get_settings()
@@ -61,12 +72,34 @@ def create_app(
     app.state.files_dir = Path(files_dir or settings.files_dir)
     app.state.files_dir.mkdir(parents=True, exist_ok=True)
 
+    # `_convert_later` reads `app.state.llm`; unset, it falls back to the
+    # template prompt (a working path, just the 26.0-quality one, not the
+    # 367.6 structured one). Both credentials have to be present for a call
+    # that can actually authenticate.
+    if llm is _LLM_UNSET:
+        llm = (
+            RunpodLlmClient(
+                settings.llm_endpoint_id,
+                settings.runpod_api_key.get_secret_value(),
+                model=settings.llm_model,
+            )
+            if settings.llm_endpoint_id and settings.runpod_api_key
+            else None
+        )
+    app.state.llm = llm
+
     if handler is None:
         secret = settings.line_channel_secret
         token = settings.line_channel_access_token
         replier: Any = (
             LineReplyClient(token.get_secret_value()) if token else NullReplyClient()
         )
+        # Same token as the reply/push clients -- LINE's Content API is just
+        # another endpoint under the one channel access token, not a
+        # separate credential. None (not a null client) is "image-to-video is
+        # off": a photo with nothing able to fetch it behind it must not
+        # pretend to cache one.
+        content = LineContentClient(token.get_secret_value()) if token else None
         handler = WebhookHandler(
             app.state.queue,
             replier,
@@ -79,6 +112,8 @@ def create_app(
             # a guard that does not exist. See tests/unit/test_drain_wiring.py
             # for the last time that distinction cost this project something.
             max_jobs_per_user_per_day=settings.max_jobs_per_user_per_day,
+            content=content,
+            incoming_dir=Path("incoming"),
         )
     app.state.handler = handler
 

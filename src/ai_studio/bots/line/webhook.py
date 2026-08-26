@@ -15,15 +15,20 @@ Reference: https://developers.line.biz/en/docs/messaging-api/receiving-messages/
 from __future__ import annotations
 
 import json
+import logging
+import secrets
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Protocol
 
+from ai_studio.bots.line.content import ContentClient, LineContentError
 from ai_studio.bots.line.verify import verify
 from ai_studio.core.enums import MediaKind
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
-from ai_studio.runtime import hours
+
+_log = logging.getLogger("ai_studio.webhook")
 
 DEFAULT_TRIGGER = "生成"
 """Messages must start with this. Everything else is ignored *silently* — no
@@ -32,6 +37,13 @@ reply at all — so the bot is invisible during ordinary group conversation."""
 DEFAULT_IMAGE_TRIGGER = "畫圖"
 """The image-generation counterpart to `DEFAULT_TRIGGER`. Same silent-ignore
 rule applies — an unmatched message gets no reply at all."""
+
+IMAGE_PAIRING_TTL_S = 300.0
+"""How long a photo waits for the 生成 that turns it into a first frame.
+
+Five minutes: long enough for someone to send a photo, think for a moment,
+and type a description, short enough that a photo from an unrelated part of
+the conversation an hour ago cannot surface as a first frame nobody meant."""
 
 STATUS_WORDS = ("好了嗎", "好了没", "進度", "status", "查詢")
 """A free way to ask again. Replies are not billed, so a user can poll by
@@ -71,6 +83,8 @@ class WebhookHandler:
         image_trigger: str = DEFAULT_IMAGE_TRIGGER,
         max_jobs_per_user_per_day: int = 0,
         clock: Callable[[], datetime] | None = None,
+        content: ContentClient | None = None,
+        incoming_dir: Path | str = Path("incoming"),
     ) -> None:
         self.queue = queue
         self.replier = replier
@@ -85,6 +99,16 @@ class WebhookHandler:
         # `bots` is L6 and `runtime` is L5, so reaching down for the business
         # calendar is allowed; reaching back up never is.
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        # None (not NullContentClient) is the real "image-to-video is off"
+        # state: a channel access token is required to fetch LINE's own
+        # content, and without one there is nothing that could be fetched.
+        self.content = content
+        self.incoming_dir = Path(incoming_dir)
+        # (group_id, user_id) -> (saved path, received-at). In-process and
+        # short-lived on purpose: this is a "send a photo, then say 生成"
+        # pairing window, not durable state -- a restart within the window
+        # just means resending the photo, which costs nothing.
+        self._pending_images: dict[tuple[str, str], tuple[str, float]] = {}
 
     # --------------------------------------------------------------- entry
 
@@ -124,6 +148,8 @@ class WebhookHandler:
             return Outcome("ignored", detail=f"event type {event.get('type')}")
 
         message = event.get("message") or {}
+        if message.get("type") == "image":
+            return await self._remember_image(event, message)
         if message.get("type") != "text":
             return Outcome("ignored", detail=f"message type {message.get('type')}")
 
@@ -176,8 +202,23 @@ class WebhookHandler:
             )
             return Outcome("rate_limited", detail=str(user_id))
 
+        # Image-to-video only: a Flux job has no first-frame concept, and
+        # popping the cache here regardless of media_kind would let a photo
+        # meant for the next 生成 be silently eaten by an intervening 畫圖.
+        first_frame_path = (
+            self._take_pending_image(group_id or "", user_id)
+            if media_kind is MediaKind.VIDEO
+            else None
+        )
+
         return await self._accept(
-            event, group_id or "", user_id, prompt, reply_token, media_kind=media_kind
+            event,
+            group_id or "",
+            user_id,
+            prompt,
+            reply_token,
+            media_kind=media_kind,
+            first_frame_path=first_frame_path,
         )
 
     def _membership(self, event: dict[str, Any]) -> Outcome:
@@ -200,6 +241,54 @@ class WebhookHandler:
         ids = [str(m.get("userId")) for m in members if isinstance(m, dict)]
         return Outcome(kind, detail=" ".join(ids) or "unknown")
 
+    async def _remember_image(self, event: dict[str, Any], message: dict[str, Any]) -> Outcome:
+        """Download and cache a photo, waiting to see if a 生成 claims it.
+
+        Deliberately silent either way -- someone sharing a photo in ordinary
+        group conversation must not get a bot reply for it, the same rule
+        `DEFAULT_TRIGGER` states for any other message the bot does not act
+        on. A photo is only ever *evidence of intent* once the next message is
+        the trigger word; on its own it is just a photo in a group chat.
+        """
+        source = event.get("source") or {}
+        group_id = source.get("groupId")
+        user_id = source.get("userId")
+        if self.content is None or not group_id or not user_id:
+            return Outcome("ignored", detail="image, no content client or no user")
+        if self.allowed_group_id and group_id != self.allowed_group_id:
+            return Outcome("ignored", detail=f"image in {group_id}")
+
+        message_id = str(message.get("id") or "")
+        try:
+            data = await self.content.fetch(message_id)
+        except LineContentError as exc:
+            _log.warning("could not fetch image %s: %s", message_id, exc)
+            return Outcome("ignored", detail=f"image fetch failed: {exc}")
+
+        self.incoming_dir.mkdir(parents=True, exist_ok=True)
+        dest = self.incoming_dir / f"{secrets.token_urlsafe(8)}.jpg"
+        dest.write_bytes(data)
+        self._pending_images[(group_id, user_id)] = (str(dest), self.clock().timestamp())
+        return Outcome("image", detail=str(dest))
+
+    def _take_pending_image(self, group_id: str, user_id: str | None) -> str | None:
+        """Pop a still-fresh cached photo for this sender, if there is one.
+
+        Popped rather than peeked: a photo is a first frame for exactly one
+        request, not a standing instruction applied to everything the sender
+        says next.
+        """
+        if user_id is None:
+            return None
+        key = (group_id, user_id)
+        cached = self._pending_images.pop(key, None)
+        if cached is None:
+            return None
+        path, received_at = cached
+        if self.clock().timestamp() - received_at > IMAGE_PAIRING_TTL_S:
+            return None
+        return path
+
     # -------------------------------------------------------------- actions
 
     async def _accept(
@@ -211,44 +300,29 @@ class WebhookHandler:
         reply_token: str,
         *,
         media_kind: MediaKind = MediaKind.VIDEO,
+        first_frame_path: str | None = None,
     ) -> Outcome:
         # webhookEventId is LINE's own idempotency key. Using it means a
         # redelivery cannot enqueue — and pay for — the same clip twice.
         event_id = str(event.get("webhookEventId") or f"{group_id}:{event.get('timestamp')}")
         job, created = self.queue.enqueue(
-            event_id, group_id, prompt, user_id=user_id, media_kind=media_kind
+            event_id, group_id, prompt, user_id=user_id, media_kind=media_kind,
+            first_frame_path=first_frame_path,
         )
 
         if not created:
             await self._safe_reply(reply_token, self._status_line(job))
             return Outcome("duplicate", job=job)
 
-        position = self.queue.position(job.token) or 1
-        await self._safe_reply(reply_token, self._accepted_line(job, position))
+        await self._safe_reply(reply_token, self._accepted_line(job))
         return Outcome("accepted", job=job)
 
-    def _accepted_line(self, job: Job, position: int) -> str:
-        """What a newly accepted request is told.
-
-        Out of hours the request is still accepted — it waits in the queue for
-        the next window. Refusing it instead would mean whatever someone
-        thought of at midnight is simply lost, which is a worse outcome than
-        waiting until eleven. What changes is only what they are told: the
-        place in the line is true either way, but on its own at 03:00 it reads
-        as "shortly" and is off by eight hours, so out of hours it is followed
-        by when "shortly" actually is.
-        """
-        head = f"收到 ✓ 排隊第 {position} 位"
-        link = f"進度與下載 → {self._link(job)}"
-        if hours.is_open(self.clock()):
-            return f"{head},正在解析你的描述\n{link}"
-        opens = hours.next_open(self.clock()).astimezone(hours.TZ)
-        return (
-            f"{head}\n"
-            f"營業時間 {hours.OPEN_LOCAL:%H:%M}-{hours.CLOSE_LOCAL:%H:%M},"
-            f"已排入下一個時段(約 {opens:%m/%d %H:%M}),完成後會在群組通知你\n"
-            f"{link}"
-        )
+    def _accepted_line(self, job: Job) -> str:
+        """What a newly accepted request is told. Out of hours it still
+        waits in the queue for the next window rather than being refused --
+        refusing would mean whatever someone thought of at midnight is
+        simply lost."""
+        return f"想看結果嗎....等我個幾分鐘,想查進度可以看{self._link(job)}"
 
     def _over_daily_cap(self, user_id: str | None) -> bool:
         """Has this user used up today's allowance?
@@ -353,10 +427,17 @@ class WebhookHandler:
         A reply that does not go out is a cosmetic loss; a webhook that returns
         non-2xx makes LINE redeliver the whole event, and repeated failures make
         LINE suspend delivery to this bot. The 200 matters more than the message.
+
+        Logged rather than truly silent: swallowing the exception is right --
+        it must never turn into a non-2xx -- but swallowing it with no trace at
+        all meant a user reporting "no reply" was previously undiagnosable even
+        after the fact, from our own systems, with no way to tell an expired
+        reply token from a LINE outage from a real bug.
         """
         if not reply_token:
             return
         try:
             await self.replier.reply_text(reply_token, text)
-        except Exception:  # see docstring: the 200 matters more
+        except Exception as exc:  # see docstring: the 200 matters more
+            _log.warning("reply failed for token %s: %s", reply_token, exc)
             return

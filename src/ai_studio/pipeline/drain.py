@@ -228,13 +228,14 @@ async def render_clip(
     # in a docstring — so a fourth caller could pick 120 and nothing would say.
     request = ClipRequest(
         shot_id=f"job{job.id}",
-        mode=GenMode.T2V,
+        mode=GenMode.I2V if job.first_frame_path else GenMode.T2V,
         prompt=str(rendered),
         width=caps.native_width,
         height=caps.native_height,
         duration_s=MINIMAX_H3.shortest_useful_duration_s,
         fps=caps.native_fps,
         seed=job.id,
+        first_frame_path=job.first_frame_path,
     )
 
     clip_job = await provider.submit(request)

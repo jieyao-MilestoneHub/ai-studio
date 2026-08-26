@@ -31,7 +31,17 @@ from ai_studio.core.model_profile import (
 )
 
 REPO = Path(__file__).resolve().parents[2]
-H3_WORKFLOWS = ("h3_fl2va_turbo.json", "h3_fl2va_turbo_fp8.json")
+
+H3_WORKFLOWS = tuple(sorted(p.name for p in (REPO / "workflows").glob("h3_*.json")))
+"""Discovered, not listed. The image-to-video pair arrived after these tests
+were written and would otherwise have been silently uncovered — which is the
+exact drift the conformance checks exist to prevent."""
+
+# Each (text-only, image-conditioned) family ships one graph per quantisation.
+H3_PAIRS = (
+    ("h3_fl2va_turbo.json", "h3_fl2va_turbo_fp8.json"),
+    ("h3_i2va_turbo.json", "h3_i2va_turbo_fp8.json"),
+)
 
 
 def _load(name: str) -> Workflow:
@@ -214,19 +224,22 @@ def test_the_h3_graphs_load_a_weight_file_the_profile_knows(name: str) -> None:
     assert loaders[0]["inputs"]["unet_name"] in MINIMAX_H3.weights.values()
 
 
-def test_the_two_h3_graphs_differ_only_in_quantisation_and_lora_mode() -> None:
-    """The pair exists to serve a 24GB and a 48GB rung. Any *other* difference
+@pytest.mark.parametrize("pair", H3_PAIRS, ids=lambda p: p[0].split("_")[1])
+def test_each_h3_pair_differs_only_in_quantisation_and_lora_mode(
+    pair: tuple[str, str],
+) -> None:
+    """A pair exists to serve a 24GB and a 48GB rung. Any *other* difference
     between them is a divergence nobody decided on."""
     low, high = (json.loads((REPO / "workflows" / n).read_text(encoding="utf-8"))
-                 for n in H3_WORKFLOWS)
+                 for n in pair)
 
     differing = {
         node_id for node_id in low
         if not node_id.startswith("_") and low[node_id] != high.get(node_id)
     }
     assert differing == {"127", "134"}, (
-        f"the two H3 graphs differ at {sorted(differing)}; expected only the "
-        "UNETLoader (quantisation) and the turbo LoRA (low_vram)"
+        f"{pair[0]} and {pair[1]} differ at {sorted(differing)}; expected only "
+        "the UNETLoader (quantisation) and the turbo LoRA (low_vram)"
     )
 
 

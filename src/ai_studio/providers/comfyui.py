@@ -108,6 +108,7 @@ class ComfyUIProvider:
     ) -> None:
         settings = get_settings()
         self.workflow = Workflow.load(workflow)
+        self._i2va_workflow = self._load_i2va_sibling(workflow)
         self.client = ComfyClient(
             base_url or settings.comfy_url, timeout_s=settings.comfy_timeout_s
         )
@@ -118,6 +119,24 @@ class ComfyUIProvider:
         self._hourly_usd = hourly_usd
         self._caps = h3_capabilities(width, height, hourly_usd=hourly_usd)
 
+    @staticmethod
+    def _load_i2va_sibling(workflow: Path | str) -> Workflow | None:
+        """The image-conditioned graph next to a text-only one, if it exists.
+
+        A separate file rather than a `first_frame` left disconnected in one
+        shared graph: ComfyUI's JSON is a static graph, not an expression
+        engine, so there is no way to make one file both wire and not-wire a
+        `LoadImage` node depending on the request. `None` rather than raising
+        -- a caller that passes some other workflow.json with no i2va sibling
+        should still get ordinary text-to-video; the failure belongs at the
+        moment an image actually needs it and there is nowhere to put it.
+        """
+        path = Path(workflow)
+        sibling = path.with_name(path.name.replace("fl2va", "i2va"))
+        if sibling == path or not sibling.is_file():
+            return None
+        return Workflow.load(sibling)
+
     def capabilities(self) -> ProviderCapabilities:
         return self._caps
 
@@ -127,7 +146,8 @@ class ComfyUIProvider:
         # Both checks are free and both run before a single GPU-second. This is
         # the boundary where a provider-agnostic ClipRequest becomes an H3
         # submission, so it is the only place that can catch a request H3 will
-        # quietly reinterpret.
+        # quietly reinterpret. Ahead of picking a graph, because a bad length is
+        # bad on the i2va path too.
         MINIMAX_H3.require_canvas(request.width, request.height)
 
         grid = MINIMAX_H3.frame_grid
@@ -143,22 +163,38 @@ class ComfyUIProvider:
                 f"Use ModelProfile.frames_for() to pick a duration."
             )
 
+        workflow = self.workflow
         values: dict[str, Any] = {
             "prompt": request.prompt,
             "width": request.width,
             "height": request.height,
             "length": frames,
         }
+
+        if request.first_frame_path is not None:
+            if self._i2va_workflow is None:
+                raise ProviderSubmitError(
+                    f"a first frame was given but {self.workflow.source} has no "
+                    "image-conditioned sibling workflow"
+                )
+            workflow = self._i2va_workflow
+            source = Path(request.first_frame_path)
+            try:
+                image_bytes = source.read_bytes()
+            except OSError as exc:
+                raise ProviderSubmitError(f"could not read {source}: {exc}") from exc
+            values["first_frame"] = await self.client.upload_image(image_bytes, source.name)
+
         for name, value in (
             ("seed", request.seed),
             ("steps", request.steps),
             ("filename", f"ai_studio_{request.shot_id}"),
             ("fps", request.fps),
         ):
-            if value is not None and name in self.workflow.bindings:
+            if value is not None and name in workflow.bindings:
                 values[name] = value
 
-        graph = self.workflow.with_values(values)
+        graph = workflow.with_values(values)
         now = time.time()
         prompt_id = await self.client.queue_prompt(graph)
 

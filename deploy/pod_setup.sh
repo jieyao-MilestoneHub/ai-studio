@@ -68,7 +68,12 @@ cd "$CU" || die "cannot cd $CU"
 [ -x .venv-cu128/bin/pip ] || die ".venv-cu128 is missing — see trap 1 in this file's header"
 
 log "upgrading ComfyUI to $COMFY_TAG (its own venv, no stash)"
-git fetch --tags --quiet origin || die "git fetch failed"
+# --force: the image ships a baked-in v0.26.2 tag that does not match the
+# object the remote has at that name, and a plain `fetch --tags` refuses to
+# clobber a local tag pointing elsewhere -- exit 1, no other refs updated
+# either. Observed live on runpod/comfyui:cuda12.8. We want whatever origin
+# has, unconditionally, so force is correct here rather than a narrower fix.
+git fetch --tags --force --quiet origin || die "git fetch failed"
 git -c advice.detachedHead=false checkout --quiet -f "tags/$COMFY_TAG" \
   || die "checkout $COMFY_TAG failed"
 log "  now $(git describe --tags)"
@@ -98,23 +103,24 @@ python3 -c 'import hf_transfer' 2>/dev/null ||
 export HF_XET_HIGH_PERFORMANCE=1 HF_HUB_ENABLE_HF_TRANSFER=1 HF_HOME=/workspace/.hf
 command -v hf >/dev/null || pip install -q --break-system-packages -U huggingface_hub
 
+# ~52GB of weights against whatever /workspace actually has. Caught here,
+# loudly, before it is caught 30 minutes later as two silently-missing
+# safetensors files: a download that dies mid-transfer because the disk
+# filled exits same as a download that finished, and `pgrep` alone cannot
+# tell those apart. Observed live: this volume can come back smaller than
+# requested depending on how the pod was deployed.
+AVAIL_KB="$(df -k /workspace | awk 'NR==2{print $4}')"
+[ "$AVAIL_KB" -ge $((75 * 1024 * 1024)) ] || die \
+  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~75GB headroom for ~52GB of H3 weights + ~17GB of Flux weights"
+
+DL_PIDS=()
 dl() {  # repo file destdir
   nohup hf download "$1" "$2" --local-dir "$3" \
     > "/workspace/dl-logs/$(basename "$2").log" 2>&1 &
+  DL_PIDS+=("$!:$(basename "$2")")
   log "  downloading $(basename "$2")"
 }
-# black-forest-labs/FLUX.1-dev is a GATED repo: `hf download` returns 401
-# without a token whose account has accepted the FLUX.1 [dev] Non-Commercial
-# License once on the model page. Checked here, before 52GB of H3 starts, so
-# the failure costs seconds rather than being discovered on a pod that has
-# already spent twenty minutes downloading.
-if [ -z "${HF_TOKEN:-}" ]; then
-  die "HF_TOKEN is not set. black-forest-labs/FLUX.1-dev is gated: accept its
-  licence once at https://huggingface.co/black-forest-labs/FLUX.1-dev then
-  export HF_TOKEN=hf_... before running this script."
-fi
-
-log "starting weight downloads (~84GB)"
+log "starting weight downloads (~52GB H3 + ~17GB Flux)"
 dl Comfy-Org/MiniMax-H3 "$DIT" "$M"
 dl Comfy-Org/MiniMax-H3 text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors "$M"
 dl Comfy-Org/MiniMax-H3 vae/minimax_h3_video_vae_fp16.safetensors "$M"
@@ -124,25 +130,35 @@ dl larryvrh/MiniMax-H3-Turbo-Lora minimax_h3_turbo_v4_step600_ema.safetensors "$
 # Needs no trigger word: neither candidate's model card declares an
 # instance_prompt -- this is an "unrestrain" adapter, not a concept LoRA.
 dl Heartsync/Flux-NSFW-uncensored lora.safetensors "$M/loras"
-
-# Flux.1-dev itself. NONE of these were downloaded before -- the workflow
-# loaded four files the pod never fetched, which surfaces as a failure at
-# submit time on a machine that is already billing. Sizes are from the HF
-# file-tree API; the filenames must match workflows/flux_dev.json exactly and
-# a test asserts that they do.
-dl black-forest-labs/FLUX.1-dev flux1-dev.safetensors "$M/diffusion_models"   # 23.8 GB, gated
-dl comfyanonymous/flux_text_encoders t5xxl_fp8_e4m3fn.safetensors "$M/text_encoders"  # 4.9 GB
-dl comfyanonymous/flux_text_encoders clip_l.safetensors "$M/text_encoders"    # 246 MB
-# The VAE via the Lumina repackage rather than the gated FLUX.1-dev copy: it is
-# byte-identical (335,304,388) and ungated, and it is what ComfyUI's own Flux
-# example page points at.
-dl Comfy-Org/Lumina_Image_2.0_Repackaged split_files/vae/ae.safetensors "$M/vae"
+# Flux.1-dev itself. black-forest-labs/FLUX.1-dev is the canonical source but
+# is HF-gated (401 with no token, and this script has none configured).
+# comfyanonymous's repackaging is the same fp8-scaled weights, ungated.
+dl comfyanonymous/flux_dev_scaled_fp8_test flux_dev_fp8_scaled_diffusion_model.safetensors "$M/diffusion_models"
+dl comfyanonymous/flux_text_encoders clip_l.safetensors "$M/text_encoders"
+dl comfyanonymous/flux_text_encoders t5xxl_fp8_e4m3fn.safetensors "$M/text_encoders"
+# The Flux VAE (ae.safetensors) ships inside the same gated black-forest-labs
+# repo. Comfy-Org/z_image re-hosts the byte-identical file ungated -- checked
+# against several such repackagings, all serving the same file with no auth.
+dl Comfy-Org/z_image split_files/vae/ae.safetensors "$M/vae"
 
 # ── 4. wait for the weights, then restart ComfyUI ─────────────────────────
 while pgrep -f 'hf download' >/dev/null; do
-  log "  weights: $(du -sh "$M" 2>/dev/null | cut -f1)"
+  log "  weights: $(du -sh "$M" 2>/dev/null | cut -f1), $(df -h /workspace | awk 'NR==2{print $4}') free"
   sleep 30
 done
+# `pgrep` above only proves every download process has *exited* -- not that
+# it exited zero. Reap each one by the PID captured at launch and check its
+# actual status; a process that dies from ENOSPC exits nonzero same as any
+# other failure, and silently declaring victory here is exactly how the
+# turbo LoRA custom node ends up loaded against a diffusion model that was
+# never actually written to disk.
+FAILED_DL=()
+for entry in "${DL_PIDS[@]}"; do
+  pid="${entry%%:*}"; name="${entry#*:}"
+  wait "$pid" 2>/dev/null || FAILED_DL+=("$name")
+done
+[ "${#FAILED_DL[@]}" -eq 0 ] || die \
+  "download(s) failed: ${FAILED_DL[*]} -- see /workspace/dl-logs/<name>.log ($(df -h /workspace | awk 'NR==2{print $4}') free)"
 log "weights complete: $(du -sh "$M" | cut -f1)"
 # hf download keeps the remote filename, and "lora.safetensors" says nothing
 # in a directory that also holds the H3 turbo LoRA -- and does not match the
@@ -150,23 +166,35 @@ log "weights complete: $(du -sh "$M" | cut -f1)"
 # strings the same string. Fail loudly rather than leaving the graph pointing
 # at a file that is not there: ComfyUI's own error for a missing LoRA is a
 # line in a log nobody is reading at 11:04.
-# `hf download` keeps the repo's directory structure, so the Lumina VAE lands
-# at vae/split_files/vae/ae.safetensors. VAELoader looks in vae/ and nowhere
-# else, so an unflattened file is a file ComfyUI cannot see.
-if [ -f "$M/vae/split_files/vae/ae.safetensors" ]; then
-  mv "$M/vae/split_files/vae/ae.safetensors" "$M/vae/ae.safetensors"
-  rm -rf "$M/vae/split_files"
-fi
-for required in   "$M/diffusion_models/flux1-dev.safetensors"   "$M/text_encoders/t5xxl_fp8_e4m3fn.safetensors"   "$M/text_encoders/clip_l.safetensors"   "$M/vae/ae.safetensors"; do
-  [ -f "$required" ] || die "flux weight missing: $required (check /workspace/dl-logs)"
-done
-
 FLUX_LORA="$M/loras/flux_nsfw_uncensored_v1.safetensors"
 if [ -f "$M/loras/lora.safetensors" ]; then
   mv "$M/loras/lora.safetensors" "$FLUX_LORA"
 fi
 [ -f "$FLUX_LORA" ] || die "flux LoRA missing: $FLUX_LORA (check dl-logs/lora.safetensors.log)"
-find "$M" -name '*minimax*.safetensors' -printf '%s %p\n' \
+
+# Same reasoning, two more files: the repackaged repos keep their own names
+# and their own in-repo layout, neither of which matches what UNETLoader and
+# VAELoader in workflows/flux_dev.json actually ask for.
+FLUX_UNET="$M/diffusion_models/flux1-dev.safetensors"
+if [ -f "$M/diffusion_models/flux_dev_fp8_scaled_diffusion_model.safetensors" ]; then
+  mv "$M/diffusion_models/flux_dev_fp8_scaled_diffusion_model.safetensors" "$FLUX_UNET"
+fi
+[ -f "$FLUX_UNET" ] || die "flux unet missing: $FLUX_UNET (check dl-logs/flux_dev_fp8_scaled_diffusion_model.safetensors.log)"
+
+FLUX_VAE="$M/vae/ae.safetensors"
+if [ -f "$M/vae/split_files/vae/ae.safetensors" ]; then
+  mv "$M/vae/split_files/vae/ae.safetensors" "$FLUX_VAE"
+  rm -rf "$M/vae/split_files"
+fi
+[ -f "$FLUX_VAE" ] || die "flux vae missing: $FLUX_VAE (check dl-logs/ae.safetensors.log)"
+
+[ -f "$M/text_encoders/clip_l.safetensors" ] || die "flux clip_l missing"
+[ -f "$M/text_encoders/t5xxl_fp8_e4m3fn.safetensors" ] || die "flux t5xxl missing"
+
+find "$M" \( -name '*minimax*.safetensors' -o -name 'flux1-dev.safetensors' \
+  -o -name 'flux_nsfw_uncensored_v1.safetensors' -o -name 'ae.safetensors' \
+  -o -name 'clip_l.safetensors' -o -name 't5xxl_fp8_e4m3fn.safetensors' \) \
+  -printf '%s %p\n' \
   | awk '{printf "[setup]   %7.2f GB  %s\n", $1/1073741824, $2}'
 
 log "restarting ComfyUI"
@@ -187,8 +215,22 @@ HELP="$("$PY" main.py --help 2>&1 || true)"
 EXTRA=""
 for flag in --fast-disk --use-sage-attention; do
   case "$HELP" in
-    *"$flag"*) EXTRA="$EXTRA $flag" ;;
-    *)         log "  $flag not supported by this ComfyUI, skipping" ;;
+    *"$flag"*)
+      # argparse recognising a flag and its dependency actually being
+      # importable are two different questions. --use-sage-attention passed
+      # this case on an image whose venv had no `sageattention` package, and
+      # ComfyUI refused to start at all rather than warning and continuing --
+      # discovered as an empty /object_info response with no other clue.
+      case "$flag" in
+        --use-sage-attention)
+          "$PY" -c 'import sageattention' 2>/dev/null \
+            && EXTRA="$EXTRA $flag" \
+            || log "  --use-sage-attention supported but sageattention is not installed, skipping"
+          ;;
+        *) EXTRA="$EXTRA $flag" ;;
+      esac
+      ;;
+    *) log "  $flag not supported by this ComfyUI, skipping" ;;
   esac
 done
 log "  launch flags:${EXTRA} --reserve-vram 0.7"

@@ -166,11 +166,11 @@ def test_the_rename_happens_after_the_downloads_finish() -> None:
 
 def test_the_advertised_download_size_covers_both_model_sets() -> None:
     """The log line is what an operator watches to know whether a stall is
-    normal. H3's measured 54.7GB, plus 0.69GB for the Flux LoRA, plus the 29.28GB
-    of Flux base weights that were never being fetched at all until now."""
+    normal. It was ~51GB before this LoRA's 0.69GB was added, then ~52GB
+    before the Flux base model's ~17GB was added."""
     body = POD_SETUP.read_text(encoding="utf-8")
 
-    assert "starting weight downloads (~84GB)" in body
+    assert "starting weight downloads (~52GB H3 + ~17GB Flux)" in body
 
 
 # ------------------------------------------------- the ComfyUI flag probe
@@ -199,14 +199,21 @@ def _probe_block() -> str:
     return "\n".join(body[1:])
 
 
-def _run_probe(help_text: str) -> subprocess.CompletedProcess[str]:
+def _run_probe(help_text: str, *, sageattention_importable: bool = True) -> subprocess.CompletedProcess[str]:
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("bash not available")
+    # $PY is assigned earlier in the real script, outside this extracted
+    # range, and the probe now shells out to it to check whether
+    # sageattention is actually importable -- not just whether argparse
+    # recognises the flag. `true`/`false` stand in for "the import succeeded"
+    # / "it didn't", ignoring the `-c ...` argument exactly like the real
+    # check only cares about the exit status.
     script = "\n".join(
         [
             "log() { echo \"[setup] $*\"; }",
-            f"HELP={help_text!r}".replace("HELP='", "HELP='"),
+            f"PY={'true' if sageattention_importable else 'false'}",
+            f"HELP={help_text!r}",
             _probe_block(),
             'echo "EXTRA=[$EXTRA]"',
         ]
@@ -223,6 +230,21 @@ def test_both_flags_are_used_when_comfyui_supports_them() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "EXTRA=[ --fast-disk --use-sage-attention]" in result.stdout
+
+
+def test_sage_attention_is_dropped_when_the_package_is_not_installed() -> None:
+    """The failure this check exists to prevent: argparse accepting a flag
+    whose runtime dependency was never installed, and ComfyUI refusing to
+    start at all -- discovered as an empty /object_info response with no
+    other clue which flag caused it."""
+    result = _run_probe(
+        "usage: main.py [--listen] [--fast-disk] [--use-sage-attention] [--port PORT]",
+        sageattention_importable=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "EXTRA=[ --fast-disk]" in result.stdout
+    assert "sageattention is not installed" in result.stdout
 
 
 def test_no_flag_is_passed_when_comfyui_supports_none() -> None:
@@ -466,20 +488,38 @@ def test_the_workflows_do_name_some_weights() -> None:
     assert len(_weight_filenames(graph)) >= 4
 
 
-def test_the_gated_flux_repo_is_checked_before_anything_downloads() -> None:
-    """`black-forest-labs/FLUX.1-dev` 401s without a token whose account has
-    accepted the licence. Finding that out after 52GB of H3 has already been
-    pulled costs twenty minutes of a billing pod."""
+GATED_REPOS = ("black-forest-labs/FLUX.1-dev", "black-forest-labs/FLUX.1-schnell")
+
+
+def test_no_download_comes_from_a_gated_repo() -> None:
+    """This script runs unattended on a pod with no HF credentials.
+
+    `black-forest-labs/FLUX.1-dev` is the canonical home of the Flux weights and
+    it is gated: `hf download` returns 401 without a token whose account has
+    accepted the licence. The ungated repackagings are used instead, and this
+    asserts nobody "corrects" that back to the canonical source — which would
+    fail after 52GB of H3 had already been pulled, on a machine that is billing.
+
+    Checked against `dl` lines only: naming the gated repo in a comment
+    explaining why it is avoided is exactly right.
+    """
     body = POD_SETUP.read_text(encoding="utf-8")
+    dl_lines = [
+        line for line in body.splitlines() if line.strip().startswith("dl ")
+    ]
 
-    assert "HF_TOKEN" in body
-    assert body.index("HF_TOKEN") < body.index("dl Comfy-Org/MiniMax-H3")
+    assert dl_lines, "no downloads found at all"
+    for line in dl_lines:
+        for repo in GATED_REPOS:
+            assert repo not in line, f"gated repo in a download: {line.strip()}"
 
 
-def test_the_lumina_vae_is_flattened_into_the_directory_comfyui_reads() -> None:
-    """`hf download` keeps the repo's layout, so the VAE lands at
-    `vae/split_files/vae/`. VAELoader looks in `vae/` and nowhere else."""
+def test_the_repackaged_vae_is_flattened_into_the_directory_comfyui_reads() -> None:
+    """`hf download` keeps the repo's own layout, so a VAE published under
+    `split_files/vae/` lands there. `VAELoader` looks in `vae/` and nowhere
+    else, so an unflattened file is a file ComfyUI cannot see."""
     body = POD_SETUP.read_text(encoding="utf-8")
 
     assert "split_files/vae/ae.safetensors" in body
-    assert 'mv "$M/vae/split_files/vae/ae.safetensors" "$M/vae/ae.safetensors"' in body
+    assert 'mv "$M/vae/split_files/vae/ae.safetensors"' in body
+    assert 'rm -rf "$M/vae/split_files"' in body

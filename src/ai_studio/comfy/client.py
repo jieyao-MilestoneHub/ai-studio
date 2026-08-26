@@ -92,6 +92,35 @@ class ComfyClient:
         path = "/object_info" if node_class is None else f"/object_info/{node_class}"
         return await self._get_json(path)
 
+    # --------------------------------------------------------------- upload
+
+    async def upload_image(self, data: bytes, filename: str) -> str:
+        """Upload a reference image, returning the name a `LoadImage` node
+        can load it back by.
+
+        Always to the `input` type -- the only one `LoadImage` reads from --
+        and `overwrite=true` (a request's own file, once, never reused).
+        """
+        try:
+            response = await self._client.post(
+                "/upload/image",
+                files={"image": (filename, data)},
+                data={"type": "input", "overwrite": "true"},
+            )
+        except httpx.HTTPError as exc:
+            raise ProviderSubmitError(f"could not reach ComfyUI at {self.base_url}: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise ProviderSubmitError(
+                f"ComfyUI rejected the image upload ({response.status_code}): {response.text[:500]}"
+            )
+
+        payload = response.json()
+        name = payload.get("name")
+        if not name:
+            raise ProviderSubmitError(f"ComfyUI returned no name for the upload: {payload!r}")
+        return str(name)
+
     # ---------------------------------------------------------------- submit
 
     async def queue_prompt(self, graph: dict[str, Any]) -> str:
