@@ -95,6 +95,63 @@ def doctor() -> None:
     console.print("\n[green]Environment looks good.[/green]")
 
 
+@app.command("preflight")
+def preflight_cmd(
+    skip_suite: bool = typer.Option(
+        False, "--skip-suite", help="Skip check 1 (pytest/ruff/lint-imports/mypy)."
+    ),
+    push: bool = typer.Option(
+        False, "--push", help="Check 5 only: actually send a message to the real group."
+    ),
+) -> None:
+    """Run the nine pre-launch checks. Nothing here opens a pod.
+
+    This is what replaces the stub: everything provable without spending a
+    GPU-second, proved, so the one affordable live run is spent only on the
+    part that genuinely needs a GPU. See PLAN.md Phase 4.
+
+    Exits 0 only when all nine PASS. A check that cannot run is SKIP, not PASS
+    -- "could not verify" must never read as "verified" -- so offline you
+    should expect several skips and a non-zero exit, which is the honest
+    answer: Phase 4 is not complete off the VM.
+
+    `--push` sends a real message to the real group and spends real quota. It
+    is opt-in rather than merely credential-gated for exactly that reason.
+    """
+    from datetime import timezone
+
+    from ai_studio.cli.preflight import Status, run_all, stamp, summarise
+
+    results = run_all(run_suite=not skip_suite, send_push=push)
+
+    table = Table(title="preflight (PLAN.md Phase 4)")
+    table.add_column("#", justify="right")
+    table.add_column("check")
+    table.add_column("", justify="center")
+    table.add_column("detail", overflow="fold")
+    colour = {Status.PASS: "green", Status.FAIL: "red", Status.SKIP: "yellow"}
+    for result in results:
+        table.add_row(
+            str(result.number),
+            result.name,
+            f"[{colour[result.status]}]{result.status.value}[/{colour[result.status]}]",
+            result.detail,
+        )
+    console.print(table)
+
+    green, summary = summarise(results)
+    console.print(f"\n{summary}")
+    console.print(f"[dim]{stamp(results, when=datetime.now(timezone.utc)).splitlines()[0]}[/dim]")
+    if green:
+        console.print("[green]all nine green: the only thing left unproven is generation.[/green]")
+        return
+    console.print(
+        "[yellow]not green.[/yellow] Phase 7 spends the one affordable run; "
+        "a skip here is an unknown it would spend that run discovering."
+    )
+    raise typer.Exit(1)
+
+
 @app.command("format")
 def format_cmd(
     target: str = typer.Argument("yt_longform_1080p", help="Delivery target name."),
