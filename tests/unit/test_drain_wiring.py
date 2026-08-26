@@ -119,14 +119,17 @@ def test_session_drain_constructs_both_the_video_and_image_provider(
     )
 
 
-def test_the_vps_installs_a_drain_timer() -> None:
-    """Provisioning must schedule the step that makes videos.
+def test_the_vps_runbook_documents_manual_drain_recovery() -> None:
+    """`session drain` is off every timer now -- the worker renders each parsed
+    job itself, on demand, inside business hours. `test_deploy_scripts.py`
+    already holds the worker service's own installation and enablement in
+    place; what is left unique to this command is the manual recovery path
+    printed for an operator when the worker wedges holding an open pod.
 
-    Checked as text because the alternative is discovering it on a live pod at
-    11:00, having paid for the GPU.
+    Checked as text because the alternative is a runbook that quietly points
+    at a command that stopped existing.
     """
     script = (REPO / "deploy" / "vps_setup.sh").read_text(encoding="utf-8")
-    assert "session drain" in script, "the VPS never renders anything"
-    assert "for phase in open drain reap close" in script, (
-        "the drain unit is defined but never enabled"
+    assert "ai-studio session drain" in script, (
+        "the runbook no longer tells an operator how to recover a wedged worker"
     )
