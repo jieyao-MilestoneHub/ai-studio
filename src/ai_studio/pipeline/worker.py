@@ -86,6 +86,14 @@ class WindowHost(Protocol):
     def touch_activity(self) -> None:
         """Reset the idle reaper's timer. Called after every render."""
 
+    async def deliver(self, job: Job, asset: Path | None) -> str:
+        """Tell the group. `asset` is None when the job failed.
+
+        Injected for the same reason as the rest: `bots` is a leaf that no
+        library layer may import, so the loop cannot reach the push client and
+        the composition root hands it down instead.
+        """
+
 
 @dataclass
 class WorkerReport:
@@ -95,6 +103,8 @@ class WorkerReport:
     completed: int = 0
     failed: int = 0
     requeued: int = 0
+    delivered: int = 0
+    undelivered: int = 0
     seconds: list[float] = field(default_factory=list)
     last_action: str = "not started"
     stopped_early: str | None = None
@@ -105,7 +115,11 @@ class WorkerReport:
             f"completed={self.completed}",
             f"failed={self.failed}",
             f"requeued={self.requeued}",
+            f"delivered={self.delivered}",
         ]
+        if self.undelivered:
+            # Louder than the rest: the media exists and nobody has been told.
+            parts.append(f"UNDELIVERED={self.undelivered}")
         if self.seconds:
             parts.append("job_seconds=" + ", ".join(f"{s:.0f}" for s in self.seconds))
         if self.stopped_early:
@@ -210,8 +224,12 @@ async def _run_one(
             queue.fail(job.id, f"provider failed {job.attempts}x: {exc}")
             report.failed += 1
             _log.warning("job %d failed for good: %s", job.id, exc)
+            await _deliver(queue, host, job.id, None, report)
             report.last_action = "failed"
             return "failed"
+        # No delivery on a requeue: the request is still alive and will be
+        # tried again. Announcing every transient hiccup would bill a push per
+        # attempt for something the user does not need to know about.
         queue.fail(job.id, f"provider: {exc}", requeue=True)
         report.requeued += 1
         _log.warning("job %d requeued (attempt %d): %s", job.id, job.attempts, exc)
@@ -221,6 +239,7 @@ async def _run_one(
         queue.fail(job.id, str(exc))
         report.failed += 1
         _log.warning("job %d failed terminally: %s", job.id, exc)
+        await _deliver(queue, host, job.id, None, report)
         report.last_action = "failed"
         return "failed"
 
@@ -231,8 +250,46 @@ async def _run_one(
     # window out from under the next job.
     host.touch_activity()
     _log.info("job %d done in %.0fs -> %s", job.id, report.seconds[-1], asset)
+    await _deliver(queue, host, job.id, asset, report)
     report.last_action = "completed"
     return "completed"
+
+
+async def _deliver(
+    queue: JobQueue,
+    host: WindowHost,
+    job_id: int,
+    asset: Path | None,
+    report: WorkerReport,
+) -> str:
+    """Push the result to the group, then mark it delivered.
+
+    **The order is complete -> push -> mark, and it is not arbitrary.** A push
+    that succeeds and a mark that then fails sends one extra message next
+    restart; a mark that lands before a push that fails loses the delivery
+    entirely and the user waits forever. One duplicate beats one silence.
+
+    The job is re-read rather than reused: `complete`/`fail` have just rewritten
+    its row, and the stale in-memory copy still says `running` with no output
+    path — which is exactly what the delivery needs.
+
+    A delivery failure never fails the *job*. The media exists, the queue says
+    so, and the status page will show it. Turning a push problem into a render
+    failure would throw away work that was paid for in GPU-minutes.
+    """
+    job = queue.by_id(job_id)
+    if job is None:  # pragma: no cover - the row was just written
+        return "vanished"
+    try:
+        outcome = await host.deliver(job, asset)
+    except Exception as exc:  # delivery must never lose a finished render
+        _log.error("job %d could not be delivered: %s", job.id, exc)
+        report.undelivered += 1
+        return "failed"
+
+    queue.mark_delivered(job.id)
+    report.delivered += 1
+    return outcome
 
 
 async def serve(

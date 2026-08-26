@@ -28,6 +28,14 @@ converted into a validated prompt (an LLM-built H3 prompt for video, a
 lightly-validated Flux prompt for images) and is ready for a GPU. Only `parsed`
 jobs are claimable, so a request whose prompt could not be built never occupies
 window time.
+
+`delivered_at` is deliberately a timestamp beside the state rather than a sixth
+state. **`done` is not `delivered`.** Rendering and telling the group about it
+fail independently — the clip can exist while the push is refused for quota —
+and collapsing the two would mean a worker restart re-pushes everything it
+finds finished. Push is billed per recipient, so that second send costs exactly
+as much as the first and tells the user nothing new. `failed` needs the same
+flag for the same reason: somebody is still waiting on it.
 """
 
 from __future__ import annotations
@@ -67,6 +75,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     parsed_at   REAL,
     started_at  REAL,
     finished_at REAL,
+    delivered_at REAL,
     attempts    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_state   ON jobs(state, created_at);
@@ -121,6 +130,7 @@ class Job:
     parsed_at: float | None
     started_at: float | None
     finished_at: float | None
+    delivered_at: float | None
     attempts: int
 
     @property
@@ -156,6 +166,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         parsed_at=row["parsed_at"],
         started_at=row["started_at"],
         finished_at=row["finished_at"],
+        delivered_at=row["delivered_at"],
         attempts=row["attempts"],
     )
 
@@ -183,6 +194,8 @@ class JobQueue:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
         if "media_kind" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN media_kind TEXT NOT NULL DEFAULT 'video'")
+        if "delivered_at" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN delivered_at REAL")
 
     def _connect(self) -> sqlite3.Connection:
         """One connection per thread, all pointing at the same file.
@@ -317,6 +330,16 @@ class JobQueue:
 
     # ------------------------------------------------------------------- read
 
+    def by_id(self, job_id: int) -> Job | None:
+        """Re-read a job by primary key.
+
+        The delivery step needs this: `complete`/`fail` have just rewritten the
+        row, and the caller's in-memory copy still says `running` with no
+        output path.
+        """
+        row = self._conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        return _row_to_job(row) if row else None
+
     def by_token(self, token: str) -> Job | None:
         row = self._conn.execute("SELECT * FROM jobs WHERE token=?", (token,)).fetchone()
         return _row_to_job(row) if row else None
@@ -363,6 +386,37 @@ class JobQueue:
         rows = self._conn.execute(
             "SELECT * FROM jobs WHERE state=? ORDER BY created_at LIMIT ?",
             (JobState.QUEUED.value, limit),
+        ).fetchall()
+        return [_row_to_job(r) for r in rows]
+
+    def mark_delivered(self, job_id: int) -> Job | None:
+        """Record that the finished media actually reached the group.
+
+        `done` is not `delivered`. Without the distinction a worker restart
+        sees a `done` job, pushes it again, and push is billed per recipient —
+        so the second send costs as much as the first and tells the user
+        nothing new.
+
+        Called *after* the push, which fixes the ordering: a push that
+        succeeds and a mark that then fails sends one extra message, while the
+        reverse loses the delivery entirely. One duplicate beats one silence.
+        """
+        cur = self._conn.execute(
+            "UPDATE jobs SET delivered_at=? WHERE id=? RETURNING *", (time.time(), job_id)
+        )
+        row = cur.fetchone()
+        return _row_to_job(row) if row else None
+
+    def undelivered(self, limit: int = 50) -> list[Job]:
+        """Finished work the group has not been told about.
+
+        Both terminal states, not just `done`: a request that failed is one
+        somebody is still waiting on, and silence there reads as a broken bot.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM jobs WHERE state IN (?, ?) AND delivered_at IS NULL"
+            " ORDER BY finished_at LIMIT ?",
+            (JobState.DONE.value, JobState.FAILED.value, limit),
         ).fetchall()
         return [_row_to_job(r) for r in rows]
 

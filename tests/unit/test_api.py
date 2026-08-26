@@ -270,3 +270,67 @@ def test_the_verify_ping_is_logged_as_such(client, caplog) -> None:
     with caplog.at_level(logging.INFO, logger="ai_studio.webhook"):
         _post(c, [])
     assert any("no events" in r.getMessage() for r in caplog.records)
+
+
+# ------------------------------------------------------------- file delivery
+
+# LINE's video message object requires the host to answer HTTP range requests.
+# Nothing about the failure says so: the object is accepted, and the video
+# simply never plays. These pin the behaviour so a Starlette upgrade cannot
+# take it away quietly.
+
+
+@pytest.fixture
+def files_client(tmp_path: Path):
+    """An app with no webhook wiring — these routes need neither."""
+    files_dir = tmp_path / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    queue = JobQueue(tmp_path / "files.sqlite3")
+    with TestClient(create_app(queue=queue, files_dir=files_dir)) as c:
+        yield c, files_dir
+    queue.close()
+
+
+def test_files_answers_a_range_request_with_206(files_client) -> None:
+    """A LINE video message fails in a very hard-to-trace way without this."""
+    client, files_dir = files_client
+    (files_dir / "clip.mp4").write_bytes(bytes(range(256)) * 4)
+
+    response = client.get("/files/clip.mp4", headers={"Range": "bytes=0-99"})
+
+    assert response.status_code == 206
+    assert response.headers["content-range"] == "bytes 0-99/1024"
+    assert len(response.content) == 100
+
+
+def test_files_advertises_range_support(files_client) -> None:
+    client, files_dir = files_client
+    (files_dir / "clip.mp4").write_bytes(b"0" * 512)
+
+    response = client.get("/files/clip.mp4")
+
+    assert response.status_code == 200
+    assert response.headers.get("accept-ranges") == "bytes"
+
+
+def test_a_range_past_the_end_is_refused_not_truncated(files_client) -> None:
+    """416 rather than a short 206: a player handed silently truncated data
+    reports a corrupt file, which is a much longer trail to follow."""
+    client, files_dir = files_client
+    (files_dir / "clip.mp4").write_bytes(b"0" * 100)
+
+    response = client.get("/files/clip.mp4", headers={"Range": "bytes=500-999"})
+
+    assert response.status_code == 416
+
+
+def test_a_poster_is_served_with_an_image_content_type(files_client) -> None:
+    """`previewImageUrl` has to arrive as an image; the mp4 and its poster live
+    in the same directory and are told apart only by extension."""
+    client, files_dir = files_client
+    (files_dir / "clip_poster.jpg").write_bytes(b"\xff\xd8\xff\xe0")
+
+    response = client.get("/files/clip_poster.jpg")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/")

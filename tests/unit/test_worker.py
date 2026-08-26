@@ -115,6 +115,7 @@ class FakeHost:
         video: FakeProvider | None = None,
         image: FakeProvider | None = None,
         ensure_raises: Exception | None = None,
+        deliver_raises: Exception | None = None,
         minutes_left: float = 120.0,
     ) -> None:
         self.open_now = open_now
@@ -126,6 +127,8 @@ class FakeHost:
         self.waits = 0
         self.touches = 0
         self.session = FakeSession()
+        self.delivered: list[tuple[int, str | None]] = []
+        self.deliver_raises = deliver_raises
 
     def now(self) -> datetime:
         return datetime.now(timezone.utc)
@@ -151,6 +154,12 @@ class FakeHost:
 
     def touch_activity(self) -> None:
         self.touches += 1
+
+    async def deliver(self, job: Any, asset: Any) -> str:
+        if self.deliver_raises is not None:
+            raise self.deliver_raises
+        self.delivered.append((job.id, str(asset) if asset is not None else None))
+        return "pushed"
 
 
 @pytest.fixture
@@ -414,3 +423,95 @@ async def test_serve_does_not_sleep_between_completed_jobs(queue, tmp_path: Path
 
 async def _no_sleep(seconds: float) -> None:
     return None
+
+
+# ------------------------------------------------------------------ delivery
+
+# `done` is not `delivered`. Push is billed per recipient, so a second send
+# costs as much as the first and tells the user nothing new — and a delivery
+# that fails silently is indistinguishable from a bot that is broken.
+
+
+@pytest.mark.asyncio
+async def test_a_finished_job_is_pushed_and_then_marked(queue, tmp_path: Path) -> None:
+    job = _parsed(queue)
+    host = FakeHost()
+
+    await _tick(queue, host, tmp_path)
+
+    assert [job_id for job_id, _ in host.delivered] == [job.id]
+    assert queue.by_id(job.id).delivered_at is not None
+    assert queue.undelivered() == []
+
+
+@pytest.mark.asyncio
+async def test_delivery_receives_the_finished_row_not_the_claimed_one(
+    queue, tmp_path: Path
+) -> None:
+    """`complete` has just rewritten the row; the claimed copy still says
+    `running` with no output path, which is exactly what delivery needs."""
+    job = _parsed(queue)
+    host = FakeHost()
+
+    await _tick(queue, host, tmp_path)
+
+    (_, asset) = host.delivered[0]
+    assert asset is not None
+    assert asset == queue.by_id(job.id).output_path
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_failure_is_delivered_with_no_asset(queue, tmp_path: Path) -> None:
+    """On success the user eventually sees something appear. On failure,
+    silence is the only signal they get."""
+    job = _parsed(queue)
+    host = FakeHost(video=FakeProvider(fail_with=AIStudioError("prompt rejected")))
+
+    await _tick(queue, host, tmp_path)
+
+    assert host.delivered == [(job.id, None)]
+    assert queue.by_id(job.id).delivered_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_requeue_is_not_announced(queue, tmp_path: Path) -> None:
+    """The request is still alive and will be tried again. Announcing every
+    transient hiccup would bill a push per attempt for nothing."""
+    _parsed(queue)
+    host = FakeHost(video=FakeProvider(fail_with=ProviderError("proxy hiccup")))
+
+    action, _ = await _tick(queue, host, tmp_path)
+
+    assert action == "requeued"
+    assert host.delivered == []
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_failure_does_not_lose_the_render(queue, tmp_path: Path) -> None:
+    """The media exists and was paid for in GPU-minutes. Turning a push problem
+    into a render failure throws that away — and it stays `undelivered`, so it
+    is visible rather than forgotten."""
+    job = _parsed(queue)
+    host = FakeHost(deliver_raises=RuntimeError("LINE is down"))
+
+    action, report = await _tick(queue, host, tmp_path)
+
+    assert action == "completed"
+    assert queue.by_id(job.id).state is JobState.DONE
+    assert queue.by_id(job.id).delivered_at is None
+    assert [j.id for j in queue.undelivered()] == [job.id]
+    assert report.undelivered == 1
+    assert "UNDELIVERED=1" in report.summary()
+
+
+@pytest.mark.asyncio
+async def test_a_job_is_only_delivered_once(queue, tmp_path: Path) -> None:
+    """The whole reason `delivered_at` exists: a restart must not re-push what
+    it finds already finished."""
+    _parsed(queue)
+    host = FakeHost()
+
+    await _tick(queue, host, tmp_path)
+    await _tick(queue, host, tmp_path)
+
+    assert len(host.delivered) == 1

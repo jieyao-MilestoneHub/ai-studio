@@ -168,6 +168,84 @@ def probe_image(path: Path) -> ImageInfo:
     )
 
 
+POSTER_MAX_BYTES = 1_000_000
+"""LINE's ceiling for `previewImageUrl`, minus a little room.
+
+The documented limit is 1 MB. A poster that goes over it does not degrade —
+the whole message object is rejected, and the user gets nothing at all.
+"""
+
+_POSTER_LADDER: tuple[tuple[int, int], ...] = (
+    (1024, 4),
+    (720, 6),
+    (512, 8),
+    (320, 14),
+)
+"""(max width, JPEG quality) rungs, tried in order until one fits the ceiling.
+
+Width first, then quality: a smaller poster still looks like the thing it is a
+poster for, while a heavily quantised one at full size looks broken. `-q:v` is
+mjpeg's scale where 2 is best and 31 is worst.
+"""
+
+
+def poster(
+    src: Path, dest: Path, *, max_bytes: int = POSTER_MAX_BYTES
+) -> Path:
+    """Write a JPEG preview of `src` — first frame of a video, or a thumbnail
+    of an image — small enough for LINE to accept it.
+
+    One code path for both kinds because ffmpeg needs none: `-frames:v 1`
+    takes the first frame of a clip and the only frame of a still.
+
+    **Always a new JPEG, never the original reused.** Flux writes 1024x1024
+    PNGs, which routinely clear 1 MB on their own; and a video has no image to
+    reuse in the first place.
+
+    Aspect ratio is preserved throughout — LINE requires the preview's ratio to
+    match the media's, and `scale` here only ever shrinks (`min(iw,W)`) so a
+    small source is never blown up to meet a width.
+
+    Raises rather than returning an oversized file: a poster that is over the
+    limit fails the *whole* message object, so a silent 1.2 MB poster costs the
+    user their video, not just its thumbnail.
+    """
+    src, dest = Path(src), Path(dest)
+    if not src.is_file():
+        raise FFmpegError(f"cannot make a poster from a missing file: {src}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    binary = get_settings().ffmpeg_bin
+    sizes: list[int] = []
+    for width, quality in _POSTER_LADDER:
+        run(
+            [
+                binary,
+                "-hide_banner", "-loglevel", "error",
+                "-y",
+                "-i", str(src),
+                "-frames:v", "1",
+                # min() so this only ever shrinks; -2 keeps the height even,
+                # which the JPEG encoder's 4:2:0 chroma requires.
+                "-vf", f"scale='min(iw,{width})':-2",
+                "-pix_fmt", "yuvj420p",
+                "-q:v", str(quality),
+                "-f", "image2",
+                str(dest),
+            ],
+            timeout_s=120.0,
+        )
+        size = dest.stat().st_size
+        if size <= max_bytes:
+            return dest
+        sizes.append(size)
+
+    raise FFmpegError(
+        f"could not get a poster for {src.name} under {max_bytes} bytes; "
+        f"tried {_POSTER_LADDER} and got {sizes}"
+    )
+
+
 def missing_filters(binary: str | None = None) -> list[str]:
     """Which of `REQUIRED_FILTERS` this ffmpeg build lacks."""
     binary = binary or get_settings().ffmpeg_bin
