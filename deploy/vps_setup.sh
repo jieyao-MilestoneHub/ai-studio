@@ -156,9 +156,9 @@ for phase in reap close; do
   case "$phase" in
     # Close early once the pod has gone quiet. Also the second line of defence
     # for a worker that died still holding one.
-    reap)  cmd="session reap --idle-minutes 30"; when="*:0/5" ;;
+    reap)  cmd="session reap";  when="*:0/1" ;;
     # The hard close at the end of business hours.
-    close) cmd="session close";                  when="05:05" ;;
+    close) cmd="session close"; when="20:05" ;;
   esac
   cat > /etc/systemd/system/ai-studio-${phase}.service <<UNIT
 [Unit]
@@ -176,7 +176,9 @@ UNIT
 Description=ai-studio window ${phase} timer
 
 [Timer]
-# UTC. 11:00 Asia/Taipei is 03:00 UTC; 13:00 is 05:00.
+# UTC. 20:05 UTC is 04:05 Asia/Taipei: the quietest hour, so the daily hard
+# close (a backstop behind the reaper and --terminate-after) lands on an
+# idle pod, not on a render.
 OnCalendar=${when}
 # Persistent=false on purpose. It mattered more when a timer could open a pod;
 # it still matters, because a missed 'close' firing late is noise and one

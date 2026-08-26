@@ -107,6 +107,7 @@ class WebhookHandler:
         clock: Callable[[], datetime] | None = None,
         content: ContentClient | None = None,
         incoming_dir: Path | str = Path("incoming"),
+        is_warm: Callable[[], bool] | None = None,
     ) -> None:
         self.queue = queue
         self.replier = replier
@@ -128,6 +129,11 @@ class WebhookHandler:
         # content, and without one there is nothing that could be fetched.
         self.content = content
         self.incoming_dir = Path(incoming_dir)
+        # Whether a pod is already open, so the acknowledgement can quote the
+        # right wait: a warm pod renders an image in ~30 s, a cold one has to
+        # boot first. Injected; the default assumes cold, which is the
+        # honest default when nobody told us otherwise.
+        self.is_warm = is_warm or (lambda: False)
         # (group_id, user_id) -> (saved path, received-at). In-process and
         # short-lived on purpose: this is a "send a photo, then say /圖影"
         # pairing window, not durable state -- a restart within the window
@@ -221,7 +227,7 @@ class WebhookHandler:
             await self._safe_reply(
                 reply_token,
                 f"你今天已經送出 {self.max_jobs_per_user_per_day} 個請求,"
-                "達到每日上限。明天 11:00 之後再試。",
+                "達到每日上限。明天再試。",
             )
             return Outcome("rate_limited", detail=str(user_id))
 
@@ -353,11 +359,16 @@ class WebhookHandler:
         return Outcome("accepted", job=job)
 
     def _accepted_line(self, job: Job) -> str:
-        """What a newly accepted request is told. Out of hours it still
-        waits in the queue for the next window rather than being refused --
-        refusing would mean whatever someone thought of at midnight is
-        simply lost."""
-        return f"想看結果嗎....等我個幾分鐘,想查進度可以看{self._link(job)}"
+        """What a newly accepted request is told: an honest wait.
+
+        The wait is the pod's state, not the clock. Warm: the model is in
+        VRAM and an image is ~30 s, a clip ~2 min. Cold: the pod has to be
+        created and ComfyUI restarted from the network volume first, which
+        adds a couple of minutes. Both figures are 📏 from 2026-08-26 on an
+        RTX 4090 and rounded up, so the bot under-promises.
+        """
+        eta = "圖約 30 秒、影片約 2 分鐘" if self.is_warm() else "暖機中:圖約 3 分鐘、影片約 5 分鐘"
+        return f"收到,{eta},想查進度可以看{self._link(job)}"
 
     def _over_daily_cap(self, user_id: str | None) -> bool:
         """Has this user used up today's allowance?

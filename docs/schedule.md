@@ -109,16 +109,15 @@ depends on the host's link rather than on distance from us.
 
 ## Who opens the pod
 
-**The first request that arrives inside business hours does.** Not a timer.
+**The first request does, at any hour.** Not a timer, and not a window.
 
-The window is unchanged — 11:00–13:00 Asia/Taipei, the table above still
-holds — and so is the reason for it: setup is ~20 minutes against ~5 for a
-clip, so the pod is still opened at most once a day and the queue still
-absorbs everything that arrives in between. What changed is the trigger. A
-timer that fires at 03:00 UTC opens a pod whether or not anybody asked for
-anything, and a `drain` timer that ticks every five minutes makes someone who
-asked at 11:00:10 wait until 11:05 for no reason. "Instant" here means
-*instant inside business hours*, and neither of those was.
+There are no business hours any more (2026-08-27). The 11:00–13:00 window
+existed to amortise a ~15-minute, 68 GB cold open; with the weights on a
+network volume a cold open is a ComfyUI restart, so there is nothing left to
+amortise and the fixed window only ever cost idle GPU-minutes and made
+people wait until eleven. What protects money now is the monthly budget
+guard, the per-day open cap (15, since pods are short-lived), and the three
+closers below.
 
 `ai-studio worker` is the loop. It runs as a service, always:
 
@@ -126,18 +125,21 @@ asked at 11:00:10 wait until 11:05 for no reason. "Instant" here means
 ai-studio worker
 ```
 
-- Outside 11:00–13:00 it sleeps 60s at a time and does nothing else. It does
-  not open a pod, it does not drain, it does not fail.
-- Inside the window it checks the queue every 10 seconds. A `parsed` job — not
-  merely `queued`; an unconverted request may never become a valid prompt —
-  calls `runtime.session.ensure_pod()`, which reuses the day's pod if one is
-  live and otherwise creates it with a lease that runs to 13:00.
+- With nothing queued it checks every 10 seconds and does nothing else.
+- The moment anything is *queued* — even before the LLM conversion has
+  finished — it calls `runtime.session.ensure_pod()`, so the pod's cold start
+  overlaps the conversion instead of following it. Only `parsed` work is
+  claimed: an unconverted request may never become a valid prompt, and one
+  never reaches a GPU.
+- A fresh pod is provisioned by the worker itself: `deploy/pod_setup.sh` is
+  copied up over SSH and started detached (`runtime.session.provision`), and
+  the worker waits for the H3 node pack to appear before submitting. On a
+  provisioned volume the script's fast path makes that about a minute.
 - Concurrency is 1. One pod, one ComfyUI, one model resident in VRAM.
-- It stops claiming new work 8 minutes before 13:00 and only finishes what it
-  holds. Starting a render at 12:58 buys four minutes of GPU that
-  `--terminate-after` then throws away.
+- The lease is `LEASE_HOURS` (2) from opening; it stops claiming new work 8
+  minutes before the lease ends. The reaper closes long before that.
 
-The single source of 11:00 and 13:00 is `runtime/hours.py`. It is in `runtime`
+The single source of the lease and the day boundary is `runtime/hours.py`. It is in `runtime`
 rather than in `session.py` because of the layer contract: `bots` (L6) writes
 the out-of-hours reply and reaches *down* for it, while `pipeline` (L4) sits
 below `runtime` and cannot import it at all — the worker takes those three
@@ -147,7 +149,7 @@ functions by protocol and `cli.main` injects them.
 
 ```bash
 # every 5 min — close early if the pod has gone quiet
-ai-studio session reap --idle-minutes 30
+ai-studio session reap
 
 # 13:00 — close, unconditionally. Idempotent and safe when nothing is up.
 ai-studio session close
@@ -156,23 +158,27 @@ ai-studio session close
 Nothing on a schedule opens anything any more. That is the point: every
 scheduled task left can only ever *reduce* what is billing.
 
-`ensure_pod` passes `--terminate-after` set to the end of business hours plus
-10 minutes. That is the backstop, not the mechanism: **if the worker dies, if
-the reaper never fires, if this code crashes — the pod still terminates
-itself.** The buffer covers a clip mid-render at the bell. Three independent
-ways for a machine to stop billing, and only the last needs no process alive.
+`ensure_pod` passes `--terminate-after` set to the lease end (`now +
+LEASE_HOURS`) plus 10 minutes. That is the backstop, not the mechanism: **if
+the worker dies, if the reaper never fires, if this code crashes — the pod
+still terminates itself.** The buffer covers a clip mid-render. Three
+independent ways for a machine to stop billing, and only the last needs no
+process alive.
 
-The reaper's idle window is **30 minutes**, and the number is now measured
-rather than guessed. It was 10 for one evening (2026-08-26), on the reasoning
-that a request-opened window should be only as long as the work needs. That
-evening's cold open settled it the other way: creating the pod, pulling 68 GB
-of weights and restarting ComfyUI took 📏 **~15 minutes and $0.18** on an RTX
-4090, while a Flux image then took 📏 12 s — and the 10-minute reaper closed
-the first pod of the night *before its first job*, so the whole cold open was
-paid twice. Every reopen pays it again, so the grace has to be longer than the
-cold open, not shorter. Thirty is the cold open plus the gap between two
-messages in a group chat. The pod's own `--terminate-after` and the 13:05
-`close` timer still bound the worst case.
+**The reaper is now per-render-kind, and it never closes a pod with work
+waiting.** `session reap` runs every minute; it closes a quiet pod after
+`IMAGE_IDLE_MINUTES` (5) if the last render was an image, `VIDEO_IDLE_MINUTES`
+(10) if it was a clip. The two numbers differ because the two reloads do:
+📏 Flux comes back into VRAM in ~15 s, H3's 32B text encoder in 60–90 s, so a
+video pod is worth holding longer. Both are `[speculative]` starting points,
+tuned by how often the reaper log shows a pod closed and reopened within a few
+minutes. And a pod with anything queued is *held*, whatever the clock says:
+closing a pod a job is about to land on costs a cold open **and** the wait,
+the one move with no upside. This replaces the fixed 30-minute window, which
+in turn replaced a one-evening 10 that closed the first pod of the night
+before its first job — with the weights on a network volume a reopen is a
+~1-minute ComfyUI restart, not the 📏 15-minute, $0.18 download it was, so the
+grace can be short again.
 
 ### The network volume, and why the cold open stopped mattering
 
@@ -242,7 +248,7 @@ $repo = "C:\Users\USER\Desktop\Develop\ai-studio"
 $uv   = (Get-Command uv).Source
 
 schtasks /Create /TN "ai-studio-reap"  /SC MINUTE /MO 5 /F `
-  /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session reap --idle-minutes 30"
+  /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session reap"
 
 schtasks /Create /TN "ai-studio-close" /SC DAILY /ST 13:00 /F `
   /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session close"
@@ -264,7 +270,7 @@ on whatever host serves the LINE webhook.
 
 ```cron
 # UTC. 13:00 Asia/Taipei = 05:00 UTC. Nothing here opens a pod.
-*/5 * * * * cd /srv/ai-studio && uv run ai-studio session reap --idle-minutes 30
+*/5 * * * * cd /srv/ai-studio && uv run ai-studio session reap
 0  5 * * *  cd /srv/ai-studio && uv run ai-studio session close
 ```
 

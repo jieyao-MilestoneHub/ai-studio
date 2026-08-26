@@ -34,7 +34,7 @@ import subprocess
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -267,39 +267,38 @@ def _image_kind() -> Any:
 
 
 def check_out_of_hours() -> CheckResult:
-    """4. Outside business hours a request is accepted, answered, and opens nothing.
+    """4. A request at any hour is accepted, answered, and opens nothing itself.
 
-    The failure this catches costs the most of any check here: a pod opened at
-    03:00 that nobody asked for. The clock is injected, so it runs at any hour.
+    There are no business hours any more; what this pins is that the *web*
+    path never creates a pod. Only the worker does, on its own tick, behind
+    the budget guard and the daily cap -- so a webhook that is up while the
+    worker is down accepts and holds, and nothing bills.
     """
-    name = "out-of-hours: accepted, answered, no pod"
+    name = "any hour: accepted, answered, nothing opened by the webhook"
     try:
         client, queue, _ = _test_client()
     except ImportError as exc:
         return _skip(4, name, f"the web extra is not installed: {exc}")
 
-    from ai_studio.pipeline import worker
-    from ai_studio.runtime import hours
     from ai_studio.runtime import session as sess
 
     try:
         settings = get_settings()
         group = settings.line_allowed_group_id or "Cpreflight"
-        shut = hours.next_open() - timedelta(hours=1)
-        if hours.is_open(shut):  # pragma: no cover - next_open is never inside
-            return _fail(4, name, "could not construct a closed instant")
+        night = datetime(2026, 1, 1, 3, 0, tzinfo=timezone.utc)
+        state_before = sess.load_state()
 
-        handler = _handler(queue, secret=SYNTHETIC_SECRET, clock=lambda: shut)
+        handler = _handler(queue, secret=SYNTHETIC_SECRET, clock=lambda: night)
         client.app.state.handler = handler
         body, signature = _signed(
             [_event("/影片 preflight", event_id="pf-shut", group=group)], SYNTHETIC_SECRET
         )
         response = client.post("/callback", content=body, headers={"x-line-signature": signature})
         if response.status_code != 200:
-            return _fail(4, name, f"an out-of-hours request got {response.status_code}")
+            return _fail(4, name, f"the request got {response.status_code}")
 
         if sum(queue.counts().values()) != 1:
-            return _fail(4, name, "the request was refused instead of held for the next window")
+            return _fail(4, name, "the request was refused instead of held for the worker")
 
         sent = handler.replier.sent
         if not sent:
@@ -308,34 +307,15 @@ def check_out_of_hours() -> CheckResult:
         if "/q/" not in text:
             return _fail(4, name, f"the reply carries no status-page link: {text[:80]}")
 
-        # And nothing may reach a pod. Asserted at `ensure_pod`, which is the
-        # single place one is ever created -- not at the queue, because the
-        # request legitimately *is* claimable: conversion runs in a background
-        # task the moment the webhook returns, so by now it is `parsed` and
-        # waiting. That is correct and it is the point. What must not happen is
-        # a machine being opened for it before 11:00.
-        claimable = len(worker.claimable(queue))
-        try:
-            sess.ensure_pod(queue, name="preflight-must-not-exist", now=shut)
-        except hours.OutsideBusinessHours:
-            pass
-        except Exception as exc:
-            return _fail(4, name, f"refused, but not for the right reason: {exc}")
-        else:
-            return _fail(4, name, "ensure_pod created a pod outside business hours")
-
-        # The reply itself is Chinese; the Windows console is cp950 and turns
-        # any of it into mojibake, so this reports *about* the reply rather
-        # than quoting it. The reply text is deliberately the same in and out
-        # of hours now -- see the git history on _accepted_line for why -- so
-        # a status-page link is what this check has left to verify.
-        return _pass(
-            4, name,
-            f"accepted and held ({claimable} waiting), reply carries a status "
-            "link, no pod created",
-        )
-    finally:
-        queue.close()
+        state_after = sess.load_state()
+        if (state_after is not None) != (state_before is not None) or (
+            state_after is not None and state_before is not None
+            and state_after.pod_id != state_before.pod_id
+        ):
+            return _fail(4, name, "the webhook path changed the pod session state")
+    except Exception as exc:
+        return _fail(4, name, f"{type(exc).__name__}: {exc}")
+    return _pass(4, name, "accepted and held (1 waiting), reply carries a status link, no pod created")
 
 
 def check_push(*, send: bool = False) -> CheckResult:

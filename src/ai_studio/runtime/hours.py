@@ -1,55 +1,48 @@
-"""Business hours. The hardcode, in one file.
+"""Time, in one file: the timezone, the day boundary, and the pod's lease.
 
-"Instant" means *instant inside business hours*: a pod is opened by the first
-request that arrives while the shop is open, not by a clock that fires whether
-or not anyone asked for anything. That makes 11:00-13:00 Asia/Taipei a fact
-three different layers need to agree on -- `bots` writes the out-of-hours
-reply, `pipeline` sleeps on it, `runtime` sets the pod's lease to it -- and a
-constant that three layers copy is a constant that eventually disagrees with
-itself.
+There are no business hours any more. A pod is opened by any request at any
+hour and closed by the idle reaper minutes after the last render -- with the
+weights on a network volume a cold open is a ComfyUI restart, so the fixed
+11:00-13:00 window that used to amortise a 15-minute download has nothing
+left to amortise. What protects money now is the monthly budget guard, the
+per-day open cap, and the three closers (`docs/schedule.md`).
 
-It lives in `runtime` (L5) rather than in `session.py` because of the layer
-contract, not because it is about pods: `bots` (L6) is a leaf that nobody may
-import, so it can reach *down* to here, while nothing here can ever reach up
-to it. `pipeline` (L4) sits below `runtime` and so cannot import this at all --
-`pipeline.worker` takes these three functions by protocol and the CLI, which
-is the composition root, injects them.
+What remains here is what several layers still have to agree on:
 
-The window itself is unchanged and deliberately so: the fixed cost of a
-session (boot, weight download, node install) is ~20 minutes against ~5 for a
-clip, so the pod is still opened at most once a day. See `docs/schedule.md`.
+- `TZ` and `day_start`: the calendar day the per-day caps and the spend
+  ledger count against (Taipei, so a UTC rollover at 08:00 local is not
+  "tomorrow").
+- `LEASE_HOURS` and `window_end_for`: how long a pod is allowed to live once
+  opened. It is a backstop, not a schedule: the reaper closes long before
+  this, and `--terminate-after` on the pod lands ten minutes after it.
+
+It lives in `runtime` (L5) because `bots` (L6) may reach down to it while
+`pipeline` (L4) cannot import it at all -- the worker takes what it needs by
+protocol and the CLI injects it.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from ai_studio.core.errors import AIStudioError
 
 TZ = ZoneInfo("Asia/Taipei")
-"""The window's timezone, matching `runtime.budget.LEDGER_TZ` -- a session and
-the ledger entry it produces must not be able to land on different days."""
+"""Matches `runtime.budget.LEDGER_TZ` -- a session and the ledger entry it
+produces must not be able to land on different days."""
 
-OPEN_LOCAL = time(11, 0)
-CLOSE_LOCAL = time(13, 0)
-
-
-class OutsideBusinessHours(AIStudioError):
-    """A pod was asked for outside 11:00-13:00.
-
-    Its own type rather than a generic error because the caller's response is
-    specific and cheap: hold the request in the queue for the next window. A
-    generic failure would be indistinguishable from "the ladder is empty",
-    which is not something to retry in sixty seconds.
-    """
+LEASE_HOURS = 2.0
+"""How long a freshly opened pod may live. Long enough for a queue of clips at
+~100 s each plus a cold open; short enough that a worker that dies holding a
+pod costs at most this much before the pod terminates itself."""
 
 
 def _local(now: datetime | None = None) -> datetime:
     """`now` in Taipei. A naive datetime raises rather than being assumed UTC.
 
-    Guessing at the timezone of a naive value is how a window silently opens
-    eight hours early, so this fails loudly instead.
+    Guessing at the timezone of a naive value is how a lease silently ends
+    eight hours early or late, so this fails loudly instead.
     """
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
@@ -57,41 +50,13 @@ def _local(now: datetime | None = None) -> datetime:
     return now.astimezone(TZ)
 
 
-def is_open(now: datetime | None = None) -> bool:
-    """True from 11:00:00 up to but not including 13:00:00, Taipei time.
-
-    Half-open on purpose: 13:00 is when the shop closes, so 13:00 is closed.
-    """
-    return OPEN_LOCAL <= _local(now).time() < CLOSE_LOCAL
-
-
 def window_end_for(now: datetime | None = None) -> datetime:
-    """The 13:00 that ends the window `now` falls in, UTC-aware.
+    """When a pod opened at `now` must be gone, UTC-aware: `now` + LEASE_HOURS.
 
-    This is the pod's lease end. `open_session` adds `TERMINATE_BUFFER_MIN` to
-    it for `--terminate-after`, so a pod opened by a request at 12:40 still
-    self-terminates at 13:10 without anyone inventing a second deadline.
+    `open_session` adds `TERMINATE_BUFFER_MIN` to it for `--terminate-after`,
+    so nobody invents a second deadline.
     """
-    local = _local(now)
-    return local.replace(
-        hour=CLOSE_LOCAL.hour, minute=CLOSE_LOCAL.minute, second=0, microsecond=0
-    ).astimezone(timezone.utc)
-
-
-def next_open(now: datetime | None = None) -> datetime:
-    """The next 11:00, UTC-aware. What the out-of-hours reply quotes.
-
-    Before today's opening it is today's; at or after it, tomorrow's. Someone
-    who asks at 23:30 is told 11:00 *tomorrow*, which is the whole point of
-    accepting the request instead of refusing it.
-    """
-    local = _local(now)
-    opening = local.replace(
-        hour=OPEN_LOCAL.hour, minute=OPEN_LOCAL.minute, second=0, microsecond=0
-    )
-    if local.time() >= OPEN_LOCAL:
-        opening += timedelta(days=1)
-    return opening.astimezone(timezone.utc)
+    return (_local(now) + timedelta(hours=LEASE_HOURS)).astimezone(timezone.utc)
 
 
 def day_start(now: datetime | None = None) -> datetime:

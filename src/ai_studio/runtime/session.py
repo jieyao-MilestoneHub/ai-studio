@@ -202,6 +202,12 @@ class Session:
     disappointing clip can be traced to the card it was rendered on."""
     quantisation: str = "int8"
     ssh: dict[str, Any] = field(default_factory=dict)
+    provisioned: bool = False
+    """Whether `deploy/pod_setup.sh` has been started on this pod. Set by
+    `mark_provisioned`; the worker provisions once and then only waits."""
+    last_media_kind: str = ""
+    """What the last render was ("image"/"video"), so the reaper can give a
+    video pod -- whose model takes 90 s to reload -- a longer grace."""
 
     @property
     def comfy_url(self) -> str:
@@ -384,35 +390,26 @@ def ensure_pod(
 
     Checked in this order, and the order is deliberate:
 
-    0. **An already-open window is reused, not doubled, and not gated on the
-       clock at all.** A pod that is already live is already billing; refusing
-       to render against it outside business hours would not save a cent; it
-       would only leave paid-for GPU-minutes idle. `open_session` would refuse
-       a second pod under the same name anyway, but that refusal is an error
-       and this is the ordinary case: the second request of the day, or a
-       manually-extended window running past the bell.
-    1. **Business hours.** Only reached when there is nothing live yet. Raises
-       `OutsideBusinessHours`, its own type, because the caller's answer to it
-       is specific: hold the request for tomorrow. This is the gate that
-       actually protects money — it is what stops a request from *opening* a
-       pod at 03:00, not what stops one already open from being used.
-    2. **Opens per day.** The failure the monthly guard cannot see — a worker
+    0. **An already-open window is reused, not doubled.** A pod that is
+       already live is already billing; not using it would only leave
+       paid-for GPU-minutes idle. `open_session` would refuse a second pod
+       under the same name anyway, but that refusal is an error and this is
+       the ordinary case: the second request of the hour.
+    1. **Opens per day.** The failure the monthly guard cannot see — a worker
        that crash-loops opens a fresh pod on every restart, and each one is
-       individually inside budget.
-    3. **Monthly budget.** Unchanged semantics, moved here from the CLI's
-       `session open`: same guard, same pessimistic worst-rung arithmetic, now
+       individually inside budget. With the reaper closing pods minutes after
+       the last render this is a real count, hence the cap of fifteen rather
+       than two.
+    2. **Monthly budget.** Same guard, same pessimistic worst-rung arithmetic,
        on the path that actually creates pods.
+
+    There is no clock gate any more (see `runtime.hours`). The lease is
+    `LEASE_HOURS` from now; the reaper is expected to close the pod long
+    before it, and `--terminate-after` lands ten minutes after it.
     """
     live = load_state()
     if live is not None and not live.past_window():
         return live
-
-    if not hours.is_open(now):
-        raise hours.OutsideBusinessHours(
-            f"business hours are {hours.OPEN_LOCAL:%H:%M}-{hours.CLOSE_LOCAL:%H:%M} "
-            f"{hours.TZ}; next open {hours.next_open(now).astimezone(hours.TZ):%Y-%m-%d %H:%M}. "
-            "Nothing was created and nothing is billing."
-        )
 
     settings = get_settings()
     network_volume_id: str | None = None
@@ -555,21 +552,32 @@ def close_session(*, name: str = "ai-studio-window") -> list[str]:
     return terminated
 
 
-def close_if_idle(idle_minutes: int = 30, *, name: str = "ai-studio-window") -> str:
-    """Close early when the window has gone quiet.
+IMAGE_IDLE_MINUTES = 5
+VIDEO_IDLE_MINUTES = 10
+"""How long a quiet pod is kept after its last render, by what it rendered.
 
-    A window sized for peak demand is mostly idle at low volume, and idle
-    minutes cost exactly as much as working ones. Requires the queue to report
-    when it last finished work; see `last_activity_at` in the state file.
+Two numbers because the two reloads cost differently: Flux comes back into
+VRAM in 📏 ~15 s, H3's 32B text encoder in 📏 60-90 s. A pod is worth
+keeping only while the chance of the next request within the grace, times
+the reload it would save, beats the idle minutes -- and in a group chat the
+next message usually comes within five minutes or not for hours. Both are
+`[speculative]` starting points; the reaper log says how often a pod was
+closed and reopened within a few minutes, which is the number that tunes
+them.
+"""
 
-    Ten minutes rather than twenty, and for a different reason than before.
-    The old number was about not wasting the tail of a window that was going to
-    be paid for anyway. Now that the pod is opened by a request rather than by
-    a timer, the window is only as long as the work needs — and the first real
-    run cannot afford two hours (see PLAN.md Phase 7). Ten is a guess pending
-    the one measurement that settles it: the cold-open time. A cold open that
-    turns out to be expensive argues for a *longer* grace, not a shorter one,
-    because every reopen pays it again.
+
+def close_if_idle(
+    *,
+    image_idle_minutes: int = IMAGE_IDLE_MINUTES,
+    video_idle_minutes: int = VIDEO_IDLE_MINUTES,
+    hold: bool = False,
+    name: str = "ai-studio-window",
+) -> str:
+    """Close the pod when it has gone quiet; the grace depends on what it
+    last rendered. `hold=True` (work is waiting in the queue) never closes:
+    a pod with a job about to land on it is not idle, whatever the clock says
+    -- closing it there is the one move that costs a cold open *and* the wait.
     """
     session = load_state()
     if session is None:
@@ -581,9 +589,75 @@ def close_if_idle(idle_minutes: int = 30, *, name: str = "ai-studio-window") -> 
     state = _read_state_raw()
     last = state.get("last_activity_at") or session.opened_at
     idle = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() / 60
-    if idle >= idle_minutes:
-        return f"idle {idle:.0f}min >= {idle_minutes}; {close_session(name=name)}"
-    return f"active ({idle:.0f}min idle, spent ${session.spent_usd():.2f})"
+    grace = image_idle_minutes if state.get("last_media_kind") == "image" else video_idle_minutes
+    if hold:
+        return f"held: work pending ({idle:.0f}min idle, spent ${session.spent_usd():.2f})"
+    if idle >= grace:
+        return f"idle {idle:.0f}min >= {grace}; {close_session(name=name)}"
+    return f"active ({idle:.0f}min idle of {grace}, spent ${session.spent_usd():.2f})"
+
+
+# ------------------------------------------------------------------ provision
+
+SSH_KEY = Path.home() / ".runpod" / "ssh" / "runpodctl-ssh-key"
+SETUP_SCRIPT = Path("deploy/pod_setup.sh")
+PROVISION_WAIT_S = 600.0
+PROVISION_RETRY_S = 15.0
+
+
+def _ssh(argv: list[str], *, stdin: str, timeout_s: float) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv, input=stdin, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=timeout_s, check=False,
+    )
+
+
+def provision(session: Session, *, script: Path = SETUP_SCRIPT) -> None:
+    """Start `deploy/pod_setup.sh` on the pod, detached, over SSH.
+
+    This is the step that used to be a person with a terminal. The worker
+    opens a pod and then has to wait for it; nobody else is there to run the
+    setup, so the worker does -- copies the script up and starts it under
+    nohup, so a dropped SSH link (observed live, mid-download) does not kill
+    it. `wait_ready` then watches for the node pack, which is the script's
+    last act. With the weights on a network volume the script's own fast
+    path makes this a ComfyUI restart, about a minute.
+
+    Retries the SSH connection for up to `PROVISION_WAIT_S`: the pod's SSH
+    port comes up some seconds after RunPod reports it running.
+    """
+    body = script.read_text(encoding="utf-8")
+    info = _runpodctl("ssh", "info", session.pod_id)
+    host, port = str(info.get("ip") or ""), str(info.get("port") or "")
+    if not host or not port:
+        raise PodError(f"{session.pod_id}: no ssh endpoint in {info}")
+    argv = [
+        "ssh", "-i", str(SSH_KEY), "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", "-p", port, f"root@{host}",
+        # `;` not `&&`: `cat > f && nohup ... &` backgrounds the cat too, which
+        # then races the closing ssh stdin and writes an empty file (observed
+        # live, 2026-08-27). Separated, cat drains stdin in the foreground and
+        # only the setup run is backgrounded.
+        "cat > /workspace/pod_setup.sh; nohup bash /workspace/pod_setup.sh "
+        f"{session.vram_gb} > /workspace/setup.log 2>&1 < /dev/null & disown; echo started",
+    ]
+    deadline = time.monotonic() + PROVISION_WAIT_S
+    last = ""
+    while True:
+        try:
+            proc = _ssh(argv, stdin=body, timeout_s=60.0)
+        except subprocess.TimeoutExpired:
+            last = "ssh timed out"
+        else:
+            if proc.returncode == 0 and "started" in proc.stdout:
+                return
+            last = (proc.stderr or proc.stdout).strip()[-200:]
+        if time.monotonic() >= deadline:
+            raise PodError(
+                f"{session.pod_id}: could not start pod_setup.sh over ssh "
+                f"({last}). The pod is running and billing -- close it."
+            )
+        time.sleep(PROVISION_RETRY_S)
 
 
 def find_existing(name: str) -> dict[str, Any] | None:
@@ -607,11 +681,21 @@ def load_state() -> Session | None:
     return Session(**{k: v for k, v in raw.items() if k in known})
 
 
-def touch_activity() -> None:
-    """Record that work just happened, so the idle timer restarts."""
+def touch_activity(media_kind: str | None = None) -> None:
+    """Record that work just happened, so the idle timer restarts, and what
+    kind it was, so the reaper can pick the right grace."""
     raw = _read_state_raw()
     if raw:
         raw["last_activity_at"] = datetime.now(timezone.utc).isoformat()
+        if media_kind:
+            raw["last_media_kind"] = media_kind
+        STATE_FILE.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+
+def mark_provisioned() -> None:
+    raw = _read_state_raw()
+    if raw:
+        raw["provisioned"] = True
         STATE_FILE.write_text(json.dumps(raw, indent=2), encoding="utf-8")
 
 

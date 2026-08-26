@@ -116,7 +116,7 @@ datacenter, on top of the already-thin RTX 4090 pool.
 **Request-driven pod opening does not change this either.** Since PLAN.md
 Phase 1 the pod is created by the day's first LINE request rather than by a
 03:00 UTC timer, which is easy to misread as "a pod per request" — it is not.
-"Instant" means *instant inside business hours*: 11:00-13:00 Asia/Taipei, and
+"Instant" means a pod opened by the request itself, at any hour, and
 `ensure_pod` reuses the day's pod for every later request, with
 `AI_STUDIO_MAX_POD_OPENS_PER_DAY` (default 2) as the hard backstop. So the
 download still happens **at most once a day**, the arithmetic above is

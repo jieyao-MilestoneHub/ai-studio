@@ -3,11 +3,11 @@
 `drain.drain_window` answers "the window is open, empty the queue before the
 bell". This answers "there is a request, and the shop is open — do it now".
 Same rendering, different owner of the loop, and the difference is the whole of
-"instant inside business hours": the pod is created by the first request that
+"instant": the pod is created by the first request that
 arrives while the shop is open, not by a timer that fires whether or not anyone
 asked for anything.
 
-Outside business hours the loop does exactly one thing: sleep. It does not
+With nothing queued the loop does exactly one thing: sleep. It does not
 drain, it does not open a pod, it does not fail. Requests keep arriving and keep
 waiting — refusing them would mean whatever someone thought of at midnight is
 simply lost.
@@ -55,8 +55,9 @@ minutes of generation, and a tighter loop only spends VPS CPU on a 1 GB box.
 """
 
 CLOSED_POLL_S = 60.0
-"""How long to sleep outside business hours. Nothing happens on these ticks, so
-the only thing this number costs is how quickly the shop opens at 11:00."""
+"""How long to sleep after a refusal (budget, daily cap, no stock, a pod that
+never answered). Nothing useful can happen sooner, and a tight loop here
+would only ask RunPod the same question sixty times a minute."""
 
 
 class WindowHost(Protocol):
@@ -68,23 +69,20 @@ class WindowHost(Protocol):
 
     def now(self) -> datetime: ...
 
-    def is_open(self, now: datetime | None = None) -> bool:
-        """Is the shop open? The only question asked outside a render."""
-
     def claim_deadline(self, now: datetime | None = None) -> datetime:
-        """The bell new work must finish before — the end of business hours."""
+        """The bell new work must finish before — the end of the pod's lease."""
 
     def ensure_pod(self, queue: JobQueue) -> Any:
-        """A live window, opening one if hours and budget allow. May raise."""
+        """A live pod, opening one if budget allows. May raise."""
 
     def wait_ready(self, session: Any) -> float:
-        """Block until ComfyUI answers on that pod."""
+        """Provision the pod if it is fresh, then block until it can render."""
 
     def providers_for(self, session: Any) -> dict[MediaKind, Any]:
         """The clip and image backends bound to that pod."""
 
-    def touch_activity(self) -> None:
-        """Reset the idle reaper's timer. Called after every render."""
+    def touch_activity(self, media_kind: str) -> None:
+        """Reset the idle reaper's timer, recording what was just rendered."""
 
     async def deliver(self, job: Job, asset: Path | None) -> str:
         """Tell the group. `asset` is None when the job failed.
@@ -155,13 +153,18 @@ async def tick(
     report.ticks += 1
     now = host.now()
 
-    if not host.is_open(now):
-        report.last_action = "closed"
-        return "closed"
-
-    if not claimable(queue):
+    if not queue.pending():
         report.last_action = "idle"
         return "idle"
+
+    if not claimable(queue):
+        # Something is queued but still being converted (~40 s cold on the
+        # LLM endpoint). Open the pod now so the two cold starts overlap
+        # instead of queueing behind each other; the user's wait is the
+        # longer of the two, not the sum.
+        host.ensure_pod(queue)
+        report.last_action = "warming"
+        return "warming"
 
     deadline = host.claim_deadline(now)
     if not may_claim(deadline):
@@ -248,7 +251,7 @@ async def _run_one(
     report.seconds.append(time.monotonic() - started)
     # Without this a long render looks like idleness and the reaper closes the
     # window out from under the next job.
-    host.touch_activity()
+    host.touch_activity(job.media_kind.value)
     _log.info("job %d done in %.0fs -> %s", job.id, report.seconds[-1], asset)
     await _deliver(queue, host, job.id, asset, report)
     report.last_action = "completed"

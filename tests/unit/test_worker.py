@@ -111,14 +111,13 @@ class FakeHost:
     def __init__(
         self,
         *,
-        open_now: bool = True,
+        
         video: FakeProvider | None = None,
         image: FakeProvider | None = None,
         ensure_raises: Exception | None = None,
         deliver_raises: Exception | None = None,
         minutes_left: float = 120.0,
     ) -> None:
-        self.open_now = open_now
         self.ensure_raises = ensure_raises
         self.minutes_left = minutes_left
         self.video = video or FakeProvider()
@@ -126,15 +125,13 @@ class FakeHost:
         self.opens = 0
         self.waits = 0
         self.touches = 0
+        self.touched_kinds: list[str] = []
         self.session = FakeSession()
         self.delivered: list[tuple[int, str | None]] = []
         self.deliver_raises = deliver_raises
 
     def now(self) -> datetime:
         return datetime.now(timezone.utc)
-
-    def is_open(self, now: datetime | None = None) -> bool:
-        return self.open_now
 
     def claim_deadline(self, now: datetime | None = None) -> datetime:
         return datetime.now(timezone.utc) + timedelta(minutes=self.minutes_left)
@@ -152,8 +149,9 @@ class FakeHost:
     def providers_for(self, session: Any) -> dict[MediaKind, Any]:
         return {MediaKind.VIDEO: self.video, MediaKind.IMAGE: self.image}
 
-    def touch_activity(self) -> None:
+    def touch_activity(self, media_kind: str) -> None:
         self.touches += 1
+        self.touched_kinds.append(media_kind)
 
     async def deliver(self, job: Any, asset: Any) -> str:
         if self.deliver_raises is not None:
@@ -193,15 +191,17 @@ async def _tick(q: JobQueue, host: FakeHost, tmp_path: Path) -> tuple[str, worke
 
 
 @pytest.mark.asyncio
-async def test_outside_business_hours_nothing_is_opened(queue, tmp_path: Path) -> None:
-    """The single most expensive bug available here: a pod at 03:00."""
+async def test_there_are_no_business_hours(queue, tmp_path: Path) -> None:
+    """A parsed request at 03:00 opens a pod like one at noon. What guards
+    money now is the budget guard and the daily cap inside ensure_pod, and
+    the reaper minutes after the render -- not the clock."""
     _parsed(queue)
-    host = FakeHost(open_now=False)
+    host = FakeHost()
 
     action, _ = await _tick(queue, host, tmp_path)
 
-    assert action == "closed"
-    assert host.opens == 0
+    assert action == "completed"
+    assert host.opens == 1
 
 
 @pytest.mark.asyncio
@@ -216,17 +216,21 @@ async def test_an_empty_queue_does_not_open_a_pod(queue, tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_an_unconverted_request_does_not_open_a_pod(queue, tmp_path: Path) -> None:
-    """`queued` is not `parsed`. A request whose prompt does not exist yet may
-    never become a valid one, and a pod opened for it is paid for either way."""
-    queue.enqueue("evt-1", "Cgroup", "a cat", user_id="U1")
+async def test_an_unconverted_request_warms_the_pod_but_is_not_claimed(
+    queue, tmp_path: Path
+) -> None:
+    """Something is queued but still at the LLM. The pod is opened now so the
+    two cold starts overlap -- but nothing is claimed until it is parsed, so
+    a request that never becomes a valid prompt cannot reach a GPU."""
+    queue.enqueue("evt-raw", "Cgroup", "a cat")
     host = FakeHost()
 
     action, _ = await _tick(queue, host, tmp_path)
 
-    assert action == "idle"
-    assert host.opens == 0
-    assert worker.claimable(queue) == []
+    assert action == "warming"
+    assert host.opens == 1
+    assert host.waits == 0, "warming does not block on readiness"
+    assert not host.video.submitted
 
 
 @pytest.mark.asyncio
@@ -268,6 +272,7 @@ async def test_a_render_resets_the_idle_reapers_timer(queue, tmp_path: Path) -> 
     await _tick(queue, host, tmp_path)
 
     assert host.touches == 1
+    assert host.touched_kinds == ["video"]
 
 
 @pytest.mark.asyncio
@@ -357,13 +362,15 @@ async def test_serve_reclaims_work_left_running_by_a_dead_worker(
     queue.claim_next()
     assert queue.by_token(job.token).state is JobState.RUNNING
 
-    host = FakeHost(open_now=False)
+    host = FakeHost()
     report = await worker.serve(
         queue, host, files_dir=tmp_path / "files", max_ticks=1, sleep=_no_sleep
     )
 
     assert report.requeued == 1
-    assert queue.by_token(job.token).state is JobState.PARSED
+    # Reclaimed, then rendered by this very run: there is no clock gate to
+    # stop the loop picking it straight back up.
+    assert queue.by_token(job.token).state is JobState.DONE
 
 
 @pytest.mark.asyncio
@@ -382,20 +389,20 @@ async def test_a_refused_tick_does_not_kill_the_worker(queue, tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_serve_sleeps_the_long_interval_when_closed(queue, tmp_path: Path) -> None:
-    """Outside business hours the loop does exactly one thing."""
+async def test_serve_sleeps_the_idle_interval_with_nothing_queued(queue, tmp_path: Path) -> None:
+    """With nothing queued the loop does exactly one thing."""
     slept: list[float] = []
 
     async def record(seconds: float) -> None:
         slept.append(seconds)
 
-    host = FakeHost(open_now=False)
+    host = FakeHost()
     await worker.serve(
         queue, host, files_dir=tmp_path / "files", max_ticks=2,
         closed_poll_s=60.0, idle_poll_s=10.0, sleep=record,
     )
 
-    assert slept == [60.0, 60.0]
+    assert slept == [10.0, 10.0]
     assert host.opens == 0
 
 

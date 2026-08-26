@@ -135,7 +135,7 @@ def test_the_vps_runbook_documents_manual_drain_recovery() -> None:
     )
 
 
-# ---------------------------------------------------- an open pod after hours
+# ------------------------------------------------------------- the lease
 
 
 def _session_until(window_end: str):
@@ -147,15 +147,15 @@ def _session_until(window_end: str):
     )
 
 
-def test_the_worker_host_is_open_while_a_pod_is_open_after_hours(
+def test_the_claim_deadline_is_the_live_pods_lease_or_a_fresh_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`ensure_pod` reuses an open pod outside business hours, but the worker
-    asks `is_open` first. If this said no, the pod sat billing all evening
-    with two requests parsed and waiting — which is what happened."""
-    from datetime import datetime, timezone
+    """No business hours: the bell new work must finish before is the open
+    pod's own lease end, or the lease a pod opened now would get."""
+    from datetime import datetime, timedelta, timezone
 
     from ai_studio.cli.main import _RuntimeHost
+    from ai_studio.runtime import hours
     from ai_studio.runtime import session as sess
 
     monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -164,12 +164,13 @@ def test_the_worker_host_is_open_while_a_pod_is_open_after_hours(
     evening = datetime(2026, 8, 26, 14, 30, tzinfo=timezone.utc)  # 22:30 Taipei
 
     monkeypatch.setattr(sess, "load_state", lambda: None)
-    assert host.is_open(evening) is False
+    assert host.claim_deadline(evening) == evening + timedelta(hours=hours.LEASE_HOURS)
 
     monkeypatch.setattr(sess, "load_state", lambda: _session_until("2026-08-26T15:59:00+00:00"))
-    assert host.is_open(evening) is True
     assert host.claim_deadline(evening) == datetime(2026, 8, 26, 15, 59, tzinfo=timezone.utc)
 
     monkeypatch.setattr(sess, "load_state", lambda: _session_until("2026-08-26T14:00:00+00:00"))
-    assert host.is_open(evening) is False, "a pod past its window is not a reason to claim"
+    assert host.claim_deadline(evening) == evening + timedelta(hours=hours.LEASE_HOURS), (
+        "a pod past its lease is not the deadline; a fresh lease is"
+    )
     get_settings(refresh=True)

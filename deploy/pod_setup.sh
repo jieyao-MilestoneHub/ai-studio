@@ -52,6 +52,21 @@ else
 fi
 log "card has ${VRAM_GB}GB -> ${QUANT} weights"
 
+# ── 0. a network volume that was set up before needs only a restart ───────
+# With AI_STUDIO_NETWORK_VOLUME_ID every pod mounts the same /workspace, so
+# the upgrade, the node pack and the 68GB of weights from the first run are
+# already here. The marker is per weight set (int8 vs fp8) and per version of
+# this script's provisioning steps: bump SETUP_VERSION when they change and
+# the next pod re-provisions instead of trusting a stale volume.
+SETUP_VERSION=1
+MARKER="/workspace/.ai-studio-setup-v${SETUP_VERSION}-${QUANT}"
+if [ -f "$MARKER" ] && [ -d "$CU/custom_nodes/ComfyUI-MiniMax-H3-Turbo" ]; then
+  log "volume already provisioned ($MARKER); skipping download and install"
+  FAST_PATH=1
+else
+  FAST_PATH=0
+fi
+
 # ── 1. wait for the image to finish copying itself into /workspace ─────────
 log "waiting for ComfyUI to appear in /workspace (first boot copies it)"
 for i in $(seq 1 60); do
@@ -60,6 +75,7 @@ for i in $(seq 1 60); do
 done
 [ -d "$CU/custom_nodes" ] || die "ComfyUI never appeared at $CU"
 
+if [ "$FAST_PATH" = 0 ]; then
 # ── 2. upgrade ComfyUI FIRST, before the network is saturated ─────────────
 # Learned the hard way: starting the 51GB download first left `git fetch`
 # hanging behind it for over eight minutes, and the upgrade never happened.
@@ -165,6 +181,7 @@ for entry in "${DL_PIDS[@]}"; do
 done
 [ "${#FAILED_DL[@]}" -eq 0 ] || die \
   "download(s) failed: ${FAILED_DL[*]} -- see /workspace/dl-logs/<name>.log ($(df -h /workspace | awk 'NR==2{print $4}') free)"
+fi  # FAST_PATH
 log "weights complete: $(du -sh "$M" | cut -f1)"
 # hf download keeps the remote filename, and "lora.safetensors" says nothing
 # in a directory that also holds the H3 turbo LoRA -- and does not match the
@@ -263,4 +280,5 @@ for n in need:
 sys.exit(1 if missing else 0)
 ' || die "required H3 nodes are not registered"
 
-log "done. quantisation=${QUANT} vram=${VRAM_GB}GB"
+touch "$MARKER"
+log "done. quantisation=${QUANT} vram=${VRAM_GB}GB marker=$MARKER"

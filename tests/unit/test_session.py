@@ -226,7 +226,7 @@ def test_reap_closing_a_quiet_window_also_records_to_the_ledger(
 
     _, fake2 = _calls_recorder([{"items": []}, {"deleted": True}])
     monkeypatch.setattr(sess, "_runpodctl", fake2)
-    assert "idle 45min" in sess.close_if_idle(20, name="w")
+    assert "idle 45min" in sess.close_if_idle(video_idle_minutes=20, name="w")
 
     assert sess.SpendLedger().spent_this_month_usd() == pytest.approx(0.354, abs=0.05)
 
@@ -257,16 +257,63 @@ def test_reap_closes_a_quiet_window(monkeypatch: pytest.MonkeyPatch) -> None:
 
     _, fake2 = _calls_recorder([{"items": []}, {"deleted": True}])
     monkeypatch.setattr(sess, "_runpodctl", fake2)
-    assert "idle 45min" in sess.close_if_idle(20, name="w")
+    assert "idle 45min" in sess.close_if_idle(video_idle_minutes=20, name="w")
 
 
 def test_reap_leaves_a_busy_window_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     _, fake = _calls_recorder([{"items": []}, {"id": "p", "costPerHr": 0.34}])
     monkeypatch.setattr(sess, "_runpodctl", fake)
     sess.open_session(_end(120), name="w")
-    sess.touch_activity()
+    sess.touch_activity("video")
 
-    assert "active" in sess.close_if_idle(20, name="w")
+    assert "active" in sess.close_if_idle(video_idle_minutes=20, name="w")
+
+
+def _backdate_activity(minutes: int, kind: str) -> None:
+    import json
+
+    raw = sess._read_state_raw()
+    raw["last_activity_at"] = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    raw["last_media_kind"] = kind
+    sess.STATE_FILE.write_text(json.dumps(raw), encoding="utf-8")
+
+
+def test_an_image_pod_gets_the_shorter_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flux reloads in ~15 s; H3's text encoder in ~90 s. Seven idle minutes
+    after an image is over the image grace and under the video one."""
+    _, fake = _calls_recorder([{"items": []}, {"id": "p", "costPerHr": 0.34}])
+    monkeypatch.setattr(sess, "_runpodctl", fake)
+    sess.open_session(_end(120), name="w")
+
+    _backdate_activity(7, "image")
+    _, fake2 = _calls_recorder([{"items": []}, {"deleted": True}])
+    monkeypatch.setattr(sess, "_runpodctl", fake2)
+    assert "idle 7min >= 5" in sess.close_if_idle(
+        image_idle_minutes=5, video_idle_minutes=10, name="w"
+    )
+
+
+def test_a_video_pod_keeps_the_longer_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, fake = _calls_recorder([{"items": []}, {"id": "p", "costPerHr": 0.34}])
+    monkeypatch.setattr(sess, "_runpodctl", fake)
+    sess.open_session(_end(120), name="w")
+
+    _backdate_activity(7, "video")
+    assert "active" in sess.close_if_idle(image_idle_minutes=5, video_idle_minutes=10, name="w")
+
+
+def test_a_pod_with_work_pending_is_never_reaped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Closing a pod a job is about to land on costs a cold open *and* the
+    wait -- the one move with no upside."""
+    _, fake = _calls_recorder([{"items": []}, {"id": "p", "costPerHr": 0.34}])
+    monkeypatch.setattr(sess, "_runpodctl", fake)
+    sess.open_session(_end(120), name="w")
+
+    _backdate_activity(45, "image")
+    seen, fake2 = _calls_recorder([{"items": []}, {"deleted": True}])
+    monkeypatch.setattr(sess, "_runpodctl", fake2)
+    assert "held" in sess.close_if_idle(hold=True, name="w")
+    assert not any(c[:2] == ["pod", "delete"] for c in seen)
 
 
 def test_spend_tracking_uses_the_real_rate(monkeypatch: pytest.MonkeyPatch) -> None:

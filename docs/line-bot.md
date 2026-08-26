@@ -28,7 +28,7 @@ replies with what to do, naming the trigger that was used — the user asked for
 *their* picture, and a picture of something else is not that.
 
 Both enqueue into the same SQLite `jobs` table (tagged `media_kind`), both wait
-for the same 11:00–13:00 window, and both render on the same pod —
+for the same on-demand pod, and both render on it —
 `ai-studio worker` picks the H3 or Flux ComfyUI provider per job by
 `media_kind`, not by a second queue or a second pod. See
 [schedule.md](schedule.md) for how the pod is now opened by the day's first
@@ -40,7 +40,7 @@ the group** that asked for it, with the requester **@-mentioned** — a video
 message object for `/影片` and `/圖影`, an image message object for `/圖片` and `/圖圖`, each with a
 JPEG poster, followed by a text message carrying the mention and the status
 link. A Flux image is fast to *generate* (`[speculative]`, ~15–40s) but still
-only happens during the scheduled window, which can be hours after the
+only happens once a pod is up, which on a cold start is a couple of minutes after the
 original message, so nothing about the delivery path differs between the two
 kinds.
 
@@ -128,7 +128,7 @@ the only signal they get.
 |---|---|---|
 | Webhook, status pages, file downloads, queue | small VPS (or your machine + a tunnel) | always |
 | Prompt conversion LLM | RunPod serverless, scale-to-zero | on demand |
-| MiniMax H3 + Flux.1-dev | same RunPod GPU pod | 11:00–13:00 Asia/Taipei, only if the queue is non-empty |
+| MiniMax H3 + Flux.1-dev | same RunPod GPU pod | on demand, any hour; reaped 5/10 min after the last render |
 
 Two separate RunPod resources on purpose. A measured H3 run peaked at **43.3GB**
 📏 on a 48GB card, leaving no room for a useful instruct model beside it — and
@@ -362,7 +362,7 @@ yourself (`chmod 600`), then `systemctl restart ai-studio`.
   → dedupe on webhookEventId
   → enqueue, reply with a link, return 200        (< 2s)
   → background: LLM turns it into an H3 prompt    (seconds)
-  → the worker sees `parsed` work and opens a pod (inside business hours)
+  → the worker sees queued work and opens a pod (any hour)
   → it renders                                    (~5 min each)
   → push: video + text, @ the requester           (billed per recipient)
   → mark delivered, so a restart cannot re-push

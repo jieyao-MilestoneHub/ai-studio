@@ -130,7 +130,8 @@ Every expensive mistake here is a quiet one.
 - `AI_STUDIO_MAX_MONTH_USD` (default $50) is a **calendar-month** ceiling,
   enforced by `runtime.budget.MonthlyBudgetGuard` inside `runtime.session.
   ensure_pod` — the single path that ever creates a pod, called by the worker
-  loop the moment a `parsed` job shows up inside business hours — necessary
+  loop the moment anything is queued, at any hour (there are no business
+  hours since 2026-08-27; the reaper closes a quiet pod after 5/10 min) — necessary
   because the capacity ladder's own worst case already exceeds $50/month on
   GPU alone. It refuses the window outright if the month's remaining budget
   can't cover even a minimal session at the ladder's priciest rung, or shrinks

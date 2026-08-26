@@ -54,6 +54,15 @@ making that fallback impossible to select on purpose from a test.
 """
 
 
+def _pod_is_warm() -> bool:
+    """A pod is open and inside its lease. Read per request, not cached: the
+    reaper can close it between two messages."""
+    from ai_studio.runtime import session as sess
+
+    live = sess.load_state()
+    return live is not None and not live.past_window()
+
+
 def create_app(
     *,
     queue: JobQueue | None = None,
@@ -114,6 +123,7 @@ def create_app(
             max_jobs_per_user_per_day=settings.max_jobs_per_user_per_day,
             content=content,
             incoming_dir=Path("incoming"),
+            is_warm=_pod_is_warm,
         )
     app.state.handler = handler
 
@@ -227,7 +237,7 @@ async def _convert_later(app: FastAPI, job_id: int) -> None:
 
 _STATE_ZH = {
     JobState.QUEUED: ("解析中", "正在把你的描述轉成模型看得懂的分鏡"),
-    JobState.PARSED: ("等待生成", "已排入佇列,GPU 服務時段 11:00-13:00"),
+    JobState.PARSED: ("等待生成", "已排入佇列,GPU 開機中或排隊中"),
     JobState.RUNNING: ("生成中", "正在算圖,約 5 分鐘"),
     JobState.DONE: ("完成", ""),
     JobState.FAILED: ("失敗", ""),

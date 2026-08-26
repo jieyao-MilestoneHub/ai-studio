@@ -395,7 +395,7 @@ def _window_end(clock: str, tz_name: str) -> datetime:
 
 @session_app.command("open")
 def session_open(
-    until: str = typer.Option(..., "--until", help="Window end as HH:MM, e.g. 14:48."),
+    until: str | None = typer.Option(None, "--until", help="Lease end as HH:MM; default now + LEASE_HOURS."),
     tz: str = typer.Option(WINDOW_TZ, "--tz", help="Timezone for --until."),
     name: str = typer.Option("ai-studio-window"),
 ) -> None:
@@ -430,7 +430,9 @@ def session_open(
         console.print(f"[red]window did not open:[/red] {exc}")
         raise typer.Exit(1) from None
 
-    end = _window_end(until, tz)
+    from ai_studio.runtime import hours
+
+    end = _window_end(until, tz) if until else hours.window_end_for()
     worst_case_hourly = max(tier.usd_per_hr for tier in candidates)
     end = guard.throttle(end, datetime.now(timezone.utc), worst_case_hourly)
 
@@ -499,16 +501,30 @@ def session_status() -> None:
 
 @session_app.command("reap")
 def session_reap(
-    idle_minutes: int = typer.Option(30, help="Close early after this much idle time. A cold open costs ~15 min, so closing sooner than that throws away more than it saves."),
+    image_idle_minutes: int = typer.Option(
+        None, help="Grace after an image render (default: runtime.session.IMAGE_IDLE_MINUTES)."
+    ),
+    video_idle_minutes: int = typer.Option(
+        None, help="Grace after a video render (default: runtime.session.VIDEO_IDLE_MINUTES)."
+    ),
 ) -> None:
-    """Close the window early if it has gone quiet. Schedule this every 5 minutes.
+    """Close the pod once it has gone quiet. Schedule this every minute.
 
-    A window sized for peak demand is mostly idle at low volume, and idle
-    minutes cost the same as working ones.
+    The grace depends on what the pod last rendered, and a pod with work
+    waiting in the queue is never closed, whatever the clock says.
     """
+    from ai_studio.pipeline.queue import JobQueue
     from ai_studio.runtime import session as sess
 
-    console.print(sess.close_if_idle(idle_minutes))
+    with JobQueue() as queue:
+        hold = bool(queue.pending())
+    console.print(
+        sess.close_if_idle(
+            image_idle_minutes=image_idle_minutes or sess.IMAGE_IDLE_MINUTES,
+            video_idle_minutes=video_idle_minutes or sess.VIDEO_IDLE_MINUTES,
+            hold=hold,
+        )
+    )
 
 
 @session_app.command("drain")
@@ -626,10 +642,7 @@ class _RuntimeHost:
 
     @staticmethod
     def _live_session(now: datetime | None) -> object | None:
-        """The pod already open, if any. `runtime.session.ensure_pod` reuses
-        one outside business hours rather than leaving paid-for GPU-minutes
-        idle — but the worker asks `is_open` *before* it asks for a pod, so
-        that rule has to be visible here too or the reuse never happens."""
+        """The pod already open, if any."""
         from ai_studio.runtime import session as sess
 
         live = sess.load_state()
@@ -637,25 +650,16 @@ class _RuntimeHost:
             return None
         return live
 
-    def is_open(self, now: datetime | None = None) -> bool:
-        from ai_studio.runtime import hours
-
-        return hours.is_open(now) or self._live_session(now) is not None
-
     def claim_deadline(self, now: datetime | None = None) -> datetime:
-        """The bell new work must finish before.
-
-        Inside business hours that is the end of the day, not the end of a
-        two-hour lease — this is what stops a render being started at 12:58
-        that `--terminate-after` then throws away. With a pod open past the
-        bell (a manually extended window), it is that pod's own `window_end`,
-        for the same reason.
+        """The bell new work must finish before: the live pod's lease end, or
+        the lease a pod opened now would get. This is what stops a render
+        being started two minutes before `--terminate-after` throws it away.
         """
         from ai_studio.runtime import hours
         from ai_studio.runtime.session import Session
 
         live = cast(Session | None, self._live_session(now))
-        if live is not None and not hours.is_open(now):
+        if live is not None:
             return datetime.fromisoformat(live.window_end)
         return hours.window_end_for(now)
 
@@ -673,8 +677,15 @@ class _RuntimeHost:
     def wait_ready(self, session: object) -> float:
         from ai_studio.runtime import session as sess
 
-        waited = sess.wait_ready(cast(sess.Session, session))
-        console.print(f"  ComfyUI answered after {waited:.0f}s")
+        live = cast(sess.Session, session)
+        if not live.provisioned:
+            # A fresh pod: start deploy/pod_setup.sh on it (the step that used
+            # to be a person with a terminal), then wait for the node pack.
+            console.print(f"  provisioning {live.pod_id} (pod_setup.sh over ssh)")
+            sess.provision(live)
+            sess.mark_provisioned()
+        waited = sess.wait_ready(live)
+        console.print(f"  ComfyUI ready after {waited:.0f}s")
         return waited
 
     def providers_for(self, session: object) -> dict[MediaKind, object]:
@@ -710,10 +721,10 @@ class _RuntimeHost:
         self._providers = {live.pod_id: built}
         return built
 
-    def touch_activity(self) -> None:
+    def touch_activity(self, media_kind: str) -> None:
         from ai_studio.runtime import session as sess
 
-        sess.touch_activity()
+        sess.touch_activity(media_kind)
 
     async def deliver(self, job: Any, asset: Path | None) -> str:
         """Push the finished media into the group that asked for it, @-ing them.
@@ -773,11 +784,10 @@ def worker(
     idle_seconds: float = typer.Option(10.0, help="Queue check interval while open."),
     max_ticks: int | None = typer.Option(None, help="Stop after N passes. For testing."),
 ) -> None:
-    """Serve the queue: open a pod when work arrives inside business hours.
+    """Serve the queue: open a pod when work arrives, at any hour.
 
     This is what replaces the `open` and `drain` timers. It runs as a systemd
-    service with `Restart=always` and sleeps its way through everything outside
-    11:00-13:00 Asia/Taipei, so there is nothing to schedule and nothing that
+    service with `Restart=always`; with nothing queued it sleeps, so nothing
     fires when no one has asked for anything.
 
     Closing is still someone else's job, on purpose: `session reap` every five
@@ -792,7 +802,7 @@ def worker(
     host = _RuntimeHost(name=name, poll_seconds=poll_seconds)
     queue = JobQueue()
     console.print(
-        f"worker up. business hours 11:00-13:00 Asia/Taipei, "
+        f"worker up. opens a pod on demand at any hour, "
         f"files -> {settings.files_dir}"
     )
     try:

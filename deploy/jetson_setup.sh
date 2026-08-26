@@ -127,8 +127,8 @@ say "window timers"
 # backstop and closes a pod even if this box dies entirely.
 for phase in reap close; do
   case "$phase" in
-    reap)  cmd="session reap --idle-minutes 30"; when="*:0/5" ;;
-    close) cmd="session close";                  when="05:05" ;;
+    reap)  cmd="session reap";  when="*:0/1" ;;
+    close) cmd="session close"; when="20:05" ;;
   esac
   cat > /etc/systemd/system/ai-studio-${phase}.service <<UNIT
 [Unit]
@@ -147,7 +147,9 @@ UNIT
 Description=ai-studio window ${phase} timer
 
 [Timer]
-# UTC. 11:00 Asia/Taipei is 03:00 UTC; 13:00 is 05:00.
+# UTC. 20:05 UTC is 04:05 Asia/Taipei: the quietest hour, so the daily hard
+# close (a backstop behind the reaper and --terminate-after) lands on an
+# idle pod, not on a render.
 OnCalendar=${when}
 # A missed 'close' firing late is noise; closing is idempotent either way.
 Persistent=false

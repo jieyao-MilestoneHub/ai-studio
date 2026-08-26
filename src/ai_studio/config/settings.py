@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------- RunPod
 
     runpod_api_key: SecretStr | None = Field(default=None, alias="RUNPOD_API_KEY")
+    prompt_mode: str = Field(
+        default="raw",
+        alias="AI_STUDIO_PROMPT_MODE",
+        pattern="^(raw|structured)$",
+        description="raw: the user's own words go to the model verbatim, no LLM "
+        "call. structured: the LLM rewrites them into the H3 shot schema / a "
+        "Flux prompt (prompts/convert.py, prompts/flux.py). The structured code "
+        "stays; raw is what the group asked for.",
+    )
     network_volume_id: str | None = Field(
         default=None,
         alias="AI_STUDIO_NETWORK_VOLUME_ID",
@@ -94,12 +103,12 @@ class Settings(BaseSettings):
     )
 
     max_pod_opens_per_day: int = Field(
-        default=2,
+        default=15,
         ge=0,
         alias="AI_STUDIO_MAX_POD_OPENS_PER_DAY",
-        description="How many pods may be created in one Asia/Taipei day. Two: "
-        "the day's window, plus one more if the idle reaper closed it and a "
-        "later request needs the shop reopened. This is the backstop the "
+        description="How many pods may be created in one Asia/Taipei day. Pods "
+        "are opened on demand and reaped minutes after the last render, so a "
+        "normal day can legitimately open a dozen. This is the backstop the "
         "monthly guard cannot provide -- a worker crash-looping opens a fresh "
         "pod on every restart and each one is individually within budget.",
     )
