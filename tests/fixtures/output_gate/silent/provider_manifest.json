@@ -1,0 +1,12 @@
+{
+  "profile": "minimax-h3",
+  "workflow": "h3_fl2va_turbo.json",
+  "capabilities": {
+    "provider": "comfyui",
+    "model_id": "minimax-h3-fl2va@864x480",
+    "native_width": 864,
+    "native_height": 480,
+    "native_fps": 24,
+    "has_native_audio": true
+  }
+}

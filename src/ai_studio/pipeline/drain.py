@@ -35,6 +35,7 @@ from typing import Any, Protocol
 from ai_studio.core.enums import GenMode, MediaKind
 from ai_studio.core.errors import AIStudioError, ProviderError
 from ai_studio.core.image_provider_spec import ImageRequest
+from ai_studio.core.model_profile import MINIMAX_H3
 from ai_studio.core.provider_spec import ClipRequest
 from ai_studio.pipeline.queue import Job, JobQueue
 
@@ -221,14 +222,17 @@ async def render_clip(
     if not rendered:
         raise AIStudioError("job has no rendered prompt; conversion did not run")
 
-    frames = round(getattr(caps, "min_clip_s", 5.0) * caps.native_fps)
+    # The shortest clip worth generating, asked of the profile rather than
+    # spelled out. `124` used to be a literal here *and* in convert_worker *and*
+    # in both workflow JSONs, with the rule that produced it (17k+5) living only
+    # in a docstring — so a fourth caller could pick 120 and nothing would say.
     request = ClipRequest(
         shot_id=f"job{job.id}",
         mode=GenMode.I2V if job.first_frame_path else GenMode.T2V,
         prompt=str(rendered),
         width=caps.native_width,
         height=caps.native_height,
-        duration_s=max(frames, 124) / caps.native_fps,
+        duration_s=MINIMAX_H3.shortest_useful_duration_s,
         fps=caps.native_fps,
         seed=job.id,
         first_frame_path=job.first_frame_path,

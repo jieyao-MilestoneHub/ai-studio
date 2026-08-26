@@ -246,6 +246,96 @@ def poster(
     )
 
 
+@dataclass(frozen=True)
+class LumaStats:
+    """Brightness across a file's frames. How a broken render is recognised.
+
+    A NaN latent does not raise anywhere in ComfyUI — it decodes to a uniformly
+    black or uniformly grey image, `SaveImage` writes it, our provider fetches
+    it, `probe()` reports perfectly sensible dimensions, and the bot pushes it
+    to the group. Nothing in the pipeline can tell that apart from a picture
+    except by looking at the pixels.
+    """
+
+    frames: int
+    y_min: float
+    y_max: float
+    y_avg: float
+
+    @property
+    def spread(self) -> float:
+        """Distance between the darkest and brightest sample.
+
+        Near zero means every pixel of every frame is the same brightness —
+        which no real generation produces and every failed one does.
+        """
+        return self.y_max - self.y_min
+
+    @property
+    def is_flat(self) -> bool:
+        return self.spread < FLAT_LUMA_SPREAD
+
+
+FLAT_LUMA_SPREAD = 2.0
+"""Below this a file is a solid colour. `[speculative]` — chosen well under any
+plausible real image rather than measured, because the population it separates
+is "has content" from "is one colour", not two nearby distributions."""
+
+
+def luma_stats(path: Path, *, max_frames: int = 240) -> LumaStats:
+    """Measure brightness with ffmpeg's `signalstats`.
+
+    `metadata=print` writes to the log rather than to `file=`, deliberately.
+    Both the filterchain parser and the filter's own option parser treat `:` as
+    a separator, so a Windows path inside `file=` splits at the drive letter and
+    no amount of backslashes survives both passes intact. The log is the same
+    data with no escaping problem.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise FFmpegError(f"cannot measure a missing file: {path}")
+
+    settings = get_settings()
+    proc = run(
+        [
+            settings.ffmpeg_bin,
+            "-hide_banner", "-loglevel", "info",
+            "-i", str(path),
+            "-frames:v", str(max_frames),
+            "-vf", "signalstats,metadata=mode=print",
+            "-f", "null", "-",
+        ],
+        timeout_s=300.0,
+    )
+    text = proc.stderr or ""
+
+    mins = _tagged(text, "YMIN")
+    maxs = _tagged(text, "YMAX")
+    avgs = _tagged(text, "YAVG")
+    if not avgs:
+        raise FFmpegError(f"signalstats produced no frames for {path.name}")
+
+    return LumaStats(
+        frames=len(avgs),
+        y_min=min(mins) if mins else min(avgs),
+        y_max=max(maxs) if maxs else max(avgs),
+        y_avg=sum(avgs) / len(avgs),
+    )
+
+
+def _tagged(text: str, key: str) -> list[float]:
+    values: list[float] = []
+    needle = f"lavfi.signalstats.{key}="
+    for line in text.splitlines():
+        _, sep, raw = line.partition(needle)
+        if sep:
+            try:
+                values.append(float(raw.strip()))
+            except ValueError:  # pragma: no cover - ffmpeg writes numbers
+                continue
+    return values
+
+
 def missing_filters(binary: str | None = None) -> list[str]:
     """Which of `REQUIRED_FILTERS` this ffmpeg build lacks."""
     binary = binary or get_settings().ffmpeg_bin

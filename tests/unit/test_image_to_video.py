@@ -270,7 +270,7 @@ async def test_submit_with_a_first_frame_uploads_and_switches_workflow(
     source.write_bytes(b"real-photo-bytes")
     request = ClipRequest(
         shot_id="job1", prompt="a cat", width=864, height=480,
-        duration_s=5.0, fps=24, seed=7, first_frame_path=str(source),
+        duration_s=124 / 24, fps=24, seed=7, first_frame_path=str(source),
     )
 
     job = await provider.submit(request)
@@ -300,7 +300,7 @@ async def test_submit_without_a_first_frame_never_touches_upload(
     provider.client.queue_prompt = fake_queue_prompt  # type: ignore[method-assign]
 
     request = ClipRequest(
-        shot_id="job1", prompt="a cat", width=864, height=480, duration_s=5.0, fps=24,
+        shot_id="job1", prompt="a cat", width=864, height=480, duration_s=124 / 24, fps=24,
     )
     await provider.submit(request)
 
@@ -316,7 +316,7 @@ async def test_a_first_frame_with_no_i2va_sibling_raises_clearly(tmp_path: Path)
     source.write_bytes(b"x")
     request = ClipRequest(
         shot_id="job1", prompt="a cat", width=864, height=480,
-        duration_s=5.0, fps=24, first_frame_path=str(source),
+        duration_s=124 / 24, fps=24, first_frame_path=str(source),
     )
 
     with pytest.raises(ProviderSubmitError, match="no image-conditioned sibling"):
@@ -329,7 +329,7 @@ async def test_a_missing_first_frame_file_raises_a_provider_error(
 ) -> None:
     request = ClipRequest(
         shot_id="job1", prompt="a cat", width=864, height=480,
-        duration_s=5.0, fps=24, first_frame_path="/does/not/exist.jpg",
+        duration_s=124 / 24, fps=24, first_frame_path="/does/not/exist.jpg",
     )
     with pytest.raises(ProviderSubmitError, match="could not read"):
         await provider.submit(request)

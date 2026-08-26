@@ -1,0 +1,11 @@
+{
+  "shot_id": "job3",
+  "width": 864,
+  "height": 480,
+  "fps": 24.0,
+  "frames": 124,
+  "duration_s": 5.17,
+  "has_audio": false,
+  "size_bytes": 900000,
+  "luma": {"frames": 124, "y_min": 5.0, "y_max": 252.0, "y_avg": 125.7}
+}

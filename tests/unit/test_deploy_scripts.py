@@ -164,7 +164,7 @@ def test_the_rename_happens_after_the_downloads_finish() -> None:
     assert body.index("weights complete") < body.index("FLUX_LORA=")
 
 
-def test_the_advertised_download_size_includes_the_lora() -> None:
+def test_the_advertised_download_size_covers_both_model_sets() -> None:
     """The log line is what an operator watches to know whether a stall is
     normal. It was ~51GB before this LoRA's 0.69GB was added, then ~52GB
     before the Flux base model's ~17GB was added."""
@@ -424,3 +424,102 @@ def test_a_missed_close_does_not_fire_late() -> None:
     """`Persistent=true` would run a queued job at boot. Closing is idempotent,
     so this is noise rather than spend -- but it was set deliberately."""
     assert "Persistent=false" in VPS_SETUP.read_text(encoding="utf-8")
+
+
+# ------------------------------- every file a graph loads must be downloaded
+
+# The generic form of the check that was missing. `flux_dev.json` loaded four
+# base-model files that `pod_setup.sh` never fetched -- and nothing noticed,
+# because `Workflow.load` validates structure, not the pod's filesystem. Every
+# offline check passed; ComfyUI would have been the first thing to find out, in
+# a log, on a machine that was already billing.
+#
+# Keyed off the graphs rather than off a list, so the next node someone adds is
+# covered without anyone remembering to extend this.
+
+WORKFLOWS_DIR = REPO / "workflows"
+
+
+WEIGHT_SUFFIXES = (".safetensors", ".ckpt", ".pt", ".pth", ".sft", ".gguf", ".bin")
+
+
+def _weight_filenames(graph: dict) -> set[str]:
+    """Every `*_name` input whose value looks like a file on disk.
+
+    The suffix filter matters: `KSamplerSelect.sampler_name` is `"euler"`, which
+    is a `*_name` and emphatically not something to download.
+    """
+    import re
+
+    found: set[str] = set()
+    for node_id, node in graph.items():
+        if node_id.startswith("_") or not isinstance(node, dict):
+            continue
+        for key, value in (node.get("inputs") or {}).items():
+            if not re.fullmatch(r".*_name\d*", key) or not isinstance(value, str):
+                continue
+            if value.endswith(WEIGHT_SUFFIXES):
+                found.add(value)
+    return found
+
+
+@pytest.mark.parametrize(
+    "workflow", sorted(p.name for p in WORKFLOWS_DIR.glob("*.json")))
+def test_every_weight_a_workflow_loads_is_downloaded_by_the_pod_script(
+    workflow: str,
+) -> None:
+    import json
+
+    graph = json.loads((WORKFLOWS_DIR / workflow).read_text(encoding="utf-8"))
+    setup = POD_SETUP.read_text(encoding="utf-8")
+
+    missing = sorted(f for f in _weight_filenames(graph) if f not in setup)
+    assert not missing, (
+        f"{workflow} loads {missing}, which pod_setup.sh never downloads. "
+        "ComfyUI finds out at submit time, on a pod that is already billing."
+    )
+
+
+def test_the_workflows_do_name_some_weights() -> None:
+    """Guard against the check above passing on an empty set."""
+    import json
+
+    graph = json.loads((WORKFLOWS_DIR / "flux_dev.json").read_text(encoding="utf-8"))
+    assert len(_weight_filenames(graph)) >= 4
+
+
+GATED_REPOS = ("black-forest-labs/FLUX.1-dev", "black-forest-labs/FLUX.1-schnell")
+
+
+def test_no_download_comes_from_a_gated_repo() -> None:
+    """This script runs unattended on a pod with no HF credentials.
+
+    `black-forest-labs/FLUX.1-dev` is the canonical home of the Flux weights and
+    it is gated: `hf download` returns 401 without a token whose account has
+    accepted the licence. The ungated repackagings are used instead, and this
+    asserts nobody "corrects" that back to the canonical source — which would
+    fail after 52GB of H3 had already been pulled, on a machine that is billing.
+
+    Checked against `dl` lines only: naming the gated repo in a comment
+    explaining why it is avoided is exactly right.
+    """
+    body = POD_SETUP.read_text(encoding="utf-8")
+    dl_lines = [
+        line for line in body.splitlines() if line.strip().startswith("dl ")
+    ]
+
+    assert dl_lines, "no downloads found at all"
+    for line in dl_lines:
+        for repo in GATED_REPOS:
+            assert repo not in line, f"gated repo in a download: {line.strip()}"
+
+
+def test_the_repackaged_vae_is_flattened_into_the_directory_comfyui_reads() -> None:
+    """`hf download` keeps the repo's own layout, so a VAE published under
+    `split_files/vae/` lands there. `VAELoader` looks in `vae/` and nowhere
+    else, so an unflattened file is a file ComfyUI cannot see."""
+    body = POD_SETUP.read_text(encoding="utf-8")
+
+    assert "split_files/vae/ae.safetensors" in body
+    assert 'mv "$M/vae/split_files/vae/ae.safetensors"' in body
+    assert 'rm -rf "$M/vae/split_files"' in body

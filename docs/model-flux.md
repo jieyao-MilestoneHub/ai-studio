@@ -223,3 +223,153 @@ session)*
 - Whether 28 steps is the right default for `dev`'s quality/latency trade-off
   on this hardware, or whether it should move toward schnell's few-step regime
   if turnaround matters more than per-image quality in practice.
+
+---
+
+## Corrections from the 2026-08-26 research pass
+
+### The LoRA format risk is closed — it loads
+
+This file previously carried the diffusers-vs-ComfyUI key mapping as the one
+`[speculative]` technical risk, on the grounds that nobody had verified this
+adapter. It is now `[verified]` from ComfyUI's source, and the answer is that
+**ComfyUI maps diffusers-format Flux LoRAs natively**.
+
+`comfy/lora.py::model_lora_keys_unet` has an explicit Flux branch that registers
+four naming conventions on top of the diffusers namespace, the first of which is
+literally `transformer.{key}` — comfyanonymous's own comment reads
+*"simpletrainer and probably regular diffusers flux lora format"*. The
+`lora_A`/`lora_B` suffixes are consumed as `diffusers2_lora`, which is the PEFT
+convention.
+
+`comfy/utils.py::flux_to_diffusers` then patches split `to_q`/`to_k`/`to_v` into
+**slices of** BFL's fused `linear1`/`qkv`, which is precisely the mechanism that
+makes a diffusers-style LoRA work against the fused checkpoint.
+
+The keys that genuinely fail in the wild carry an extra PEFT wrapper infix —
+`transformer.base_model.model.single_transformer_blocks.…` — from SimpleTuner.
+Ours has no such infix.
+
+**What this does not remove is the need to check.** ComfyUI never raises on a
+key mismatch: it logs `lora key not loaded: <key>` at WARNING and returns a
+completely valid, completely un-LoRA'd image. That log line is the detector, and
+PLAN.md Phase 7.1 greps for it before anything else.
+
+`LoraLoaderModelOnly` stays. With `clip=None` the text-encoder half of the key
+map is never built, so any text-encoder keys would be *loudly* dropped rather
+than silently — and a byte-budget calculation puts this file at 100% transformer
+weights anyway (all-linear-target, rank 32/fp32 or 64/bf16 `[speculative]`,
+987 tensors ≈ the 687,476,088 bytes observed).
+
+### Alpha scaling, and why 1.0 is the right strength
+
+`[verified]` ComfyUI reads a `<key>.alpha` **tensor from inside the safetensors
+file** to compute the LoRA scale. PEFT does not write one — it puts `lora_alpha`
+in a separate `adapter_config.json`, and the Heartsync repo ships **only**
+`lora.safetensors`. So ComfyUI applies `alpha = 1.0`. Diffusers, given a bare
+safetensors with no config, infers the same. The two agree at
+`strength_model=1.0`, which is what the graph uses.
+
+`[not found]` — what `lora_alpha` the author actually trained with. If it was
+not equal to the rank and they relied on a config they never published, both
+runtimes are equally wrong and the model card's own example is the reference.
+
+### Negative prompts: structurally unavailable, and that is fine
+
+`[verified]` `BasicGuider` takes one conditioning input and has nowhere to put a
+negative. `CFGGuider` could, but ComfyUI **skips the uncond pass entirely at
+cfg 1.0** as an explicit optimisation, and above 1.0 costs a second forward pass
+per step on a model that is guidance-distilled. ComfyUI's own Flux docs say to
+keep CFG at 1.0.
+
+So `FluxPrompt` deliberately has no `negative` field. Encode avoidance
+positively in the LLM translation step instead.
+
+### T5 and CLIP-L limits — the widely-repeated numbers are wrong for ComfyUI
+
+This is worth restating carefully because the previous note here described
+*diffusers* behaviour, not ComfyUI's.
+
+`[verified]` from `comfy/text_encoders/flux.py`, the T5-XXL tokenizer is
+constructed with **`max_length=99999999`, `min_length=256`,
+`pad_to_max_length=False`**. So in ComfyUI:
+
+- **T5 has no maximum and does not truncate.** The famous 512 is the *diffusers*
+  `FluxPipeline` default (`max_sequence_length=512`), which truncates with a
+  warning. ComfyUI simply does not enforce it. Past ~512 tokens you are outside
+  the training distribution, but nothing errors.
+- The **256 is a minimum** — short prompts are padded up to it. That is where
+  the "256 limit" in circulation comes from, and it is a floor, not a ceiling.
+
+`[verified]` For CLIP-L the mechanism is different again from "reads the first
+77 tokens". `FluxClipModel.encode_token_weights` returns `(t5_out, l_pooled)` —
+the per-token CLIP-L sequence `l_out` is computed and **thrown away**. Only a
+single pooled 768-d vector survives, derived from the *first* 77-token chunk.
+
+So: everything past roughly the first 75 content tokens contributes nothing to
+the CLIP-L path, and all the semantic work on a long prompt is done by T5. The
+ordering in `prompts/flux.py` (subject first, generic quality tail last) is
+right, and the reason is this rather than truncation.
+
+`CLIPTextEncodeFlux` accepts separate `clip_l` and `t5xxl` strings and would let
+the LLM emit a short subject line for one and the full description for the
+other. Not adopted here — it changes output, and generation parameters are
+frozen until the first measured run.
+
+### Where the base weights actually come from
+
+`deploy/pod_setup.sh` downloaded **none** of these until now — the graph loaded
+four files the pod never fetched. All four verified against the HF file-tree API:
+
+| role | repo | path | bytes |
+|---|---|---|---|
+| UNET | `black-forest-labs/FLUX.1-dev` **(gated)** | `flux1-dev.safetensors` | 23,802,932,552 |
+| T5-XXL | `comfyanonymous/flux_text_encoders` | `t5xxl_fp8_e4m3fn.safetensors` | 4,893,934,904 |
+| CLIP-L | `comfyanonymous/flux_text_encoders` | `clip_l.safetensors` | 246,144,152 |
+| VAE | `Comfy-Org/Lumina_Image_2.0_Repackaged` | `split_files/vae/ae.safetensors` | 335,304,388 |
+
+Two things that bite a setup script:
+
+- **FLUX.1-dev is gated.** `hf download` returns 401 without a token whose
+  account has accepted the FLUX.1 [dev] Non-Commercial License once on the model
+  page. The script now checks `HF_TOKEN` *before* starting the 52 GB H3 pull, so
+  the failure costs seconds rather than twenty billed minutes.
+- **The VAE comes via the Lumina repackage**, which is ungated and
+  byte-identical to the gated copy, and is what ComfyUI's own Flux example page
+  points at. `hf download` preserves the repo's layout, so it lands at
+  `vae/split_files/vae/` and has to be flattened — `VAELoader` looks in `vae/`
+  and nowhere else.
+
+`[reported]` `t5xxl_fp8_e4m3fn_scaled.safetensors` (5,157,348,688 — 264 MB more)
+carries per-tensor scales and is what ComfyUI's example page now lists. A cheap,
+low-risk upgrade, deliberately not taken in this pass because it changes output.
+
+### fp8 on this ladder
+
+`[verified]` `comfy/model_management.py::supports_fp8_compute` requires
+`major >= 9`, or `major == 8 and minor >= 9`. **RTX 4090 and L40S are both
+sm_89**, so fp8 compute is available on every rung. `fp8_e4m3fn` and
+`fp8_e4m3fn_fast` store identical weights — the difference is that `_fast` runs
+the *matmul* in fp8 (and clamps activations to ±448, a silent saturation),
+while plain `fp8_e4m3fn` upcasts to bf16 to compute.
+
+`[verified]` There is **no** `fp8_scaled` variant of plain `flux1-dev` published
+by Comfy-Org, unlike Kontext and Krea. The options are bf16 plus a runtime cast
+(what the graph does), or a pre-quantised UNET from `Kijai/flux-fp8`.
+
+On the L40S rung there is headroom for `weight_dtype=default` (bf16, 23.8 GB),
+which would remove the whole fp8-plus-LoRA risk class. Not changed here —
+generation parameter.
+
+### Black images are not errors
+
+`[reported]` Flux fp8 has produced pure black output with
+`RuntimeWarning: invalid value encountered in cast` — NaNs reaching the uint8
+conversion. `[verified]` ComfyUI's own `--fp16-vae` help says it "might cause
+black images".
+
+Nothing in ComfyUI treats this as a failure: `SaveImage` writes it, `/history`
+reports success, and our provider would fetch and push it. That is what
+`gates/output_gate.py` and `media.luma_stats()` now exist for — a flat-luma
+render is rejected and the requester is told it failed, rather than receiving a
+black square.

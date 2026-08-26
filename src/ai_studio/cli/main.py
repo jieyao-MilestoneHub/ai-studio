@@ -17,6 +17,7 @@ from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import GenMode, MediaKind
 from ai_studio.core.errors import AIStudioError
 from ai_studio.core.ids import new_run_id, scene_id, shot_id
+from ai_studio.core.model_profile import MINIMAX_H3
 from ai_studio.core.provider_spec import ClipRequest
 from ai_studio.editing.format_policy import plan_format, to_ffmpeg_filter
 from ai_studio.providers.base import ClipProvider
@@ -227,6 +228,21 @@ async def _generate(
             f"estimated ${estimate:.2f} exceeds the ${settings.max_cost_usd:.2f} ceiling; "
             "raise AI_STUDIO_MAX_COST_USD deliberately if that is what you want"
         )
+
+    # H3 only accepts lengths on a 17k+5 frame grid, and `--seconds 5.0` is 120
+    # frames, which is not one of them. Snapping here, out loud, rather than in
+    # the provider: the provider raising is what stops a *program* submitting a
+    # length it did not mean, but a person typing --seconds wants the nearest
+    # thing that works, and wants to be told what they got.
+    if provider_name == "comfyui":
+        frames = MINIMAX_H3.frames_for(seconds)
+        snapped = MINIMAX_H3.duration_for(frames)
+        if abs(snapped - seconds) > 1e-6:
+            console.print(
+                f"[yellow]{seconds}s is {round(seconds * caps.native_fps)} frames, "
+                f"which H3 cannot produce; using {snapped:.3f}s ({frames} frames)[/yellow]"
+            )
+        seconds = snapped
 
     run = new_run_id()
     request = ClipRequest(

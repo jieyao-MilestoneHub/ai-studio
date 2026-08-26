@@ -1,0 +1,11 @@
+{
+  "shot_id": "job2",
+  "width": 864,
+  "height": 480,
+  "fps": 24.0,
+  "frames": 124,
+  "duration_s": 5.17,
+  "has_audio": true,
+  "size_bytes": 42000,
+  "luma": {"frames": 124, "y_min": 16.0, "y_max": 16.0, "y_avg": 16.0}
+}
