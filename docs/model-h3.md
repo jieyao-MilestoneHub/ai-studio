@@ -36,7 +36,7 @@ character consistency. On a datacenter link 42 GB takes about 9 minutes at
 |---|---|---|
 | GPU | RTX 4090 24 GB | VRAM peaks at 15.7–21.9 GB, so 24 GB is ample |
 | **Host RAM** | **≥ 60 GB** | ComfyUI does not release the 32B text encoder after loading. A 31 GB host crashed part-way through a second consecutive generation. Not selectable via API — deploy, inspect, terminate if short. |
-| CUDA | **13.0** (⚠️ unverified against the current template, see below) | H3's quantised fast paths assume the CUDA 13 generation; on 12.8 strong cards fall back to a slow path |
+| CUDA | **13.0** `[reported]` (⚠️ unverified against the current template, see below) | `[reported]`, and inherited rather than tested here: H3's quantised fast paths are said to assume the CUDA 13 generation, with 12.8 falling back to a slow path on strong cards. Nothing in this project has checked either half. `runtime/session.py` passes `--min-cuda-version 13.0` on every create, so if the standard template is really 12.8 that flag is either a no-op or a refusal on every rung — see PLAN.md Phase 7.0 |
 | Template | RunPod's official **"ComfyUI"** template (`cw3nka7d08`) for standard GPUs — `runtime.session.TEMPLATE_COMFYUI_STANDARD` | ⚠️ 📏 checked 2026-08-25: the template id this repo previously hardcoded (`2lv7ev3wfp`) has been renamed/rescoped to **"ComfyUI Blackwell Edition"** and is now specifically for RTX 5090/B200, not the RTX 4090/L40S this project targets. RunPod's current docs only mention `runpod/comfyui:latest` (standard) and `runpod/comfyui:cuda12.8` (Blackwell) image tags — no "cuda13" tag is documented anywhere today, which is in tension with the CUDA 13.0 requirement above. **Verify the standard template's actual CUDA version live before trusting the turbo path on it** — this has not been done yet. |
 | Disk | 200 GB container disk (template default) | no network volume — see [runpod.md](runpod.md) |
 
@@ -46,10 +46,20 @@ Launch ComfyUI as:
 python main.py --fast-disk --use-sage-attention --reserve-vram 0.7
 ```
 
-`--fast-disk` is not optional on a 64 GB host. It keeps weights in the page
-cache rather than anonymous memory; without it RSS climbs and the second model
-load starts hitting swap. This is the same problem as the 31 GB crash seen from
-the other side.
+`--fast-disk` is not optional on a 64 GB host `[reported]`. It keeps weights in
+the page cache rather than anonymous memory; without it RSS climbs and the
+second model load starts hitting swap. This is the same problem as the 31 GB
+crash seen from the other side.
+
+⚠️ **The flag names themselves have not been verified against a real ComfyUI.**
+Both `--fast-disk` and `--use-sage-attention` are `[reported]`, and an
+unrecognised flag is not a warning — it is argparse exiting and no ComfyUI at
+all, discovered after the weights have been paid for. `deploy/pod_setup.sh`
+therefore probes `main.py --help` and drops any flag this build does not
+advertise, logging that it did; `tests/unit/test_deploy_scripts.py` runs that
+probe block against synthetic help output so the fallback is tested rather than
+assumed. Promote these to 📏 only after reading them out of a live
+`main.py --help`.
 
 ## Timings, RTX 4090, 5s at 24fps
 

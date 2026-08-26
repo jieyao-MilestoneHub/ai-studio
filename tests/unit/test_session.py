@@ -275,3 +275,62 @@ def test_spend_tracking_uses_the_real_rate(monkeypatch: pytest.MonkeyPatch) -> N
 
     later = datetime.fromisoformat(s.opened_at) + timedelta(hours=3.8)
     assert s.spent_usd(later) == pytest.approx(1.345, abs=0.01)
+
+
+# -------------------------------------------------------------- template id
+
+
+def test_the_template_id_is_the_official_standard_gpu_one() -> None:
+    """This id has already been wrong once. `2lv7ev3wfp` was hardcoded here
+    until it was renamed to "ComfyUI Blackwell Edition" and rescoped to RTX
+    5090/B200 — the wrong card for every rung on this ladder."""
+    assert sess.TEMPLATE_COMFYUI_STANDARD == "cw3nka7d08"
+
+
+def test_pod_create_actually_sends_that_template_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pinning the constant is not enough: a correct constant passed to the
+    wrong flag, or not passed at all, fails in exactly the same way and costs
+    exactly as much."""
+    seen, fake = _calls_recorder([{"items": []}, {"id": "p", "costPerHr": 0.34}])
+    monkeypatch.setattr(sess, "_runpodctl", fake)
+
+    sess.open_session(_end(), name="w")
+
+    create = next(c for c in seen if c[:2] == ["pod", "create"])
+    assert "--template-id" in create
+    assert create[create.index("--template-id") + 1] == "cw3nka7d08"
+
+
+def test_every_rung_is_deployed_from_the_same_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ladder falls through on refusal. A rung that reached for a different
+    template would be a different machine image, silently."""
+    seen, fake = _calls_recorder(
+        [{"items": []}, PodError("no instances"), {"id": "p2", "costPerHr": 0.804}]
+    )
+    monkeypatch.setattr(sess, "_runpodctl", fake)
+
+    sess.open_session(_end(), name="w")
+
+    creates = [c for c in seen if c[:2] == ["pod", "create"]]
+    assert len(creates) == 2
+    for create in creates:
+        assert create[create.index("--template-id") + 1] == sess.TEMPLATE_COMFYUI_STANDARD
+
+
+def test_the_docs_and_the_skill_name_the_same_template_id() -> None:
+    """Three places carry this string. Two of them are prose, which no linter
+    reads, and prose is where the stale id survived last time."""
+    from pathlib import Path as _Path
+
+    repo = _Path(__file__).resolve().parents[2]
+    for doc in (
+        repo / "docs" / "model-h3.md",
+        repo / ".claude" / "skills" / "runpod-session" / "SKILL.md",
+    ):
+        body = doc.read_text(encoding="utf-8")
+        assert sess.TEMPLATE_COMFYUI_STANDARD in body, f"{doc.name} does not name it"
+        assert "2lv7ev3wfp" not in body.replace("(`2lv7ev3wfp`)", ""), (
+            f"{doc.name} still points at the renamed Blackwell template"
+        )

@@ -170,3 +170,104 @@ def test_the_advertised_download_size_includes_the_lora() -> None:
     body = POD_SETUP.read_text(encoding="utf-8")
 
     assert "starting weight downloads (~52GB)" in body
+
+
+# ------------------------------------------------- the ComfyUI flag probe
+
+# `deploy/pod_setup.sh` asks ComfyUI which flags it supports rather than
+# assuming. It has to: an unrecognised flag is not a warning, it is argparse
+# exiting and no ComfyUI at all -- discovered after 52GB of weights have been
+# paid for.
+#
+# The probe is extracted and run rather than reimplemented. `pod_setup.sh` is
+# piped into a pod over ssh as a single file, so it cannot be refactored into
+# something importable; taking the block out with the same `sed` range the
+# comment documents is the closest thing to testing what actually runs.
+
+PROBE_START = "HELP="
+PROBE_END = "done"
+
+
+def _probe_block() -> str:
+    """The `HELP=` .. `done` range, minus the line that shells out."""
+    lines = POD_SETUP.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith(PROBE_START))
+    end = next(i for i, line in enumerate(lines[start:], start) if line == PROBE_END)
+    body = lines[start : end + 1]
+    assert body[0].startswith("HELP="), body[0]
+    return "\n".join(body[1:])
+
+
+def _run_probe(help_text: str) -> subprocess.CompletedProcess[str]:
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash not available")
+    script = "\n".join(
+        [
+            "log() { echo \"[setup] $*\"; }",
+            f"HELP={help_text!r}".replace("HELP='", "HELP='"),
+            _probe_block(),
+            'echo "EXTRA=[$EXTRA]"',
+        ]
+    )
+    return subprocess.run(
+        [bash, "-c", script], capture_output=True, text=True, encoding="utf-8"
+    )
+
+
+def test_both_flags_are_used_when_comfyui_supports_them() -> None:
+    result = _run_probe(
+        "usage: main.py [--listen] [--fast-disk] [--use-sage-attention] [--port PORT]"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "EXTRA=[ --fast-disk --use-sage-attention]" in result.stdout
+
+
+def test_no_flag_is_passed_when_comfyui_supports_none() -> None:
+    """The failure this whole block exists to prevent: passing a flag this
+    build does not know, and getting no ComfyUI at all."""
+    result = _run_probe("usage: main.py [--listen] [--port PORT]")
+
+    assert result.returncode == 0, result.stderr
+    assert "EXTRA=[]" in result.stdout
+    assert result.stdout.count("skipping") == 2
+
+
+def test_an_empty_help_output_is_treated_as_supporting_nothing() -> None:
+    """`main.py --help` failing entirely must not be read as "all flags fine"."""
+    result = _run_probe("")
+
+    assert result.returncode == 0, result.stderr
+    assert "EXTRA=[]" in result.stdout
+    assert result.stdout.count("skipping") == 2
+
+
+def test_one_supported_flag_does_not_drag_the_other_along() -> None:
+    result = _run_probe("usage: main.py [--listen] [--fast-disk]")
+
+    assert "EXTRA=[ --fast-disk]" in result.stdout
+    assert result.stdout.count("skipping") == 1
+    assert "--use-sage-attention not supported" in result.stdout
+
+
+def test_the_flags_are_never_passed_unconditionally() -> None:
+    """A structural check on the script itself: every occurrence of a probed
+    flag is inside the probe, never on the `main.py` command line."""
+    body = POD_SETUP.read_text(encoding="utf-8")
+    # The launch is a continued line, so match the whole invocation rather than
+    # the first physical line of it -- and skip the pkill that matches the same
+    # substring while starting nothing.
+    joined = body.replace(chr(92) + "\n", " ")
+    launch = [
+        chunk
+        for chunk in joined.splitlines()
+        if "main.py --listen" in chunk and not chunk.lstrip().startswith("pkill")
+    ]
+
+    assert launch, "no ComfyUI launch line found"
+    for line in launch:
+        assert "--fast-disk" not in line, "a probed flag is passed unconditionally"
+        assert "--use-sage-attention" not in line
+        assert "$EXTRA" in line, "the probe result is not actually used"
+

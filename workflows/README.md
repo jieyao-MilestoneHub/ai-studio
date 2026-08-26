@@ -85,7 +85,7 @@ base cost.
 | Native canvas | 864×480 or 1344×768 | 864×480 is ~2.3× faster; 1344×768 upscales to 1080p far more gently (1.43× vs 2.25×) |
 | Steps | 12, turbo | ≈80% of base-20 quality at 61% of the time [reported] |
 | fps | 24 | H3's native rate. Delivering at native rate avoids frame interpolation, which is blacklisted |
-| ComfyUI launch | `--fast-disk --use-sage-attention --reserve-vram 0.7` | `--fast-disk` is not optional on a 64 GB host: ComfyUI does not release the 32B text encoder after loading, and without it the second model load starts hitting swap |
+| ComfyUI launch | `--fast-disk --use-sage-attention --reserve-vram 0.7` `[reported]` | `--fast-disk` is not optional on a 64 GB host `[reported]`: ComfyUI does not release the 32B text encoder after loading, and without it the second model load starts hitting swap. **The flag names are unverified against a real ComfyUI** — `deploy/pod_setup.sh` probes `main.py --help` and drops what this build does not advertise, because an unknown flag means argparse exits and there is no ComfyUI at all |
 
 ## Resolution is not the quality lever
 
