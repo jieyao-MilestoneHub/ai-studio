@@ -248,6 +248,48 @@ _STATE_ZH = {
     JobState.DONE: ("完成", ""),
     JobState.FAILED: ("失敗", ""),
 }
+"""The generic (video) wording; `state_text()` specialises it per kind."""
+
+_RUNNING_ZH: dict[MediaKind, tuple[str, str]] = {
+    # (label, note) while the job is on the GPU. Durations are 📏 from the
+    # RTX 4090 on 2026-08-27, cold load included, rounded up so the page
+    # under-promises: image ~30 s warm; a 10 s clip 2-5 min; the three
+    # understanding models and chat each take ~1 min to load if another
+    # model is resident, then seconds to answer.
+    MediaKind.VIDEO: ("生成中", "正在算影片,約 2 到 5 分鐘"),
+    MediaKind.IMAGE: ("生成中", "正在算圖,約 30 秒到 1 分鐘"),
+    MediaKind.IMAGE_UNDERSTAND: ("辨識中", "正在看這張照片,約 1 分鐘(含載入模型)"),
+    MediaKind.AUDIO_UNDERSTAND: ("辨識中", "正在聽這段聲音,約 1 分鐘(含載入模型)"),
+    MediaKind.VIDEO_UNDERSTAND: ("辨識中", "正在看這段影片,約 1 到 2 分鐘(含載入模型)"),
+    MediaKind.CHAT: ("回覆中", "正在想怎麼回你,約 1 分鐘(含載入模型)"),
+}
+
+_WAITING_ZH: dict[MediaKind, tuple[str, str]] = {
+    MediaKind.VIDEO: ("等待生成", "已排入佇列,GPU 開機中或排隊中"),
+    MediaKind.IMAGE: ("等待生成", "已排入佇列,GPU 開機中或排隊中"),
+    MediaKind.IMAGE_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
+    MediaKind.AUDIO_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
+    MediaKind.VIDEO_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
+    MediaKind.CHAT: ("等待回覆", "已排入佇列,GPU 開機中或排隊中"),
+}
+
+
+def state_text(job: Job) -> tuple[str, str]:
+    """(label, note) for the page, worded for what the job actually is.
+
+    "正在算圖" on a chat or a video-description page read as the wrong page
+    (asked 2026-08-27). Understanding and chat jobs also skip the
+    parsing step, so their queued wording never claims to be building
+    shots. Unknown kind raises -- a wrong sentence is worse than none.
+    """
+    kind = job.media_kind
+    if job.state is JobState.RUNNING:
+        return _RUNNING_ZH[kind]
+    if job.state is JobState.PARSED:
+        return _WAITING_ZH[kind]
+    if job.state is JobState.QUEUED and (kind.is_understanding or kind is MediaKind.CHAT):
+        return _WAITING_ZH[kind]
+    return _STATE_ZH[job.state]
 
 
 PROJECT_REPO_URL = "https://github.com/jieyao-MilestoneHub/ai-studio"
@@ -289,7 +331,7 @@ def model_for(kind: MediaKind) -> tuple[str, str]:
 
 
 def _render(job: Job, position: int | None, base_url: str) -> str:
-    label, note = _STATE_ZH[job.state]
+    label, note = state_text(job)
     rows: list[tuple[str, str]] = [("狀態", html.escape(label)), ("你的描述", html.escape(job.text))]
     if position:
         rows.append(("佇列位次", f"第 {position} 位"))

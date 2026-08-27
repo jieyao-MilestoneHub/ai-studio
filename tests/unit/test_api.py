@@ -449,3 +449,30 @@ def test_the_page_names_the_open_model_with_a_link(client) -> None:
         assert name and url.startswith("https://huggingface.co/")
     assert model_for(MediaKind.CHAT)[1].endswith("/openai/gpt-oss-20b")
     assert "Qwen2-Audio" in model_for(MediaKind.AUDIO_UNDERSTAND)[0]
+
+
+def test_the_running_wording_matches_the_kind_of_job(client) -> None:
+    """A chat or a photo-description page must not say 正在算圖 (asked 2026-08-27)."""
+    from ai_studio.api.main import state_text
+    from ai_studio.core.enums import MediaKind
+    from ai_studio.pipeline.queue import Job, JobState
+
+    def running(kind):
+        return Job(
+            id=1, token="t", event_id="e", group_id="g", user_id=None, text="x",
+            state=JobState.RUNNING, media_kind=kind, first_frame_path=None, quote_token=None,
+            message_id=None, reply_message_id=None, requested_seconds=None,
+            input_media_path=None, prompt_json=None, output_path=None, result_text=None,
+            cost_usd=None, error=None, gpu_tier=None, created_at=0.0, parsed_at=None,
+            started_at=0.0, finished_at=None, delivered_at=None, attempts=1,
+        )
+
+    seen = set()
+    for kind in MediaKind:
+        label, note = state_text(running(kind))
+        assert label and note
+        seen.add(note)
+    assert len(seen) == len(list(MediaKind)), "every kind gets its own sentence"
+    assert "算圖" not in state_text(running(MediaKind.CHAT))[1]
+    assert "算圖" not in state_text(running(MediaKind.IMAGE_UNDERSTAND))[1]
+    assert "算影片" in state_text(running(MediaKind.VIDEO))[1]
