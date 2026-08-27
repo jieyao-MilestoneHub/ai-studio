@@ -148,15 +148,13 @@ class MoondreamBackend:
 class Qwen3OmniCaptionerBackend:
     """Qwen/Qwen3-Omni-30B-A3B-Captioner -- audio captioning, Q4 quantized.
 
-    `[speculative]` loader, and the least certain of the three: **rejects a
-    text prompt outright** per its own model card, so `infer` ignores
-    `prompt` entirely rather than raising -- the caller-side
+    Loader shape follows the model card (`Qwen3OmniMoeForConditionalGeneration`
+    + `Qwen3OmniMoeProcessor`, chat-template with one audio part); **rejects
+    a text prompt outright** per that card, so `infer` ignores `prompt`
+    entirely rather than raising -- the caller-side
     `UnderstandingCapabilities.accepts_prompt = False` is what should stop a
-    prompt arriving here in the first place. The Q4 form is loaded via
-    `transformers`' own 4-bit quantization here; if the published artifact
-    is GGUF rather than a quantizable safetensors checkpoint, this loader
-    needs to switch to `llama-cpp-python` bindings instead -- check the
-    actual repo contents before deploying.
+    prompt arriving here in the first place. The safetensors checkpoint is
+    quantised to 4-bit on load via bitsandbytes; the repo ships no GGUF.
     """
 
     modality = "audio"
@@ -170,18 +168,22 @@ class Qwen3OmniCaptionerBackend:
 
     def load(self) -> None:
         import torch
-        from transformers import AutoProcessor, BitsAndBytesConfig
+        from transformers import (
+            BitsAndBytesConfig,
+            Qwen3OmniMoeForConditionalGeneration,
+            Qwen3OmniMoeProcessor,
+        )
 
+        # 📏 2026-08-27, transformers 5.16.1 on the pod: the generic
+        # `AutoModelForCausalLM` refuses this checkpoint ("Unrecognized
+        # configuration class Qwen3OmniMoeConfig"); the model card's own
+        # classes load it. `attn_implementation="flash_attention_2"` from the
+        # card is left out -- flash-attn is not installed in ComfyUI's venv.
         quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
-        self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
-        # The exact model class for Qwen3-Omni is not yet pinned here --
-        # `AutoModelForCausalLM` is the generic fallback; swap in the
-        # model's own class (as its README specifies) if this errors.
-        from transformers import AutoModelForCausalLM
-
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_id, trust_remote_code=True, quantization_config=quant_config,
-            device_map="cuda",
+        self._processor = Qwen3OmniMoeProcessor.from_pretrained(self.model_id)
+        self._model = Qwen3OmniMoeForConditionalGeneration.from_pretrained(
+            self.model_id, quantization_config=quant_config, device_map="cuda",
+            dtype=torch.float16,
         )
 
     def unload(self) -> None:
@@ -192,15 +194,31 @@ class Qwen3OmniCaptionerBackend:
         torch.cuda.empty_cache()
 
     def infer(self, media_path: Path | None, prompt: str | None, *, history: str | None = None) -> str:
-        import soundfile as sf
+        import librosa
 
         assert media_path is not None  # only "chat" jobs ever omit it
-        audio, sample_rate = sf.read(str(media_path))
-        inputs = self._processor(audio=audio, sampling_rate=sample_rate, return_tensors="pt").to(
-            "cuda"
+        # The card's `process_mm_info` is librosa.load at 16 kHz mono under
+        # the hood; doing that directly avoids depending on qwen-omni-utils
+        # and reads LINE's .m4a through librosa's ffmpeg fallback.
+        audio, _ = librosa.load(str(media_path), sr=16000, mono=True)
+        conversation = [{"role": "user", "content": [{"type": "audio", "audio": str(media_path)}]}]
+        text = self._processor.apply_chat_template(
+            conversation, add_generation_prompt=True, tokenize=False
         )
-        output_ids = self._model.generate(**inputs, max_new_tokens=256)
-        return str(self._processor.batch_decode(output_ids, skip_special_tokens=True)[0])
+        inputs = self._processor(
+            text=text, audio=[audio], return_tensors="pt", padding=True, use_audio_in_video=False
+        )
+        inputs = inputs.to(self._model.device)
+        out = self._model.generate(
+            **inputs, thinker_return_dict_in_generate=True, thinker_max_new_tokens=256,
+            return_audio=False,
+        )
+        sequences = out[0].sequences if isinstance(out, tuple) else out.sequences
+        decoded = self._processor.batch_decode(
+            sequences[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+        return str(decoded[0]).strip()
 
 
 class Tarsier2Backend:
@@ -452,14 +470,22 @@ async def _ensure_loaded(modality: str) -> ModelBackend:
     async with _slot.lock:
         if _slot.backend is not None:
             _log.info("evicting %s to load %s", _slot.backend.modality, modality)
-            _slot.backend.unload()
+            await asyncio.to_thread(_slot.backend.unload)
             _slot.backend = None
         backend_cls = _BACKENDS[modality]
         backend = backend_cls()
         _log.info("loading %s (%s)", backend.model_id, modality)
         started = time.monotonic()
         try:
-            backend.load()
+            # Off the event loop, like infer(): a cold load is 📏 ~60s for
+            # moondream3 and minutes for Qwen3-Omni-Captioner (quantised on
+            # load), and run inline it froze every route -- /poll returned
+            # nothing at all for the whole load, so the client's 30s poll
+            # timeout gave up on a job that was in fact fine (observed live
+            # 2026-08-27, first request against real weights). The slot lock
+            # is an asyncio.Lock, so holding it across the await is what
+            # serialises loads without stalling /healthz and /poll.
+            await asyncio.to_thread(backend.load)
         except Exception:
             _log.exception(
                 "failed to load %s (%s) -- releasing any partial VRAM claim",
@@ -578,7 +604,7 @@ async def unload() -> dict[str, Any]:
     async with _slot.lock:
         if _slot.backend is not None:
             _log.info("unloading %s (GPU hand-off to ComfyUI)", _slot.backend.modality)
-            _slot.backend.unload()
+            await asyncio.to_thread(_slot.backend.unload)
             _slot.backend = None
     return {"ok": True}
 

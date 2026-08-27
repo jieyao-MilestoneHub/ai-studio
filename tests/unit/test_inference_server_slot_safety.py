@@ -244,3 +244,37 @@ def test_final_channel_falls_back_to_the_whole_text_if_no_marker_is_found() -> N
     """A leaked thinking trace is a worse failure than skipped channel-
     splitting, but returning nothing at all is worse still."""
     assert srv._final_channel("plain reply, no channels") == "plain reply, no channels"
+
+
+@pytest.mark.asyncio
+async def test_a_slow_load_does_not_freeze_the_event_loop(monkeypatch) -> None:
+    """The first request against real weights (2026-08-27): moondream3's
+    ~60s load ran inline in `_ensure_loaded`, every route stalled for the
+    duration, /poll returned nothing, and the client's 30s poll timeout
+    failed a job that was fine. A load must run off the loop so /poll and
+    /healthz keep answering while it happens."""
+    import time
+
+    class _SlowBackend(_FakeBackend):
+        def load(self) -> None:
+            time.sleep(0.5)  # blocking, like from_pretrained
+            super().load()
+
+    monkeypatch.setitem(srv._BACKENDS, "slow", lambda: _SlowBackend("slow"))
+    srv._slot.backend = None
+
+    ticks = 0
+
+    async def heartbeat() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.05)
+            ticks += 1
+
+    beat = asyncio.create_task(heartbeat())
+    try:
+        await srv._ensure_loaded("slow")
+    finally:
+        beat.cancel()
+    # A frozen loop would have let the heartbeat run ~0 times during the load.
+    assert ticks >= 5, f"event loop starved during load ({ticks} ticks)"

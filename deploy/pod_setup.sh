@@ -110,7 +110,7 @@ log "installing the understanding-model stack (transformers/accelerate/bitsandby
 # trust_remote_code modeling code needs -- check `pip check` output on the
 # first real deployment, before trusting this venv serves both processes.
 ./.venv-cu128/bin/pip install -q --upgrade transformers accelerate bitsandbytes \
-  soundfile pillow fastapi 'uvicorn[standard]' python-multipart 2>&1 \
+  soundfile librosa pillow fastapi 'uvicorn[standard]' python-multipart 2>&1 \
   | grep -viE 'warning|notice' | tail -3
 # python-multipart: FastAPI's File()/Form()/UploadFile support is an optional
 # feature dependency, not pulled in by fastapi or uvicorn[standard] on their
