@@ -69,3 +69,13 @@ runpot-suggestion.md
 # Never commit this: it is not portable across OSes and previously broke
 # every PreToolUse:Bash hook on Linux/macOS by clobbering PATH outright.
 .claude/settings.local.json
+
+# --- twin/ subsystem: third-party data guardrail (SPEC.md §8 guardrail 2) --
+# Belt-and-suspenders: twin/.gitignore (nested) already covers these under
+# twin/ regardless of cwd, and .pre-commit-config.yaml hard-blocks them even
+# past `git add -f`. Kept here too since it's zero-cost — but this copy isn't
+# what does the enforcing; don't remove the nested twin/.gitignore instead.
+twin/data/
+twin/adapters/
+twin/transcripts/
+twin/eval/

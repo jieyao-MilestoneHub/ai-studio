@@ -1,0 +1,24 @@
+# --- third-party data guardrail (SPEC.md §8 guardrail 2, D32) -------------
+# A real person's raw exports, trained adapters, interview transcripts, and
+# eval artifacts. MUST NOT enter version control. Backed by a repo-root
+# pre-commit hook (.pre-commit-config.yaml) that hard-blocks these paths even
+# if someone runs `git add -f`.
+data/
+adapters/
+transcripts/
+eval/
+
+# --- python ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.import_linter_cache/
+.coverage
+htmlcov/

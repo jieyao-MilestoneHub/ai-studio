@@ -1,0 +1,131 @@
+[project]
+name = "twin"
+version = "0.1.0"
+description = "Personal digital-twin agent framework — spec at twin/reference/SPEC.md"
+readme = "README.md"
+license = { file = "LICENSE" }
+# Not copying ai-studio's 3.13 pin: that pin exists because of runpod-flash,
+# which twin doesn't depend on. Revisit once Phase 4 picks TRL/Accelerate/
+# torch versions — those may have their own floor/ceiling.
+requires-python = ">=3.11,<3.14"
+
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+]
+
+[project.scripts]
+twin = "twin.cli.main:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "import-linter>=2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/twin"]
+
+# ---------------------------------------------------------------- tooling
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer's whole API is call-in-default (`= typer.Option(...)`). B008 is correct
+# advice in general and wrong for this one library.
+"src/twin/cli/*.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src/twin"]
+# No `pydantic.mypy` plugin yet — pydantic isn't a dependency until Phase 1
+# adds core/fragment.py and core/trajectory.py.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# ---------------------------------------------------------------- layering
+# Independent from ai-studio's import-linter contracts — twin is not part of
+# the root uv workspace. Declared from day 0, before any real module content
+# exists, for the same reason the root pyproject.toml gives: retrofitting
+# layering onto a grown codebase is how this design would die. See
+# twin/PLAN.md §3.2 and twin/CLAUDE.md's C1-C4.
+
+[tool.importlinter]
+root_package = "twin"
+# Several contracts below forbid external packages (google.genai, modal,
+# kaggle, ...), not just internal twin.* submodules.
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Layered spine"
+type = "layers"
+layers = [
+    "twin.cli",
+    "twin.harness",
+    "twin.agent",
+    "twin.memory",
+    "twin.train",
+    "twin.ingest",
+    "twin.teacher",
+    "twin.config",
+    "twin.core",
+]
+
+# C1: training must never read live memory content — the spine order already
+# implies this, stated explicitly so it survives a future edit to the layers list.
+[[tool.importlinter.contracts]]
+name = "C1 - training never reads live memory content"
+type = "forbidden"
+source_modules = ["twin.train"]
+forbidden_modules = ["twin.memory"]
+
+# C2/C3: tool schemas are an L4, inference-time concern and must not reach L3
+# weights. The spine already blocks train -> agent; this blocks the reverse,
+# which a plain layers contract does not catch on its own.
+[[tool.importlinter.contracts]]
+name = "C2/C3 - serving does not depend on trainer internals"
+type = "forbidden"
+source_modules = ["twin.agent"]
+forbidden_modules = ["twin.train"]
+
+# D12/SPEC.md §7.1: vendor SDK coupling is confined to teacher.py (the other
+# allowed file, launch/*.sh, is shell and outside import-linter's reach).
+# import-linter can only forbid top-level external packages, not subpackages
+# like google.genai — so this forbids the whole `google` namespace, which is
+# stricter than the letter of D12 but equivalent in effect (nothing else here
+# has a legitimate reason to import any google.* package).
+[[tool.importlinter.contracts]]
+name = "Vendor SDK coupling confined to teacher.py"
+type = "forbidden"
+source_modules = ["twin.core", "twin.config", "twin.ingest", "twin.memory", "twin.train", "twin.agent", "twin.harness", "twin.cli"]
+forbidden_modules = ["google"]
+
+# SPEC.md §7.1: train.py must not know about any specific cloud.
+[[tool.importlinter.contracts]]
+name = "train.py stays cloud-agnostic"
+type = "forbidden"
+source_modules = ["twin.train"]
+forbidden_modules = ["modal", "kaggle", "lightning_sdk", "boto3", "runpod"]
+
+# The eval harness is a leaf, same reasoning as ai-studio's api/bots: the real
+# production path must not depend on the eval plumbing.
+[[tool.importlinter.contracts]]
+name = "Eval harness stays a leaf"
+type = "forbidden"
+source_modules = ["twin.core", "twin.config", "twin.teacher", "twin.ingest", "twin.memory", "twin.train", "twin.agent"]
+forbidden_modules = ["twin.harness"]

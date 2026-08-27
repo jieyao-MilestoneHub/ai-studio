@@ -1,0 +1,20 @@
+# Repo-wide — git only reads one .git/hooks/pre-commit, so this can't live
+# under twin/ even though everything else about that subsystem is
+# independent (see twin/PLAN.md §3.7). The `files` regex below scopes this
+# hook to twin/{data,adapters,transcripts,eval}/ only: staging anything
+# outside those four directories is unaffected, so this has zero impact on
+# ai-studio contributors.
+repos:
+  - repo: local
+    hooks:
+      - id: twin-block-sensitive-paths
+        name: twin/{data,adapters,transcripts,eval} must never be committed
+        language: fail
+        entry: >
+          BLOCKED (twin/reference/SPEC.md §8 guardrail 2): this path is under
+          twin/{data,adapters,transcripts,eval}/, which holds a real person's
+          raw data, trained adapters, interview transcripts, or eval
+          artifacts and MUST NOT enter version control. Unstage it with
+          `git restore --staged <path>` — if it's tracked here, twin/.gitignore
+          didn't cover it and needs fixing, not a bypass.
+        files: ^twin/(data|adapters|transcripts|eval)/

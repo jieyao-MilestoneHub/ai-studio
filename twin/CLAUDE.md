@@ -14,10 +14,15 @@ get back an agent whose judgment, tool-use style, and proactivity — including
 the tendency *not* to act — resembles that person in situations they've never
 actually faced.
 
-**Status: spec-only.** Nothing under `twin/` is implemented yet — no
-`pyproject.toml`, no `src/`, no tests, and it is not part of the root
-package's `import-linter` contracts. The subsystem currently exists entirely
-as three normative documents in `twin/reference/`:
+**Status: Phase 0 (guardrails + package skeleton) is done; everything past
+that is still spec-only.** `twin/` now has a package skeleton —
+`twin/pyproject.toml`, `src/twin/`, its own `uv.lock` and import-linter
+contracts, entirely independent of the root package's — but every layer
+package (`core`, `config`, `ingest`, `memory`, `train`, `agent`, `harness`,
+`cli`) is an empty placeholder with no real logic yet, and `teacher.py` is a
+docstring-only stub. See `twin/PLAN.md` for phase-by-phase status. The
+subsystem's actual behavior is still fully described by three normative
+documents in `twin/reference/`:
 
 | File | Role |
 |---|---|
@@ -103,13 +108,15 @@ failures that don't surface until much later, if ever.
   terminates" warning — enabling billing on that project doesn't degrade
   service, it silently ends the free tier and every subsequent call is
   billed from the first token.
-- **Third-party guardrail is not fully in place yet.** `SPEC.md` §8 guardrail
-  2 requires a `.gitignore` entry *and* a pre-commit hook that hard-block
-  `data/`, `adapters/`, `transcripts/`, `eval/` from version control before
-  any ingest involving third-party content (interview transcripts included)
-  begins. As of this writing the repo-root `.gitignore` does not yet have
-  these entries — add them, and the pre-commit hook, before any real ingest
-  work starts here.
+- **Third-party guardrail (`SPEC.md` §8 guardrail 2) is in place.**
+  `twin/.gitignore`, a root-level `.pre-commit-config.yaml` (`language:
+  fail`, scoped to `^twin/(data|adapters|transcripts|eval)/`), and a
+  defense-in-depth copy in the root `.gitignore` all hard-block those four
+  directories from version control — verified end to end with a real
+  blocked commit attempt, not just file presence. `pre-commit install` still
+  needs to have been run in any given clone for the hook to actually fire
+  (it writes to `.git/hooks/`, which is never itself version-controlled);
+  confirm that before starting real ingest work in a fresh checkout.
 
 ## Skills and agents (twin-specific)
 

@@ -37,6 +37,7 @@ dev = [
     "mypy>=1.10",
     "import-linter>=2.0",
     "types-pyyaml>=6.0",
+    "pre-commit>=3.7",
     # The api/bots tests import fastapi.testclient directly, so the web stack has
     # to be present for `uv sync --group dev` alone to collect the whole suite.
     # Self-referencing the extra rather than repeating the pins keeps the two in
