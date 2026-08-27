@@ -459,12 +459,16 @@ def test_placement_without_a_volume_is_the_plain_ladder(monkeypatch: pytest.Monk
 def _live(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, provisioned: bool = True) -> None:
     monkeypatch.setattr(sess, "SESSIONS_LOG_DIR", tmp_path / "logs" / "sessions")
     monkeypatch.setattr(sess, "PODS_LOG_DIR", tmp_path / "logs" / "pods")
+    # Relative to now: a fixed window_end turned "held" into "window over"
+    # the moment the wall clock passed it (📏 the first evening after it was
+    # written). opened 30 min ago, lease 2 h out.
+    now = datetime.now(timezone.utc)
     state = {
         "pod_id": "p1", "gpu": "NVIDIA GeForce RTX 4090", "datacenter": "EUR-IS-1", "cloud": "SECURE",
-        "cost_per_hr": 0.74, "opened_at": "2026-08-27T16:21:13.347564+00:00",
-        "window_end": "2026-08-27T18:18:35.260828+00:00", "tier_label": "RTX 4090/SECURE",
+        "cost_per_hr": 0.74, "opened_at": (now - timedelta(minutes=30)).isoformat(),
+        "window_end": (now + timedelta(hours=2)).isoformat(), "tier_label": "RTX 4090/SECURE",
         "vram_gb": 24, "low_vram": True, "quantisation": "int8", "ssh": {}, "provisioned": provisioned,
-        "last_media_kind": "drama", "last_activity_at": "2026-08-27T16:35:22.569573+00:00",
+        "last_media_kind": "drama", "last_activity_at": (now - timedelta(minutes=3)).isoformat(),
     }
     sess.STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     sess.STATE_FILE.write_text(json.dumps(state), encoding="utf-8")

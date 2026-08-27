@@ -65,7 +65,8 @@ uv run ruff check --no-cache src tests examples
 uv run lint-imports                                                # the layering contracts
 uv run mypy
 
-uv run ai-studio doctor                                             # python, ffmpeg + filters, credentials
+uv run ai-studio doctor                                             # python, ffmpeg + filters, credentials, logs/archive
+uv run ai-studio archive --dry-run                                  # what tonight's 03:00 archive would tar and prune
 uv run ai-studio generate "a test clip" --provider stub             # offline end-to-end
 uv run ai-studio format yt_longform_1080p                           # inspect the delivery transform
 uv run ai-studio pod capacity | up | status | down
@@ -81,6 +82,7 @@ refuse 3.14+.
 | `runpod-session` skill | any pod work — spin up, generate, shut down, "the pod is stuck" |
 | `editing-rule` skill | touching `editing/`, `gates/`, or `docs/editing-grammar.md` |
 | `verify` skill | before a commit or handing work back |
+| `docs/observability.md` | tracing one request across services (`grep '"token":…' logs/*/*.jsonl`), what each record timestamps, the daily archive and its retention |
 | `cost-guard` agent | reviewing anything that can spend money |
 | `architecture-reviewer` agent | reviewing changes against the invariants below |
 | `twin/` work | any task under `twin/` — read `twin/CLAUDE.md` first; it has its own skills/agents table |

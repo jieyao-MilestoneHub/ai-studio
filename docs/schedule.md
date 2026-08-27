@@ -145,18 +145,20 @@ the out-of-hours reply and reaches *down* for it, while `pipeline` (L4) sits
 below `runtime` and cannot import it at all — the worker takes those three
 functions by protocol and `cli.main` injects them.
 
-## Two timers, and both of them only close things
+## Four timers, and none of them can open a pod
 
-```bash
-# every 5 min — close early if the pod has gone quiet
-ai-studio session reap
+| timer | `OnCalendar` | does |
+|---|---|---|
+| `ai-studio-reap` | every minute | `session reap` — close a quiet pod after its per-kind grace; never with work queued. Logs to journald only on a transition, DEBUG to JSONL each minute |
+| `ai-studio-gc` | `02:30 Asia/Taipei` | `gc` — sweep delivered media and received photos past `AI_STUDIO_FILES_RETENTION_DAYS` |
+| `ai-studio-archive` | `03:00 Asia/Taipei` | `archive` — snapshot the queue db, tar+zstd the JSONL traces / session and pod records / drama state / ledger, verify, then prune (docs/observability.md) |
+| `ai-studio-close` | `04:05 Asia/Taipei` | `session close` — the daily hard close, a backstop behind the reaper and `--terminate-after` |
 
-# 13:00 — close, unconditionally. Idempotent and safe when nothing is up.
-ai-studio session close
-```
-
-Nothing on a schedule opens anything any more. That is the point: every
-scheduled task left can only ever *reduce* what is billing.
+The zone is spelled out in every `OnCalendar`: a bare `20:05` is read in the
+box's local zone, and on 2026-08-27 that terminated a pod 46 minutes into a
+render (pod `i5s1j69xkcihnn`). Nothing on a schedule opens anything. That is
+the point: every scheduled task can only ever *reduce* what is billing, or
+compress what already happened.
 
 `ensure_pod` passes `--terminate-after` set to the lease end (`now +
 LEASE_HOURS`) plus 10 minutes. That is the backstop, not the mechanism: **if
