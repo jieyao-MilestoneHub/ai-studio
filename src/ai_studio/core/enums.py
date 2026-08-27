@@ -85,6 +85,15 @@ class MediaKind(str, Enum):
     VIDEO_UNDERSTAND = "video_understand"
     """/說影: describe a video clip. Backed by Tarsier2."""
 
+    CHAT = "chat"
+    """/himonkey: a plain-text LLM reply, backed by gpt-oss-20b. Deliberately
+    *not* in `_UNDERSTANDING_KINDS` -- `is_understanding` specifically means
+    "describes attached media", and chat describes nothing. It shares the
+    understanding side's GPU slot (see `pipeline.drain.make_room_for`), but
+    that is a VRAM-residency fact, not a semantic one, so call sites that
+    need it join with an explicit `or job_kind is MediaKind.CHAT` rather than
+    being folded into this property."""
+
     @property
     def is_understanding(self) -> bool:
         return self in _UNDERSTANDING_KINDS
