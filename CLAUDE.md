@@ -4,6 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
+This repository is a monorepo for AI model development. This file covers the
+root package, **ai-studio**. A second, independent subsystem lives in
+[`twin/`](twin/CLAUDE.md) — a personal digital-twin agent framework, currently
+spec-only and unrelated to ai-studio's code or stack. Read `twin/CLAUDE.md`
+when working under `twin/`; nothing below applies there.
+
+### ai-studio
+
 AI video generation on RunPod: **MiniMax H3** clips and **Flux.1-dev** images
 generated through ComfyUI on a shared GPU pod, then assembled with an editing
 grammar derived from
@@ -16,7 +24,8 @@ image-to-video / image-to-image; one spelling each, no aliases) — see
 Currently built: core model, format policy, H3 prompt builder, Flux prompt
 builder, ComfyUI client, stub provider, pod lifecycle, CLI, FastAPI + LINE bot
 (dual trigger, queue, status pages, monthly budget guard). **Not built:** the
-editing grammar implementation, gate rules, planner, render. The grammar is
+editing grammar implementation, gate rules, planner, render, and any
+image/video *understanding* path (generation-only today). The grammar is
 specified in `docs/editing-grammar.md` and waiting.
 
 ## Commands
@@ -53,6 +62,7 @@ refuse 3.14+.
 | `verify` skill | before a commit or handing work back |
 | `cost-guard` agent | reviewing anything that can spend money |
 | `architecture-reviewer` agent | reviewing changes against the invariants below |
+| `twin/` work | any task under `twin/` — read `twin/CLAUDE.md` first; it has its own skills/agents table |
 
 RunPod's official plugin is installed; route through the `runpod` skill rather
 than guessing at the API. When an MCP tool does not expose a field you need,
