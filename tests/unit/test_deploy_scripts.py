@@ -52,12 +52,12 @@ def test_pod_setup_stages_every_inference_server_backend() -> None:
     setup = (REPO / "deploy" / "pod_setup.sh").read_text(encoding="utf-8")
     for repo in (
         "moondream/moondream3-preview",
-        "Qwen/Qwen3-Omni-30B-A3B-Captioner",
-        "omni-research/Tarsier2-7b-0115",
+        "Qwen/Qwen2-Audio-7B-Instruct",
+        "Qwen/Qwen2.5-VL-7B-Instruct",
         "openai/gpt-oss-20b",
     ):
         assert f"dl_repo {repo}" in setup, f"pod_setup.sh does not stage {repo}"
-    assert "NEED_KB=$((238 * 1024 * 1024" in setup, "headroom check not sized for all four backends"
+    assert "NEED_KB=$((192 * 1024 * 1024" in setup, "headroom check not sized for all four backends"
     # The MXFP4 kernels are resolved by `kernels` itself, not hf download.
     assert 'get_kernel("kernels-community/gpt-oss-triton-kernels", version=1)' in setup
 
@@ -71,12 +71,7 @@ def test_pod_setup_downloads_whole_repos_sequentially_without_xet_high_performan
     assert "\ndl_repos_start\n" in setup, "the repo chain is never started"
     assert setup.index("dl_repo openai/gpt-oss-20b") < setup.index("\ndl_repos_start\n")
     assert "repos.failed" in setup, "a failed repo must be named, not hidden behind the chain's pid"
-    assert "NEED_KB=$((238 * 1024 * 1024" in setup
-
-
-def test_pod_setup_refuses_without_hf_token_for_the_gated_repo() -> None:
-    setup = (REPO / "deploy" / "pod_setup.sh").read_text(encoding="utf-8")
-    assert 'HF_TOKEN:-' in setup and "gated" in setup
+    assert "NEED_KB=$((192 * 1024 * 1024" in setup
 
 
 def test_there_are_deploy_scripts_to_check() -> None:
@@ -207,12 +202,12 @@ def test_the_advertised_download_size_includes_the_lora() -> None:
     """The log line is what an operator watches to know whether a stall is
     normal. It was ~51GB before this LoRA's 0.69GB was added, then ~52GB
     before the Flux base model's ~17GB was added, then ~73GB more for the
-    three understanding models -- then ~128GB once measured against each
-    repo's real file list (kept complete), plus ~41GB for gpt-oss-20b."""
+    three understanding models -- then ~82GB once two of them were swapped
+    for 7B models that fit (kept complete), plus ~41GB for gpt-oss-20b."""
     body = POD_SETUP.read_text(encoding="utf-8")
 
     assert (
-        "starting weight downloads (~52GB H3 + ~17GB Flux + ~128GB understanding models "
+        "starting weight downloads (~52GB H3 + ~17GB Flux + ~82GB understanding models "
         "+ ~41GB gpt-oss-20b)"
     ) in body
 

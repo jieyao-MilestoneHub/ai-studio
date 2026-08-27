@@ -1,4 +1,4 @@
-"""Understanding models (moondream3, Qwen3-Omni-Captioner, Tarsier2) through
+"""Understanding models (moondream3, Qwen2-Audio, Qwen2.5-VL) through
 the pod-side inference server (`deploy/inference_server.py`).
 
 One parametrized class rather than three concrete ones: the three models
@@ -45,14 +45,14 @@ _CAPABILITY_DEFAULTS: dict[MediaKind, dict[str, Any]] = {
     ),
     MediaKind.AUDIO_UNDERSTAND: dict(
         provider="understanding",
-        model_id="Qwen/Qwen3-Omni-30B-A3B-Captioner",
-        accepts_prompt=False,
+        model_id="Qwen/Qwen2-Audio-7B-Instruct",
+        accepts_prompt=True,
         max_input_seconds=30.0,
-        expected_latency_s=45.0,
+        expected_latency_s=30.0,
     ),
     MediaKind.VIDEO_UNDERSTAND: dict(
         provider="understanding",
-        model_id="omni-research/Tarsier2-7b-0115",
+        model_id="Qwen/Qwen2.5-VL-7B-Instruct",
         accepts_prompt=True,
         max_input_seconds=120.0,
         expected_latency_s=30.0,

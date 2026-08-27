@@ -14,7 +14,7 @@ when working under `twin/`; nothing below applies there.
 
 AI video generation *and* understanding on RunPod: **MiniMax H3** clips and
 **Flux.1-dev** images generated through ComfyUI, plus **moondream3**,
-**Qwen3-Omni-Captioner**, and **Tarsier2** describing a photo/audio/video clip
+**Qwen2-Audio-7B-Instruct**, and **Qwen2.5-VL-7B-Instruct** describing a photo/audio/video clip
 back — all on a shared GPU pod, generation assembled with an editing grammar
 derived from
 [`Hao0321/video-autopilot-kit`](https://github.com/Hao0321/video-autopilot-kit)
@@ -32,8 +32,10 @@ client, stub providers, pod lifecycle, CLI, FastAPI + LINE bot (eight triggers,
 queue, status pages, monthly budget guard). **Not built:** the editing
 grammar implementation, gate rules, planner, render. The grammar is
 specified in `docs/editing-grammar.md` and waiting. The three understanding
-models' licences have not yet been verified — see `docs/model-moondream3.md`,
-`docs/model-qwen3-omni-captioner.md`, `docs/model-tarsier2.md`.
+models' licences: moondream3 unverified (`docs/model-moondream3.md`); the
+two Qwen models are Apache-2.0 per their cards (`docs/model-qwen2-audio.md`,
+`docs/model-qwen2.5-vl.md`). The models they replaced, and why, are in
+`docs/model-qwen3-omni-captioner.md` and `docs/model-tarsier2.md`.
 
 ## Commands
 

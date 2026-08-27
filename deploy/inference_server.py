@@ -8,7 +8,7 @@ a *second* file over the same one-file-at-a-time SSH transport rather than
 being embedded inline.
 
 **Lazy load/unload, one model at a time.** Only one of {moondream3-preview,
-Qwen3-Omni-30B-A3B-Captioner (Q4), Tarsier2-7b-0115, gpt-oss-20b} is ever
+Qwen2-Audio-7B-Instruct, Qwen2.5-VL-7B-Instruct, gpt-oss-20b} is ever
 resident in VRAM, and never at the same time as ComfyUI's own checkpoint --
 the whole card is 24GB and none of these comfortably coexist with an H3/Flux
 model (nor, for gpt-oss-20b specifically, with H3 itself: H3 alone measures
@@ -141,30 +141,32 @@ class MoondreamBackend:
 
         assert media_path is not None  # only "chat" jobs ever omit it
         image = Image.open(media_path).convert("RGB")
+        # English only. 📏 2026-08-27: asked three ways (a bilingual
+        # instruction, a Traditional-Chinese question, "Answer in Traditional
+        # Chinese only"), moondream3 answered in English every time -- the
+        # model does not write Chinese, so the caption stays English.
         question = prompt or "Describe this image in detail."
         result = self._model.query(image, question)
         return str(result.get("answer", result) if isinstance(result, dict) else result)
 
 
-class Qwen3OmniCaptionerBackend:
-    """Qwen/Qwen3-Omni-30B-A3B-Captioner -- audio captioning, Q4 quantized.
+class Qwen2AudioBackend:
+    """Qwen/Qwen2-Audio-7B-Instruct -- audio understanding, fp16, ~17GB.
 
-    Loader shape follows the model card (`Qwen3OmniMoeForConditionalGeneration`
-    + `Qwen3OmniMoeProcessor`, chat-template with one audio part); **rejects
-    a text prompt outright** per that card, so `infer` ignores `prompt`
-    entirely rather than raising -- the caller-side
-    `UnderstandingCapabilities.accepts_prompt = False` is what should stop a
-    prompt arriving here in the first place. The safetensors checkpoint is
-    quantised to 4-bit on load via bitsandbytes; the repo ships no GGUF.
+    Replaces Qwen3-Omni-30B-A3B-Captioner, which does not fit a 24GB card on
+    this stack (transformers 5 keeps its fused MoE experts in fp16 under both
+    bitsandbytes and compressed-tensors -- see docs/model-qwen3-omni-
+    captioner.md). Loader and inference follow the model card:
+    `Qwen2AudioForConditionalGeneration` + `AutoProcessor`, chat template
+    with one audio part, librosa at the feature extractor's sampling rate.
+    Instruction-tuned, so it takes a prompt and answers in Chinese when
+    asked to -- weaker at fine-grained captioning than the 30B model, but it
+    runs.
     """
 
     modality = "audio"
-    model_id = os.environ.get("AI_STUDIO_AUDIO_MODEL_ID", "Qwen/Qwen3-Omni-30B-A3B-Captioner")
-    """Overridable so a pre-quantized build of the same captioner can be
-    tried without editing this file: a repo whose config.json carries its
-    own `quantization_config` is loaded as-is (no bitsandbytes); the
-    official full-precision repo gets 4-bit bitsandbytes on load."""
-    accepts_prompt = False
+    model_id = os.environ.get("AI_STUDIO_AUDIO_MODEL_ID", "Qwen/Qwen2-Audio-7B-Instruct")
+    accepts_prompt = True
     max_input_seconds = 30.0
 
     def __init__(self) -> None:
@@ -173,31 +175,12 @@ class Qwen3OmniCaptionerBackend:
 
     def load(self) -> None:
         import torch
-        from transformers import (
-            BitsAndBytesConfig,
-            Qwen3OmniMoeForConditionalGeneration,
-            Qwen3OmniMoeProcessor,
+        from transformers import AutoProcessor, Qwen2AudioForConditionalGeneration
+
+        self._processor = AutoProcessor.from_pretrained(self.model_id)
+        self._model = Qwen2AudioForConditionalGeneration.from_pretrained(
+            self.model_id, device_map="cuda", dtype=torch.float16
         )
-
-        # 📏 2026-08-27, transformers 5.16.1 on the pod: the generic
-        # `AutoModelForCausalLM` refuses this checkpoint ("Unrecognized
-        # configuration class Qwen3OmniMoeConfig"); the model card's own
-        # classes load it. `attn_implementation="flash_attention_2"` from the
-        # card is left out -- flash-attn is not installed in ComfyUI's venv.
-        from transformers import AutoConfig
-
-        self._processor = Qwen3OmniMoeProcessor.from_pretrained(self.model_id)
-        prequantized = getattr(AutoConfig.from_pretrained(self.model_id), "quantization_config", None)
-        kwargs: dict[str, Any] = {"device_map": "cuda", "dtype": torch.float16}
-        if not prequantized:
-            # 📏 2026-08-27: this path OOMs on a 24GB card with transformers
-            # 5.16 -- the MoE experts are fused 3D parameters there, not
-            # nn.Linear, so bitsandbytes leaves them in fp16 (~24GB alone).
-            # Kept for a transformers<5 venv; see docs/model-qwen3-omni-captioner.md.
-            kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16
-            )
-        self._model = Qwen3OmniMoeForConditionalGeneration.from_pretrained(self.model_id, **kwargs)
 
     def unload(self) -> None:
         import torch
@@ -210,43 +193,41 @@ class Qwen3OmniCaptionerBackend:
         import librosa
 
         assert media_path is not None  # only "chat" jobs ever omit it
-        # The card's `process_mm_info` is librosa.load at 16 kHz mono under
-        # the hood; doing that directly avoids depending on qwen-omni-utils
-        # and reads LINE's .m4a through librosa's ffmpeg fallback.
-        audio, _ = librosa.load(str(media_path), sr=16000, mono=True)
-        conversation = [{"role": "user", "content": [{"type": "audio", "audio": str(media_path)}]}]
+        question = prompt or "請用繁體中文詳細描述這段聲音的內容,再用英文重述一次。"
+        conversation = [{
+            "role": "user",
+            "content": [{"type": "audio", "audio_url": str(media_path)}, {"type": "text", "text": question}],
+        }]
         text = self._processor.apply_chat_template(
             conversation, add_generation_prompt=True, tokenize=False
         )
-        inputs = self._processor(
-            text=text, audio=[audio], return_tensors="pt", padding=True, use_audio_in_video=False
-        )
-        inputs = inputs.to(self._model.device)
-        out = self._model.generate(
-            **inputs, thinker_return_dict_in_generate=True, thinker_max_new_tokens=256,
-            return_audio=False,
-        )
-        sequences = out[0].sequences if isinstance(out, tuple) else out.sequences
-        decoded = self._processor.batch_decode(
-            sequences[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True,
-            clean_up_tokenization_spaces=False,
-        )
-        return str(decoded[0]).strip()
+        sr = self._processor.feature_extractor.sampling_rate
+        audio, _ = librosa.load(str(media_path), sr=sr, mono=True)
+        inputs = self._processor(text=text, audio=[audio], return_tensors="pt", padding=True)
+        inputs = inputs.to("cuda")
+        out = self._model.generate(**inputs, max_new_tokens=256)
+        out = out[:, inputs["input_ids"].shape[1]:]
+        return str(self._processor.batch_decode(
+            out, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0]).strip()
 
 
-class Tarsier2Backend:
-    """omni-research/Tarsier2-7b-0115 -- dense video captioning, FP16.
+class Qwen25VLVideoBackend:
+    """Qwen/Qwen2.5-VL-7B-Instruct -- video understanding, fp16, ~17GB.
 
-    `[speculative]` loader: Tarsier ships its own `trust_remote_code=True`
-    modeling code with a chat-style video-QA interface. The lightest of the
-    three (~14-16GB `[reported]`), and the only one with no stated input
-    length ceiling -- see `docs/model-tarsier2.md`'s flagged-unresolved
-    `MAX_VIDEO_UNDERSTAND_S`.
+    Replaces Tarsier2-7b-0115, whose `TarsierForConditionalGeneration` lives
+    only in ByteDance's repo pinned to transformers 4.47 (see docs/model-
+    tarsier2.md). Loader and inference follow the model card:
+    `Qwen2_5_VLForConditionalGeneration` + `AutoProcessor`, the video read
+    and sampled by `qwen_vl_utils.process_vision_info` (decord). `max_pixels`
+    caps each sampled frame so a phone clip does not blow the token budget.
     """
 
     modality = "video"
-    model_id = "omni-research/Tarsier2-7b-0115"
+    model_id = os.environ.get("AI_STUDIO_VIDEO_MODEL_ID", "Qwen/Qwen2.5-VL-7B-Instruct")
     accepts_prompt = True
+    MAX_PIXELS = 360 * 420
+    FPS = 1.0
 
     def __init__(self) -> None:
         self._model: Any = None
@@ -254,12 +235,12 @@ class Tarsier2Backend:
 
     def load(self) -> None:
         import torch
-        from transformers import AutoModelForCausalLM, AutoProcessor
+        from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-        self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_id, trust_remote_code=True, torch_dtype=torch.float16
-        ).to("cuda")
+        self._processor = AutoProcessor.from_pretrained(self.model_id)
+        self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            self.model_id, device_map="cuda", dtype=torch.float16
+        )
 
     def unload(self) -> None:
         import torch
@@ -269,13 +250,28 @@ class Tarsier2Backend:
         torch.cuda.empty_cache()
 
     def infer(self, media_path: Path | None, prompt: str | None, *, history: str | None = None) -> str:
+        from qwen_vl_utils import process_vision_info
+
         assert media_path is not None  # only "chat" jobs ever omit it
-        question = prompt or "Describe what happens in this video in detail."
-        inputs = self._processor(text=question, videos=str(media_path), return_tensors="pt").to(
-            "cuda"
-        )
-        output_ids = self._model.generate(**inputs, max_new_tokens=256)
-        return str(self._processor.batch_decode(output_ids, skip_special_tokens=True)[0])
+        question = prompt or "請用繁體中文詳細描述這段影片的內容,再用英文重述一次。"
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "video", "video": f"file://{media_path}", "max_pixels": self.MAX_PIXELS, "fps": self.FPS},
+                {"type": "text", "text": question},
+            ],
+        }]
+        text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, video_inputs, video_kwargs = process_vision_info(messages, return_video_kwargs=True)
+        inputs = self._processor(
+            text=[text], images=image_inputs, videos=video_inputs, padding=True,
+            return_tensors="pt", **video_kwargs,
+        ).to("cuda")
+        out = self._model.generate(**inputs, max_new_tokens=256)
+        out = out[:, inputs["input_ids"].shape[1]:]
+        return str(self._processor.batch_decode(
+            out, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0]).strip()
 
 
 class GptOssChatBackend:
@@ -391,8 +387,8 @@ def _final_channel(text: str) -> str:
 
 _BACKENDS: dict[str, type[ModelBackend]] = {
     "image": MoondreamBackend,
-    "audio": Qwen3OmniCaptionerBackend,
-    "video": Tarsier2Backend,
+    "audio": Qwen2AudioBackend,
+    "video": Qwen25VLVideoBackend,
     "chat": GptOssChatBackend,
 }
 

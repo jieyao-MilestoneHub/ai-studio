@@ -65,17 +65,17 @@ no file produced:
 
 | trigger | describes | model |
 |---|---|---|
-| a photo, then `/說圖` | that photo | moondream3-preview (fallback: Florence-2-large) |
-| an audio clip, then `/說音` | that clip | Qwen3-Omni-Captioner |
-| a video clip, then `/說影` | that clip | Tarsier2 |
+| a photo, then `/說圖` | that photo | moondream3-preview — English only 📏 (it does not write Chinese, asked three ways) |
+| an audio clip, then `/說音` | that clip | Qwen2-Audio-7B-Instruct, asked for Traditional Chinese then English |
+| a video clip, then `/說影` | that clip | Qwen2.5-VL-7B-Instruct, asked for Traditional Chinese then English |
 
 **None of the three take trailing text.** `/說圖 這是誰` is refused with a
 usage line and never enqueued — the mirror image of the four generation
 triggers, which require non-empty text. This holds uniformly across all
-three even though moondream3-preview and Tarsier2 could technically accept a
-steering prompt, because Qwen3-Omni-Captioner cannot (it rejects a text
-prompt outright), and having the same trigger *shape* behave differently
-per command is exactly the kind of per-command surprise this bot avoids
+three even though all three current models could technically accept a
+steering prompt (the original audio model, Qwen3-Omni-Captioner, could
+not), because having the same trigger *shape* behave differently per
+command is exactly the kind of per-command surprise this bot avoids
 elsewhere ("one spelling per trigger, no aliases").
 
 **The photo/audio/video cache works exactly like `/圖影`'s**: whatever was

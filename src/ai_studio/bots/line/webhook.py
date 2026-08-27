@@ -573,7 +573,7 @@ class WebhookHandler:
             eta = "已經在線上,幾秒內回覆" if self.is_warm() else "暖機中,第一句回覆可能要等幾分鐘"
         else:
             eta = "圖約 30 秒、影片約 2 分鐘" if self.is_warm() else "暖機中:圖約 3 分鐘、影片約 5 分鐘"
-        line = f"收到,{eta},想查進度可以看{self._link(job)}"
+        line = f"收到,{eta},想查進度可以看\n{self._link(job)}"
         if self.queue.push_quota_exhausted():
             # Push is gone for the month: the result will not arrive on its
             # own. Say so now, while there is a reply token to say it with.
@@ -660,7 +660,7 @@ class WebhookHandler:
             f"{j.text[:18]} — {self._state_zh(j)}"
             for j in pending[:5]
         ]
-        lines += [f"  ✓ {j.text[:18]} → {self._link(j)}" for j in recent_done[:3]]
+        lines += [f"  ✓ {j.text[:18]}\n{self._link(j)}" for j in recent_done[:3]]
         await self._safe_reply(reply_token, "\n".join(lines))
         return Outcome("status")
 
@@ -842,7 +842,7 @@ class WebhookHandler:
             # and hand over the link, rather than a summary that hides it.
             messages.append({
                 "type": "text",
-                "text": f"{job.text[:18]} 完成了,但預覽圖不在,直接開:{self._link(job)}",
+                "text": f"{job.text[:18]} 完成了,但預覽圖不在,直接開:\n{self._link(job)}",
             })
         if not messages or job.result_text:
             messages.append({"type": "text", "text": self._show_line(job)[:5000]})
@@ -881,7 +881,7 @@ class WebhookHandler:
             return f"{glyph} {job.text[:18]} — 失敗:{(job.error or '')[:60]}"
         if job.result_text:
             return f"{glyph} {job.text[:18]}\n{job.result_text[:400]}"
-        return f"{glyph} {job.text[:18]} → {self._link(job)}"
+        return f"{glyph} {job.text[:18]}\n{self._link(job)}"
 
     def _link(self, job: Job) -> str:
         return f"{self.base_url}/q/{job.token}"

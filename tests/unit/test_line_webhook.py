@@ -970,3 +970,25 @@ async def test_accept_warns_about_the_pull_once_push_quota_is_gone(wired) -> Non
     body = _body([_text_event("/影片 一隻貓", event_id="e1")])
     await handler.handle(body, sign(body, SECRET))
     assert "讓我看看" in replier.sent[-1][1][0] and "推播額度" in replier.sent[-1][1][0]
+
+
+@pytest.mark.asyncio
+async def test_every_link_sits_on_its_own_line(wired, tmp_path: Path) -> None:
+    """LINE renders a URL glued to text as one unbroken run; a newline before
+    it makes the link tappable and the sentence readable (asked 2026-08-27)."""
+    import re
+
+    handler, queue, replier = wired
+    body = _body([_text_event("/影片 一隻貓", event_id="e1")])
+    (accepted,) = await handler.handle(body, sign(body, SECRET))
+    _finish(queue, accepted.job.id, "runs/x/cat.mp4")
+    ask = _body([_text_event("讓我看看", event_id="e2")])
+    await handler.handle(ask, sign(ask, SECRET))
+    status = _body([_text_event("進度", event_id="e3")])
+    await handler.handle(status, sign(status, SECRET))
+
+    texts = [t for _, ts in replier.sent for t in ts]
+    texts += [m["text"] for _, ms in replier.sent_messages for m in ms if m["type"] == "text"]
+    for text in texts:
+        for m in re.finditer(r"https://", text):
+            assert m.start() == 0 or text[m.start() - 1] == "\n", text
