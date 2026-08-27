@@ -1,6 +1,10 @@
 # Qwen2.5-VL-7B-Instruct
 
-Serves `/說影` from `deploy/inference_server.py` since 2026-08-27, replacing
+Serves the **picture half** of `/說影` from `deploy/inference_server.py` since
+2026-08-27 — the model samples frames only (`process_vision_info`) and cannot
+hear, so `_run_job` follows it with Qwen2-Audio on the ffmpeg-extracted track
+and joins the two under 【畫面】/【聲音】 (asked 2026-08-27: 「避免 /說影
+只根據畫面」). Replacing
 Tarsier2-7b-0115, whose `TarsierForConditionalGeneration` exists only in ByteDance's repo pinned to transformers 4.47 (see `model-tarsier2.md`). Chosen because it **runs** on the stack the pod already has —
 transformers 5.16, one RTX 4090 — not because it is the strongest
 video model; that trade was made explicitly ("效果更差但可以跑").

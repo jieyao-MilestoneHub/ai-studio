@@ -80,7 +80,11 @@ logging.basicConfig(level=logging.INFO, format="[inference] %(message)s")
 _log = logging.getLogger("inference_server")
 
 UPLOAD_DIR = Path("/workspace/inference_uploads")
-MAX_OUTPUT_CHARS = 1000
+MAX_OUTPUT_CHARS = 1600
+"""Two model answers under headings for /說影 (📏 ~700 chars each at
+max_new_tokens 384/512) need more than the old 1000; the LINE text limit is
+5000. `UnderstandingCapabilities.max_output_chars` on the client side is the
+other half of this ceiling."""
 MAX_JSON_OUTPUT_CHARS = 8000
 """For `json_only` jobs (the prompt rewriter): an H3 shot plan is well over
 1000 characters, and truncating it mid-object would fail every conversion."""
@@ -706,23 +710,72 @@ async def _ensure_loaded(modality: str) -> ModelBackend:
         return backend
 
 
+AUDIO_TRACK_SILENT = "(這段影片沒有聲音軌)"
+VIDEO_AUDIO_QUESTION = (
+    "請只用繁體中文,條列描述這段影片的聲音,不要加開場白:\n"
+    "類型:(人聲說話 / 唱歌 / 音樂 / 環境音 / 混合)\n"
+    "內容:(若有人說話或唱歌,盡量逐字寫出;若是音樂,寫出樂器、曲風、節奏)\n"
+    "細節:(說話者人數與語氣、背景聲、音質)"
+)
+"""What the audio model is asked about a video's track when the user gave no
+question of their own. Shorter than AUDIO_DEFAULT_QUESTION: this is half of
+an answer, the frames are the other half."""
+
+
+def _has_audio_track(path: Path) -> bool:
+    """ffprobe: does the container carry an audio stream? A silent clip must
+    skip the audio pass and say so, not run the model on nothing."""
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_type",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    return proc.returncode == 0 and "audio" in proc.stdout
+
+
+def _extract_track(path: Path) -> Path:
+    wav = path.with_suffix(".track.wav")
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(path), "-vn", "-ac", "1", "-ar", "16000",
+         "-f", "wav", str(wav)],
+        check=True, capture_output=True,
+    )
+    return wav
+
+
+async def _infer_with(modality: str, media_path: Path | None, prompt: str | None, job: Job) -> str:
+    """Load `modality`'s backend (evicting whatever is resident) and run one
+    inference off the event loop, bracketed by `in_flight` -- see ModelSlot."""
+    backend = await _ensure_loaded(modality)
+    _slot.in_flight += 1
+    try:
+        return await asyncio.to_thread(
+            backend.infer, media_path, prompt, history=job.history, options=job.options
+        )
+    finally:
+        _slot.in_flight -= 1
+
+
 async def _run_job(job: Job) -> None:
     job.state = "running"
     try:
-        backend = await _ensure_loaded(job.modality)
-        # Run the blocking model call off the event loop -- this is the one
-        # call in the whole server that can take tens of seconds (longer,
-        # unbounded until GptOssChatBackend.MAX_NEW_TOKENS caps it, for
-        # chat). `_slot.in_flight` brackets it so eviction knows to wait --
-        # see ModelSlot's docstring.
-        _slot.in_flight += 1
-        try:
-            result = await asyncio.to_thread(
-                backend.infer, job.media_path, job.prompt,
-                history=job.history, options=job.options,
-            )
-        finally:
-            _slot.in_flight -= 1
+        if job.modality == "video" and job.media_path is not None:
+            # /說影 sees AND hears: Qwen2.5-VL only samples frames
+            # (process_vision_info), so on its own it describes a silent
+            # film. Run it on the frames, then -- if the clip has a track --
+            # evict to Qwen2-Audio and run that on the ffmpeg-extracted
+            # audio (one swap, 📏 ~27 s), and join the two under headings.
+            # The user's own question, if any, goes to both models; a bare
+            # trigger gets each model's engineered default.
+            visual = await _infer_with("video", job.media_path, job.prompt, job)
+            if _has_audio_track(job.media_path):
+                track = await asyncio.to_thread(_extract_track, job.media_path)
+                heard = await _infer_with("audio", track, job.prompt or VIDEO_AUDIO_QUESTION, job)
+            else:
+                heard = AUDIO_TRACK_SILENT
+            result = f"【畫面】\n{visual.strip()}\n\n【聲音】\n{heard.strip()}"
+        else:
+            result = await _infer_with(job.modality, job.media_path, job.prompt, job)
         cap = MAX_JSON_OUTPUT_CHARS if job.options.json_only else MAX_OUTPUT_CHARS
         job.result_text = result[:cap]
         job.state = "completed"

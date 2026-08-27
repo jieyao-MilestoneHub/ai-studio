@@ -52,10 +52,11 @@ _CAPABILITY_DEFAULTS: dict[MediaKind, dict[str, Any]] = {
     ),
     MediaKind.VIDEO_UNDERSTAND: dict(
         provider="understanding",
-        model_id="Qwen/Qwen2.5-VL-7B-Instruct",
+        model_id="Qwen/Qwen2.5-VL-7B-Instruct + Qwen/Qwen2-Audio-7B-Instruct",
         accepts_prompt=True,
         max_input_seconds=120.0,
-        expected_latency_s=30.0,
+        expected_latency_s=60.0,
+        max_output_chars=1600,
     ),
 }
 

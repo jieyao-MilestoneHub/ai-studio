@@ -67,7 +67,7 @@ no file produced:
 |---|---|---|
 | a photo, then `/說圖` | that photo | moondream3-preview — English only 📏 (it does not write Chinese, asked three ways) |
 | an audio clip, then `/說音` | that clip | Qwen2-Audio-7B-Instruct, asked for Traditional Chinese then English |
-| a video clip, then `/說影` | that clip | Qwen2.5-VL-7B-Instruct, asked for Traditional Chinese then English |
+| a video clip, then `/說影` | that clip — **picture and sound**: Qwen2.5-VL on the frames, then Qwen2-Audio on the ffmpeg-extracted track (one model swap, 📏 ~27 s), answered under 【畫面】/【聲音】; a silent clip says so | Qwen2.5-VL-7B-Instruct + Qwen2-Audio-7B-Instruct, Traditional Chinese |
 
 **None of the three take trailing text.** `/說圖 這是誰` is refused with a
 usage line and never enqueued — the mirror image of the four generation

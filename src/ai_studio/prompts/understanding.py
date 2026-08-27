@@ -8,6 +8,11 @@ endpoint (decision 2026-08-27).
 
 Why per-model shapes, from each model's docs and its first live run:
 
+- `/說影` is two models: Qwen2.5-VL on the frames, then Qwen2-Audio on the
+  ffmpeg-extracted track (composed in `deploy/inference_server.py::_run_job`,
+  headings 【畫面】/【聲音】). Qwen2.5-VL alone is deaf -- `process_vision_info`
+  samples frames only -- so a user asking「他說了什麼」would have got a guess
+  from lip shapes. The same question reaches both models.
 - moondream3-preview answers **only in English** (📏 2026-08-27, asked three
   ways). It has two skills: `caption(length=...)` for a description with no
   question, and `query(question)` for a specific one. So the default sends
@@ -96,8 +101,9 @@ Rules:
 
 _VIDEO_REWRITE = """\
 You turn a group-chat question about a short video (Traditional Chinese)
-into one precise instruction for a video-understanding model that watches
-the clip at about one frame per second and answers in Traditional Chinese.
+into one precise instruction for a video-understanding pipeline: one model
+watches the clip at about one frame per second, a second model listens to
+its audio track, and each answers in Traditional Chinese.
 Reply with JSON only, no prose and no code fence: {"question": "..."}
 
 Rules:
@@ -108,7 +114,10 @@ Rules:
   camera movement.
 - Ask for a short bullet list when the user asks for more than one thing,
   otherwise one or two sentences.
-- Do not ask about sound -- the model cannot hear. Under 80 characters.
+- The clip's sound is analysed too, by a second model that hears the
+  track: a question about speech, music or noises is fine -- phrase it so
+  it makes sense for both what is seen and what is heard. Under 80
+  characters.
 """
 
 REWRITE_SYSTEM: dict[MediaKind, str] = {

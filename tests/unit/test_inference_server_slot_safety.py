@@ -478,3 +478,82 @@ def test_gpt_oss_puts_the_system_block_first_and_honours_the_options() -> None:
     assert call["reasoning_effort"] == "low"
     assert backend._model.kwargs["max_new_tokens"] == 600
     assert backend._model.kwargs["do_sample"] is False
+
+
+# ------------------------------------------------ /說影 sees and hears
+
+
+@pytest.mark.asyncio
+async def test_a_video_job_runs_the_frame_model_then_the_audio_model(monkeypatch, tmp_path) -> None:
+    """Qwen2.5-VL is deaf; a video job must follow it with the audio model on
+    the extracted track and join the two answers under headings."""
+    order: list[str] = []
+
+    class _Tracing(_FakeBackend):
+        def infer(self, media_path, prompt, *, history=None, options=None) -> str:
+            order.append(f"{self.modality}:{Path(str(media_path)).suffix}:{prompt}")
+            return f"{self.modality}-answer"
+
+    monkeypatch.setitem(srv._BACKENDS, "video", lambda: _Tracing("video"))
+    monkeypatch.setitem(srv._BACKENDS, "audio", lambda: _Tracing("audio"))
+    monkeypatch.setattr(srv, "_has_audio_track", lambda p: True)
+    monkeypatch.setattr(srv, "_extract_track", lambda p: Path(str(p)).with_suffix(".track.wav"))
+    srv._slot.backend = None
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"x")
+
+    job = srv.Job(job_id="v", modality="video", media_path=clip, prompt=None)
+    await srv._run_job(job)
+
+    assert job.state == "completed", job.error
+    assert order == [
+        "video:.mp4:None",
+        f"audio:.wav:{srv.VIDEO_AUDIO_QUESTION}",
+    ]
+    assert job.result_text.startswith("【畫面】\nvideo-answer")
+    assert "【聲音】\naudio-answer" in job.result_text
+    assert srv._slot.backend.modality == "audio", "the audio model is what stays resident"
+
+
+@pytest.mark.asyncio
+async def test_a_silent_video_skips_the_audio_model_and_says_so(monkeypatch, tmp_path) -> None:
+    loads: list[str] = []
+
+    class _Tracing(_FakeBackend):
+        def load(self) -> None:
+            loads.append(self.modality)
+            super().load()
+
+    monkeypatch.setitem(srv._BACKENDS, "video", lambda: _Tracing("video"))
+    monkeypatch.setitem(srv._BACKENDS, "audio", lambda: _Tracing("audio"))
+    monkeypatch.setattr(srv, "_has_audio_track", lambda p: False)
+    srv._slot.backend = None
+    clip = tmp_path / "s.mp4"
+    clip.write_bytes(b"x")
+
+    job = srv.Job(job_id="s", modality="video", media_path=clip, prompt="他做了什麼")
+    await srv._run_job(job)
+
+    assert job.state == "completed"
+    assert loads == ["video"]
+    assert srv.AUDIO_TRACK_SILENT in job.result_text
+
+
+@pytest.mark.asyncio
+async def test_the_users_question_reaches_both_models(monkeypatch, tmp_path) -> None:
+    asked: list[tuple[str, str | None]] = []
+
+    class _Tracing(_FakeBackend):
+        def infer(self, media_path, prompt, *, history=None, options=None) -> str:
+            asked.append((self.modality, prompt))
+            return "ok"
+
+    monkeypatch.setitem(srv._BACKENDS, "video", lambda: _Tracing("video"))
+    monkeypatch.setitem(srv._BACKENDS, "audio", lambda: _Tracing("audio"))
+    monkeypatch.setattr(srv, "_has_audio_track", lambda p: True)
+    monkeypatch.setattr(srv, "_extract_track", lambda p: p)
+    srv._slot.backend = None
+    clip = tmp_path / "q.mp4"
+    clip.write_bytes(b"x")
+    await srv._run_job(srv.Job(job_id="q", modality="video", media_path=clip, prompt="他在唱什麼歌"))
+    assert asked == [("video", "他在唱什麼歌"), ("audio", "他在唱什麼歌")]

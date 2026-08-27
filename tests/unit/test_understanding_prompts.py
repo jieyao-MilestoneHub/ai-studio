@@ -97,4 +97,6 @@ def test_rewriter_system_prompts_name_the_models_language() -> None:
     assert "only in English" in und.REWRITE_SYSTEM[MediaKind.IMAGE_UNDERSTAND]
     for kind in (MediaKind.AUDIO_UNDERSTAND, MediaKind.VIDEO_UNDERSTAND):
         assert "請只用繁體中文" in und.REWRITE_SYSTEM[kind]
-    assert "cannot hear" in und.REWRITE_SYSTEM[MediaKind.VIDEO_UNDERSTAND]
+    # /說影 hears too (a second model on the track); the rewriter must know.
+    assert "listens to\nits audio track" in und.REWRITE_SYSTEM[MediaKind.VIDEO_UNDERSTAND]
+    assert "cannot hear" not in und.REWRITE_SYSTEM[MediaKind.VIDEO_UNDERSTAND]
