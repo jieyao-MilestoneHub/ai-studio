@@ -57,7 +57,28 @@ def test_pod_setup_stages_every_inference_server_backend() -> None:
         "openai/gpt-oss-20b",
     ):
         assert f"dl_repo {repo}" in setup, f"pod_setup.sh does not stage {repo}"
-    assert "NEED_KB=$((158 * 1024 * 1024" in setup, "headroom check not sized for all four backends"
+    assert "NEED_KB=$((182 * 1024 * 1024" in setup, "headroom check not sized for all four backends"
+
+
+def test_pod_setup_downloads_whole_repos_sequentially_without_xet_high_performance() -> None:
+    """The container's cgroup caps RAM at 62GB; four parallel repo downloads
+    in xet high-performance mode tripped the OOM killer (2026-08-27). Repos
+    must be queued and drained one at a time with that mode unset."""
+    setup = (REPO / "deploy" / "pod_setup.sh").read_text(encoding="utf-8")
+    assert "env -u HF_XET_HIGH_PERFORMANCE" in setup
+    assert "\ndl_repos_start\n" in setup, "the repo chain is never started"
+    assert setup.index("dl_repo openai/gpt-oss-20b") < setup.index("\ndl_repos_start\n")
+    assert "repos.failed" in setup, "a failed repo must be named, not hidden behind the chain's pid"
+    # The loaders read only one checkpoint format per repo (each repo's
+    # model.safetensors.index.json); the spare formats are ~57GB of a 200GB volume.
+    assert "dl_repo moondream/moondream3-preview 'model-0000*' 'model_fp8.pt'" in setup
+    assert "dl_repo openai/gpt-oss-20b 'original/*' 'metal/*'" in setup
+    assert "NEED_KB=$((182 * 1024 * 1024" in setup
+
+
+def test_pod_setup_refuses_without_hf_token_for_the_gated_repo() -> None:
+    setup = (REPO / "deploy" / "pod_setup.sh").read_text(encoding="utf-8")
+    assert 'HF_TOKEN:-' in setup and "gated" in setup
 
 
 def test_there_are_deploy_scripts_to_check() -> None:
@@ -188,10 +209,14 @@ def test_the_advertised_download_size_includes_the_lora() -> None:
     """The log line is what an operator watches to know whether a stall is
     normal. It was ~51GB before this LoRA's 0.69GB was added, then ~52GB
     before the Flux base model's ~17GB was added, then ~73GB more for the
-    three understanding models."""
+    three understanding models -- then ~99GB once measured against each
+    repo's real file list, plus ~14GB for gpt-oss-20b."""
     body = POD_SETUP.read_text(encoding="utf-8")
 
-    assert "starting weight downloads (~52GB H3 + ~17GB Flux + ~73GB understanding models)" in body
+    assert (
+        "starting weight downloads (~52GB H3 + ~17GB Flux + ~99GB understanding models "
+        "+ ~14GB gpt-oss-20b)"
+    ) in body
 
 
 # ------------------------------------------------- the ComfyUI flag probe

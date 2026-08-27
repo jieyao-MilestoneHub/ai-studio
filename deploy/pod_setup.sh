@@ -60,7 +60,8 @@ log "card has ${VRAM_GB}GB -> ${QUANT} weights"
 # next pod re-provisions instead of trusting a stale volume. Bumped to 2 when
 # the three understanding models (moondream3/Qwen3-Omni-Captioner/Tarsier2)
 # were added, so a volume provisioned before that gets them on its next open.
-SETUP_VERSION=2
+# Bumped to 3 when gpt-oss-20b (/himonkey) joined the download set.
+SETUP_VERSION=3
 MARKER="/workspace/.ai-studio-setup-v${SETUP_VERSION}-${QUANT}"
 if [ -f "$MARKER" ] && [ -d "$CU/custom_nodes/ComfyUI-MiniMax-H3-Turbo" ]; then
   log "volume already provisioned ($MARKER); skipping download and install"
@@ -141,10 +142,13 @@ python3 -c 'import hf_transfer' 2>/dev/null ||
 export HF_XET_HIGH_PERFORMANCE=1 HF_HUB_ENABLE_HF_TRANSFER=1 HF_HOME=/workspace/.hf
 command -v hf >/dev/null || pip install -q --break-system-packages -U huggingface_hub
 
-# ~158GB of weights against whatever /workspace actually has (52GB H3 + 17GB
-# Flux + ~73GB for the three understanding models, moondream3 + the
-# full-precision Qwen3-Omni-Captioner + Tarsier2, + ~16GB for gpt-oss-20b's
-# native-MXFP4 repo -- see the `dl_repo` calls below). Caught here, loudly, before it is caught 30 minutes later as two
+# ~182GB of weights against whatever /workspace actually has (52GB H3 + 17GB
+# Flux + ~99GB for the three understanding models, moondream3 (19) + the
+# full-precision Qwen3-Omni-Captioner (63) + Tarsier2 (17), + ~14GB for
+# gpt-oss-20b's sharded MXFP4 weights -- see the `dl_repo` calls below; the
+# per-repo excludes are what keep this inside a 200GB volume). On a network
+# volume `df` reports the whole cluster's free space, so this check only
+# bites on a plain container disk. Caught here, loudly, before it is caught 30 minutes later as two
 # silently-missing safetensors files: a download that dies mid-transfer
 # because the disk filled exits same as a download that finished, and
 # `pgrep` alone cannot tell those apart. Observed live: this volume can come
@@ -155,9 +159,9 @@ command -v hf >/dev/null || pip install -q --break-system-packages -U huggingfac
 # free, and must not refuse to finish what it started.
 AVAIL_KB="$(df -k /workspace | awk 'NR==2{print $4}')"
 HAVE_KB="$(du -sk "$M" 2>/dev/null | cut -f1)"
-NEED_KB=$((158 * 1024 * 1024 - ${HAVE_KB:-0}))
+NEED_KB=$((182 * 1024 * 1024 - ${HAVE_KB:-0}))
 [ "$AVAIL_KB" -ge "$NEED_KB" ] || die \
-  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~$((NEED_KB / 1048576))GB more headroom (~52GB H3 + ~17GB Flux + ~73GB understanding models + ~16GB gpt-oss-20b, $((${HAVE_KB:-0} / 1048576))GB already present)"
+  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~$((NEED_KB / 1048576))GB more headroom (~52GB H3 + ~17GB Flux + ~99GB understanding models + ~14GB gpt-oss-20b, $((${HAVE_KB:-0} / 1048576))GB already present)"
 
 DL_PIDS=()
 dl() {  # repo file destdir
@@ -166,18 +170,49 @@ dl() {  # repo file destdir
   DL_PIDS+=("$!:$(basename "$2")")
   log "  downloading $(basename "$2")"
 }
-dl_repo() {  # repo -- the whole repo, into the standard HF cache (HF_HOME)
+dl_repo() {  # repo [exclude-glob ...] -- the whole repo, into the HF cache (HF_HOME)
   # No --local-dir: `transformers.from_pretrained(repo_id, ...)` in
   # inference_server.py looks the model up by repo id in HF_HOME's cache,
   # not in an arbitrary directory, so this has to populate that cache rather
   # than a flat directory the way `dl` does for ComfyUI's non-cache-aware
   # node loaders.
-  nohup hf download "$1" \
-    > "/workspace/dl-logs/$(basename "$1").log" 2>&1 &
-  DL_PIDS+=("$!:$(basename "$1")")
-  log "  downloading $(basename "$1") (full repo, into HF_HOME cache)"
+  #
+  # Queued, not launched: whole repos download ONE AT A TIME, in a single
+  # background chain started by `dl_repos_start` below, and without xet's
+  # high-performance mode. Measured 2026-08-27: this container's cgroup caps
+  # RAM at 62GB (memory.limit_in_bytes; `free` shows the host's 251GB and
+  # lies), one repo download in high-performance mode alone sat at ~51GB
+  # used, and four repos plus the eight single-file downloads in parallel
+  # tripped the OOM killer twice (memory.events oom_kill 2) -- two `hf
+  # download`s died with a bare "Killed", no ENOSPC, no traceback.
+  #
+  # Exclude globs skip the files the loader never opens (read off each
+  # repo's model.safetensors.index.json, 2026-08-27): repos ship spare
+  # checkpoint formats that would otherwise cost ~57GB of a 200GB volume.
+  printf '%s\n' "$*" >> /workspace/dl-logs/repos.list
+  log "  queued $(basename "$1") (full repo, into HF_HOME cache, sequential${2:+, excluding: ${*:2}})"
 }
-log "starting weight downloads (~52GB H3 + ~17GB Flux + ~73GB understanding models)"
+dl_repos_start() {
+  [ -s /workspace/dl-logs/repos.list ] || return 0
+  : > /workspace/dl-logs/repos.failed
+  cat > /workspace/dl-repos.sh <<'CHAIN'
+rc=0
+while read -r repo excludes; do
+  [ -n "$repo" ] || continue
+  # shellcheck disable=SC2086  -- the excludes are meant to word-split
+  hf download "$repo" ${excludes:+--exclude $excludes} \
+    > "/workspace/dl-logs/$(basename "$repo").log" 2>&1 \
+    || { basename "$repo" >> /workspace/dl-logs/repos.failed; rc=1; }
+done < /workspace/dl-logs/repos.list
+exit $rc
+CHAIN
+  nohup env -u HF_XET_HIGH_PERFORMANCE bash /workspace/dl-repos.sh \
+    > /workspace/dl-logs/repos.log 2>&1 &
+  DL_PIDS+=("$!:repos")
+  log "  downloading $(wc -l < /workspace/dl-logs/repos.list) repo(s) sequentially"
+}
+: > /workspace/dl-logs/repos.list
+log "starting weight downloads (~52GB H3 + ~17GB Flux + ~99GB understanding models + ~14GB gpt-oss-20b)"
 dl Comfy-Org/MiniMax-H3 "$DIT" "$M"
 dl Comfy-Org/MiniMax-H3 text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors "$M"
 dl Comfy-Org/MiniMax-H3 vae/minimax_h3_video_vae_fp16.safetensors "$M"
@@ -198,6 +233,19 @@ dl comfyanonymous/flux_text_encoders t5xxl_fp8_e4m3fn.safetensors "$M/text_encod
 # against several such repackagings, all serving the same file with no auth.
 dl Comfy-Org/z_image split_files/vae/ae.safetensors "$M/vae"
 
+# omni-research/Tarsier2-7b-0115 is a *gated* repo (HF "gated: auto": accept
+# the terms once on huggingface.co, then any token of that account reads
+# it). Without a token `hf download` fails with "Access denied. This
+# repository requires approval" -- observed live 2026-08-27, after the other
+# downloads had already spent their bandwidth. Refuse here instead. The
+# token arrives in the environment (runtime/session.py's provision feeds it
+# on stdin ahead of this script, so it is never on disk or in argv) and
+# huggingface_hub reads HF_TOKEN on its own.
+TARSIER_SNAP=/workspace/.hf/hub/models--omni-research--Tarsier2-7b-0115/snapshots
+if [ -z "${HF_TOKEN:-}" ] && ! ls "$TARSIER_SNAP"/*/config.json >/dev/null 2>&1; then
+  die "HF_TOKEN is not set and Tarsier2 (/說影) is not yet cached: it is a gated repo. Accept https://huggingface.co/omni-research/Tarsier2-7b-0115 once, then put HF_TOKEN in .env"
+fi
+
 # The three understanding models (/說圖 /說音 /說影), each a whole repo rather
 # than one file -- see `dl_repo`'s comment. Qwen3-Omni-Captioner is
 # downloaded at full precision and quantized to 4-bit on load by
@@ -208,7 +256,9 @@ dl Comfy-Org/z_image split_files/vae/ae.safetensors "$M/vae"
 # one-time download (~60GB `[reported]` vs Q4's ~17-22GB *resident* size --
 # the two numbers are not comparable, one is on-disk and one is in-VRAM) for
 # not depending on an unverified third party's requantization.
-dl_repo moondream/moondream3-preview
+# Its index maps every weight to modelv2-*; model-* and model_fp8.pt are
+# older/alternate formats the remote code never opens (29GB).
+dl_repo moondream/moondream3-preview 'model-0000*' 'model_fp8.pt'
 dl_repo Qwen/Qwen3-Omni-30B-A3B-Captioner
 dl_repo omni-research/Tarsier2-7b-0115
 # /himonkey's gpt-oss-20b, the fourth backend of inference_server.py. Its
@@ -218,7 +268,10 @@ dl_repo omni-research/Tarsier2-7b-0115
 # Hub inside the first /himonkey request's background thread would surface
 # as a 10-minute silent stall (or an ENOSPC nobody sees) rather than as a
 # failed setup step -- exactly what the headroom check above exists for.
-dl_repo openai/gpt-oss-20b
+# Its index maps to model-0000*-of-00002; original/ (raw MXFP4 for the
+# reference impl) and metal/ (Apple) are 27.6GB transformers never reads.
+dl_repo openai/gpt-oss-20b 'original/*' 'metal/*'
+dl_repos_start
 
 # ── 4. wait for the weights, then restart ComfyUI ─────────────────────────
 while pgrep -f 'hf download' >/dev/null; do
@@ -234,7 +287,14 @@ done
 FAILED_DL=()
 for entry in "${DL_PIDS[@]}"; do
   pid="${entry%%:*}"; name="${entry#*:}"
-  wait "$pid" 2>/dev/null || FAILED_DL+=("$name")
+  if ! wait "$pid" 2>/dev/null; then
+    if [ "$name" = repos ]; then
+      while IFS= read -r failed_repo; do FAILED_DL+=("$failed_repo"); done \
+        < /workspace/dl-logs/repos.failed
+    else
+      FAILED_DL+=("$name")
+    fi
+  fi
 done
 [ "${#FAILED_DL[@]}" -eq 0 ] || die \
   "download(s) failed: ${FAILED_DL[*]} -- see /workspace/dl-logs/<name>.log ($(df -h /workspace | awk 'NR==2{print $4}') free)"

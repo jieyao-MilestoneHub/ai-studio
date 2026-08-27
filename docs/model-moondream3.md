@@ -50,7 +50,7 @@ this fallback is taken.
 | GPU | shared with H3/Flux — RTX 4090 24GB minimum, per the existing ladder | one pod, one card; understanding and generation never run concurrently (see below) |
 | VRAM headroom | `[speculative]` — moondream3 alone is `[reported]` >16GB, which is most of a 24GB card on its own | unmeasured: whether the eviction hand-off with ComfyUI (`ComfyClient.free_memory()` / `InferenceClient.unload()`, see `docs/schedule.md`'s "GPU hand-off" section) leaves any transient double-residency that could OOM |
 | CUDA | same pod, same template as H3 — see [model-h3.md](model-h3.md) | `deploy/inference_server.py` runs inside ComfyUI's own `.venv-cu128`, reusing its torch+CUDA build rather than a fresh venv |
-| Disk | full repo, into the standard HF cache (`HF_HOME=/workspace/.hf`) | see `deploy/pod_setup.sh`'s `dl_repo` calls |
+| Disk | 📏 18.5GB — the four `modelv2-*.safetensors` shards its `model.safetensors.index.json` maps to, into the standard HF cache (`HF_HOME=/workspace/.hf`) | the full repo is 47.6GB; `model-0000*` (18.5GB, an older shard set) and `model_fp8.pt` (10.5GB) are excluded by `deploy/pod_setup.sh`'s `dl_repo` call because the remote code never references them |
 
 **Unverified dependency risk**: `deploy/inference_server.py` pip-installs
 `transformers`/`accelerate`/`bitsandbytes` into ComfyUI's own venv rather

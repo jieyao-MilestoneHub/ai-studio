@@ -133,9 +133,13 @@ minutes.
 (`/說圖` `/說音` `/說影`).** moondream3 + Qwen3-Omni-Captioner (downloaded
 full-precision, quantized on load — see
 [model-qwen3-omni-captioner.md](model-qwen3-omni-captioner.md)) + Tarsier2
-add roughly **~73 GB more** per `deploy/pod_setup.sh`'s own disk-headroom
-math, bringing a from-scratch download to **~142 GB** rather than the
-~72.7–78.7 GB the arithmetic above was built on. At that size the
+add **~99 GB** 📏 (moondream3 18.5 + Qwen3-Omni-Captioner 63.4 + Tarsier2
+16.6, read off each repo's file list on 2026-08-27, after excluding the
+spare checkpoint formats the loaders never open), and `/himonkey`'s
+gpt-oss-20b **13.8 GB** 📏 more, bringing a from-scratch download to
+**~182 GB** rather than the ~72.7–78.7 GB the arithmetic above was built
+on — which is why the `ai-studio-weights` volume was grown from 100 to
+200 GB ($14/month) on 2026-08-27. At that size the
 break-even math above (redownload wins by ~60×) needs to be redone, not
 assumed to still hold — a persistent network volume becomes the
 better-justified default once these three models are in the mix, which is

@@ -40,6 +40,16 @@ class Settings(BaseSettings):
         "Flux prompt (prompts/convert.py, prompts/flux.py). The structured code "
         "stays; raw is what the group asked for.",
     )
+    hf_token: SecretStr | None = Field(
+        default=None,
+        alias="HF_TOKEN",
+        description="A Hugging Face read token. Needed because "
+        "omni-research/Tarsier2-7b-0115 (/說影) is a gated repo: accept its "
+        "terms on huggingface.co once, and any token of that account reads it. "
+        "Fed to deploy/pod_setup.sh on stdin by runtime.session.provision, never "
+        "written to the pod's disk. The other three understanding/chat repos "
+        "are ungated and download without it.",
+    )
     network_volume_id: str | None = Field(
         default=None,
         alias="AI_STUDIO_NETWORK_VOLUME_ID",

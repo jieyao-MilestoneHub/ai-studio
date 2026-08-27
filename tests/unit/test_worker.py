@@ -736,3 +736,40 @@ async def test_a_job_is_only_delivered_once(queue, tmp_path: Path) -> None:
     await _tick(queue, host, tmp_path)
 
     assert len(host.delivered) == 1
+
+
+def test_provision_feeds_hf_token_on_stdin_not_argv(monkeypatch, tmp_path) -> None:
+    """The gated Tarsier2 repo needs HF_TOKEN on the pod; it must reach the
+    setup script through stdin (read into the env) -- never in argv, which
+    `ps` shows on both ends, and never written to the pod's disk."""
+    from pydantic import SecretStr
+
+    from ai_studio.runtime import session as sess
+
+    script = tmp_path / "setup.sh"
+    script.write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
+    inference = tmp_path / "srv.py"
+    inference.write_text("print()\n", encoding="utf-8")
+    seen: dict[str, object] = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = "started"
+        stderr = ""
+
+    def fake_ssh(argv, *, stdin, timeout_s):
+        seen["argv"] = argv
+        seen["stdin"] = stdin
+        return _Proc()
+
+    monkeypatch.setattr(sess, "_runpodctl", lambda *a: {"ip": "1.2.3.4", "port": "22"})
+    monkeypatch.setattr(sess, "_ssh_deposit", lambda *a, **k: None)
+    monkeypatch.setattr(sess, "_ssh", fake_ssh)
+    monkeypatch.setattr(sess, "get_settings", lambda: type("S", (), {"hf_token": SecretStr("hf_secret")})())
+    live = sess.Session.__new__(sess.Session)
+    live.__dict__.update(pod_id="p1", vram_gb=24)
+    sess.provision(live, script=script, inference_script=inference)
+
+    assert str(seen["stdin"]).startswith("hf_secret\n#!/bin/bash")
+    assert not any("hf_secret" in a for a in seen["argv"])
+    assert "IFS= read -r HF_TOKEN; export HF_TOKEN;" in " ".join(seen["argv"])
