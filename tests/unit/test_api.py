@@ -441,6 +441,8 @@ def test_the_page_names_the_open_model_with_a_link(client) -> None:
     body = c.get(f"/q/{job.token}").text
     assert "開源模型" in body
     assert 'href="https://huggingface.co/Comfy-Org/MiniMax-H3"' in body
+    assert "專案 REPO" in body
+    assert 'href="https://github.com/jieyao-MilestoneHub/ai-studio"' in body
 
     for kind in MediaKind:
         name, url = model_for(kind)

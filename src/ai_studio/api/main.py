@@ -250,6 +250,9 @@ _STATE_ZH = {
 }
 
 
+PROJECT_REPO_URL = "https://github.com/jieyao-MilestoneHub/ai-studio"
+"""Shown on every job page so a viewer can find the code that made it."""
+
 _GENERATION_MODELS: dict[MediaKind, tuple[str, str]] = {
     # The two ComfyUI-served generators name their weights by repo, not by a
     # capabilities snapshot (their `model_id` is "<model>@<w>x<h>"), so the
@@ -297,10 +300,14 @@ def _render(job: Job, position: int | None, base_url: str) -> str:
         "開源模型",
         f'<a href="{html.escape(model_url)}" rel="noopener">{html.escape(model_name)}</a>',
     ))
+    rows.append((
+        "專案 REPO",
+        f'<a href="{html.escape(PROJECT_REPO_URL)}" rel="noopener">{html.escape(PROJECT_REPO_URL)}</a>',
+    ))
     if job.error:
         rows.append(("錯誤", html.escape(job.error[:300])))
 
-    # Values are already HTML (escaped text, or the one anchor above).
+    # Values are already HTML (escaped text, or the anchors above).
     body = "".join(f"<tr><th>{html.escape(k)}</th><td>{v}</td></tr>" for k, v in rows)
 
     action = ""
