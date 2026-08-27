@@ -321,10 +321,10 @@ def test_the_h3_few_shot_example_parses_through_the_real_builder() -> None:
     """The example in the system prompt is the model's strongest instruction.
     If it ever stops validating, the model is being shown a shape the code
     would reject -- so it is built here, with the real parser."""
-    from ai_studio.prompts.convert import SYSTEM_PROMPT, _extract_json, build_prompt
+    from ai_studio.prompts.convert import SYSTEM_PROMPT, build_prompt, extract_json
 
     example = SYSTEM_PROMPT.split("total duration 10.12 seconds:", 1)[1]
-    prompt = build_prompt(_extract_json(example), duration_s=10.12)
+    prompt = build_prompt(extract_json(example), duration_s=10.12)
     assert len(prompt.shots) == 2
     assert prompt.shots[1].cut_at_s == 6.0
     assert prompt.non_diegetic_music == "N/A"

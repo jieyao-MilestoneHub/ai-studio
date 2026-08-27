@@ -639,3 +639,22 @@ def test_a_database_created_before_chat_shipped_migrates_cleanly(tmp_path: Path)
 
         q.append_chat_turn("Ualice", "Cgroup", "user", "hi")
         assert q.recent_chat_turns("Ualice") == [("user", "hi")]
+
+
+def test_an_uncounted_requeue_hands_the_attempt_back_and_floors_at_zero(q: JobQueue) -> None:
+    """`fail(requeue=True, uncounted=True)` is for a designed stop (a drama at
+    the lease boundary): the row goes back to parsed and the claim's
+    attempts+1 is undone, never below zero."""
+    job, _ = q.enqueue("evt-uncounted", "Cgroup", "a story", user_id="U1")
+    q.set_parsed(job.id, {"_rendered": "t"})
+    claimed = q.claim_next()
+    assert claimed is not None and claimed.attempts == 1
+
+    back = q.fail(job.id, "resume: lease boundary", requeue=True, uncounted=True)
+    assert back is not None and back.state is JobState.PARSED and back.attempts == 0
+
+    again = q.fail(job.id, "resume again", requeue=True, uncounted=True)
+    assert again is not None and again.attempts == 0, "floors at zero"
+
+    counted = q.fail(job.id, "provider: real failure", requeue=True)
+    assert counted is not None and counted.attempts == 0, "a counted requeue does not touch attempts"

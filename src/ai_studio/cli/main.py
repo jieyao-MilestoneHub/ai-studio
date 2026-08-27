@@ -142,7 +142,25 @@ def gc(
         console.print(f"[yellow]could not read the queue ({exc}); protecting nothing[/yellow]")
 
     total_removed = total_freed = 0
-    for label, directory in (("files", settings.files_dir), ("incoming", settings.incoming_dir)):
+    # A drama's run directory holds ~15 intermediate stills and clips; sweep
+    # it on the same clock, but never one whose job is still pending -- the
+    # state file is what lets a requeued drama resume instead of re-paying.
+    drama_dirs = sorted(p for p in (settings.runs_dir / "drama").glob("*") if p.is_dir())
+    pending_tokens = set()
+    try:
+        with JobQueue() as queue:
+            pending_tokens = {j.token for j in queue.pending()}
+    except Exception:  # the queue was already reported unreadable above
+        pending_tokens = set()
+    sweep_targets = [("files", settings.files_dir), ("incoming", settings.incoming_dir)]
+    # `sweep_old_files` is deliberately flat, so each stage directory of a
+    # drama is its own target (state.json and the manifest sit at the top).
+    for d in drama_dirs:
+        if d.name in pending_tokens:
+            continue
+        sweep_targets.append((f"runs/drama/{d.name}", d))
+        sweep_targets += [(f"runs/drama/{d.name}/{sub.name}", sub) for sub in sorted(d.iterdir()) if sub.is_dir()]
+    for label, directory in sweep_targets:
         result = sweep_old_files(
             directory, max_age_days=max_age, dry_run=dry_run, keep=protected
         )
@@ -332,6 +350,124 @@ async def _generate(
         f"audio={'yes' if asset.has_audio else 'no'}, "
         f"{asset.size_bytes / 1_048_576:.1f} MB, cost ${asset.cost_usd:.4f}"
     )
+
+
+DRYRUN_SCREENPLAY: dict[str, Any] = {
+    # The canned screenwriter replies `drama-dryrun` feeds through the real
+    # `prompts.drama` parser, so the offline run exercises validation too.
+    "outline": {
+        "title": "夜市的信",
+        "logline": "A night-market stall owner finds a letter that says the market closes tomorrow.",
+        "style": "Live-action, cinematic",
+        "anchor": {
+            "name": "阿玲",
+            "appearance": "25-year-old Asian woman, oval face, small mole under right eye, "
+            "dark chin-length straight hair",
+            "wardrobe": "a faded red apron over a white t-shirt",
+            "voice": "soft, low, slightly hoarse",
+        },
+        "beats": [
+            "She lifts the stall's shutter before dawn and finds an envelope taped underneath.",
+            "She reads it between customers: the market closes tomorrow.",
+            "A regular asks what is wrong; she says nothing is.",
+            "Evening: she looks down the row of stalls packing up early.",
+            "She writes a reply on the back of the letter.",
+            "Dawn again: she tapes her reply where the first one was, and opens as usual.",
+        ],
+        "overall_soundscape": "Sizzling oil, a crowd murmuring, scooters passing on the road behind.",
+        "non_diegetic_music": "N/A",
+    },
+    "shots": [
+        {"index": 1, "scene": "a night-market stall before dawn, shutter half up, string lights off", "framing": "medium", "action": "the lead crouches and peels an envelope from under the counter", "camera": {"motion": "push_in", "amplitude": "small", "speed": "slow"}},
+        {"index": 2, "scene": "the same stall, mid-evening, steam from the wok, a paper letter in hand", "framing": "close-up", "action": "the lead reads the letter and her hands go still", "camera": {"motion": "static_shot"}},
+        {"index": 3, "scene": "the stall counter, a regular customer's shoulder in the foreground", "framing": "over-the-shoulder", "action": "the lead answers with a small shake of the head", "camera": {"motion": "static_shot"}, "dialogue": [{"speaker_id": "S1", "identity": "the lead", "language": "Mandarin Chinese", "text": "沒事,明天照常開。"}]},
+        {"index": 4, "scene": "the market row at night, neighbouring stalls stacking crates", "framing": "wide", "action": "the lead stands at her counter looking down the row", "camera": {"motion": "pan_right", "speed": "slow"}, "cut_reason": "time_passing"},
+        {"index": 5, "scene": "the counter under one work lamp, the letter turned face down, a pen", "framing": "medium close-up", "action": "the lead writes on the back of the letter", "camera": {"motion": "push_in", "amplitude": "small", "speed": "slow"}},
+        {"index": 6, "scene": "the stall before dawn again, shutter going up, first light", "framing": "close-up", "action": "the lead tapes the letter under the counter and stands", "camera": {"motion": "tilt_up", "speed": "slow"}, "cut_reason": "time_passing"},
+    ],
+}
+
+
+@app.command("drama-dryrun")
+def drama_dryrun(
+    premise: str = typer.Argument("一個夜市老闆娘發現攤位下藏著一封信", help="The premise (recorded, not used offline)."),
+    out: Path = typer.Option(Path("out"), help="Where the finished mp4 goes."),
+    runs: Path = typer.Option(Path("runs/_dryrun"), help="Where the drama's state and stages go."),
+    screenplay: Path | None = typer.Option(
+        None, help="A JSON file with {outline, shots} to use instead of the built-in one."
+    ),
+) -> None:
+    """Run the whole /短劇 stage machine offline: scripted screenwriter, stub
+    Flux and H3 (ffmpeg testsrc2), real loudnorm + concat. Proves the state
+    file, the resume rule and the assembly with no pod and no money. Run it
+    twice: the second run must render nothing."""
+    try:
+        asyncio.run(_drama_dryrun(premise, out, runs, screenplay))
+    except AIStudioError as exc:
+        console.print(f"[red]{type(exc).__name__}:[/red] {exc}")
+        raise typer.Exit(1) from None
+
+
+async def _drama_dryrun(premise: str, out: Path, runs: Path, screenplay_file: Path | None) -> None:
+    import json as _json
+    from datetime import timedelta, timezone
+
+    from ai_studio.llm.endpoint import ScriptedLlmClient
+    from ai_studio.pipeline.drama import load_state, render_drama
+    from ai_studio.pipeline.queue import JobQueue
+    from ai_studio.prompts.drama import screenplay_payload, write_screenplay
+
+    canned = DRYRUN_SCREENPLAY
+    if screenplay_file is not None:
+        canned = _json.loads(screenplay_file.read_text(encoding="utf-8"))
+    shots = canned["shots"]
+    client = ScriptedLlmClient(
+        _json.dumps(canned["outline"], ensure_ascii=False),
+        _json.dumps({"shots": shots[:3]}, ensure_ascii=False),
+        _json.dumps({"shots": shots[3:]}, ensure_ascii=False),
+    )
+    screenplay, how = await write_screenplay(premise, client)
+    console.print(f"[bold]{screenplay.title}[/bold] -- {screenplay.logline}  ({how})")
+    console.print(f"  anchor: {screenplay.anchor.appearance}")
+
+    runs.mkdir(parents=True, exist_ok=True)
+    queue = JobQueue(runs / "dryrun.sqlite3")
+    try:
+        accepted, _ = queue.enqueue("dryrun", "Cdryrun", premise, media_kind=MediaKind.DRAMA)
+        queue.set_parsed(accepted.id, screenplay_payload(screenplay, how))
+        job = queue.by_id(accepted.id)
+        assert job is not None
+        providers = {
+            MediaKind.IMAGE: get_provider("stub-flux", work_dir=runs / "_stub"),
+            MediaKind.VIDEO: get_provider("stub", work_dir=runs / "_stub"),
+        }
+        touches = 0
+
+        def touched() -> None:
+            nonlocal touches
+            touches += 1
+
+        started = time.monotonic()
+        result = await render_drama(
+            job, providers, files_dir=out, runs_dir=runs,
+            deadline=datetime.now(timezone.utc) + timedelta(hours=2),
+            poll_interval_s=0.0, on_activity=touched,
+        )
+        state = load_state(runs / "drama" / job.token)
+    finally:
+        queue.close()
+
+    info = media.probe(result)
+    console.print(
+        f"\n[green]wrote[/green] {result}  {info.width}x{info.height} {info.duration_s:.1f}s "
+        f"audio={'yes' if info.has_audio else 'no'} in {time.monotonic() - started:.0f}s"
+    )
+    console.print(
+        f"  stills {len(state.character)}+{len(state.keyframes)}, clips {len(state.clips)}, "
+        f"leveled {len(state.leveled)}, ffmpeg calls {len(state.ffmpeg_argv)}, "
+        f"activity touches {touches}, face_repair={state.face_repair}"
+    )
+    console.print(f"  state: {runs / 'drama' / job.token / 'state.json'}  (run again: nothing re-renders)")
 
 
 _UNDERSTAND_KINDS = {
@@ -718,6 +854,9 @@ def session_reap(
     chat_idle_minutes: int = typer.Option(
         None, help="Grace after a /himonkey reply (default: runtime.session.CHAT_IDLE_MINUTES)."
     ),
+    drama_idle_minutes: int = typer.Option(
+        None, help="Grace after a /短劇 artifact (default: runtime.session.DRAMA_IDLE_MINUTES)."
+    ),
 ) -> None:
     """Close the pod once it has gone quiet. Schedule this every minute.
 
@@ -737,6 +876,7 @@ def session_reap(
                 understanding_idle_minutes or sess.UNDERSTANDING_IDLE_MINUTES
             ),
             chat_idle_minutes=chat_idle_minutes or sess.CHAT_IDLE_MINUTES,
+            drama_idle_minutes=drama_idle_minutes or sess.DRAMA_IDLE_MINUTES,
             hold=hold,
         )
     )
@@ -1040,11 +1180,12 @@ class _RuntimeHost:
                     media_url=f"{self.base_url}/files/{asset.name}",
                     preview_url=f"{self.base_url}/files/{preview.name}",
                     status_url=status_url,
-                    is_video=job.media_kind is MediaKind.VIDEO,
+                    is_video=job.media_kind in (MediaKind.VIDEO, MediaKind.DRAMA),
                     prompt=job.text,
                     quote_token=job.quote_token,
+                    caption=_drama_caption(job),
                 )
-            fallback = f"{job.text[:40]} 完成了\n{status_url}"
+            fallback = f"{_drama_caption(job) or job.text[:40] + ' 完成了'}\n{status_url}"
             if not messages:
                 messages = [
                     line_push.text_message(fallback, quote_token=job.quote_token)
@@ -1060,6 +1201,17 @@ class _RuntimeHost:
             retry_key=job.token,
             quote_token=job.quote_token,
         )
+
+
+def _drama_caption(job: Any) -> str | None:
+    """「《title》logline」for a finished drama; None for every other kind,
+    so `delivered_messages` keeps its「<prompt> 完成了」default."""
+    if job.media_kind is not MediaKind.DRAMA:
+        return None
+    screenplay = (job.prompt or {}).get("screenplay") or {}
+    title = str(screenplay.get("title") or job.text[:20])
+    logline = str(screenplay.get("logline") or "")
+    return f"🎭《{title}》完成了\n{logline[:80]}".rstrip()
 
 
 @app.command("worker")

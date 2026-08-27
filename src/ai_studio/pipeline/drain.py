@@ -36,12 +36,14 @@ from typing import Any, Protocol
 from ai_studio.config.settings import get_settings
 from ai_studio.core.chat_spec import ChatRequest
 from ai_studio.core.enums import GenMode, MediaKind
-from ai_studio.core.errors import AIStudioError, ProviderError
+from ai_studio.core.errors import AIStudioError, DramaResume, ProviderError
 from ai_studio.core.image_provider_spec import ImageRequest
 from ai_studio.core.provider_spec import ClipRequest
 from ai_studio.core.understanding_spec import UnderstandingRequest
 from ai_studio.pipeline.convert_worker import DEFAULT_DURATION_S, snap_frames
+from ai_studio.pipeline.drama import render_drama
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
+from ai_studio.pipeline.residency import make_room_for
 
 STOP_CLAIMING_BEFORE_S = 8 * 60
 """Reserve the last eight minutes of the window for finishing, not starting.
@@ -102,38 +104,6 @@ class ChatProviderLike(Protocol):
     async def aclose(self) -> None: ...
 
 
-async def make_room_for(job_kind: MediaKind, providers: dict[MediaKind, Any]) -> None:
-    """Evict whichever side's resident model the upcoming job does not need.
-
-    Pull-based GPU hand-off: this is the one place that already knows which
-    job is about to run, so it is the one place responsible for evicting the
-    other workload's model before submitting -- one 24GB card holds at most
-    one of {ComfyUI's H3/Flux checkpoint, an understanding model} at a time.
-    Neither provider needs to know the other's endpoint.
-
-    A provider whose kind is not in `providers` (this pod does not serve it)
-    is skipped; a provider whose `evict()` is a no-op (the offline stubs)
-    costs nothing extra to call.
-    """
-    other_kinds = (
-        (MediaKind.VIDEO, MediaKind.IMAGE)
-        if job_kind.is_understanding or job_kind is MediaKind.CHAT
-        else (
-            MediaKind.IMAGE_UNDERSTAND,
-            MediaKind.AUDIO_UNDERSTAND,
-            MediaKind.VIDEO_UNDERSTAND,
-            MediaKind.CHAT,
-        )
-    )
-    evicted: set[int] = set()
-    for kind in other_kinds:
-        provider = providers.get(kind)
-        if provider is None or id(provider) in evicted:
-            continue
-        evicted.add(id(provider))
-        evict = getattr(provider, "evict", None)
-        if evict is not None:
-            await evict()
 
 
 @dataclass
@@ -228,8 +198,15 @@ async def drain_window(
         if job is None:
             break
 
-        provider: Any = providers[job.media_kind]
-        caps = caps_by_kind[job.media_kind]
+        # A drama drives the IMAGE and VIDEO providers itself: there is no
+        # `providers[DRAMA]` entry, and indexing for one here was a KeyError
+        # outside the try -- the job stayed `running` and nobody was told.
+        provider: Any = providers.get(job.media_kind)
+        caps = caps_by_kind.get(job.media_kind)
+        if provider is None and job.media_kind is not MediaKind.DRAMA:
+            queue.fail(job.id, f"this pod serves no provider for {job.media_kind.value}")
+            report.failed += 1
+            continue
 
         started = time.monotonic()
         try:
@@ -242,8 +219,21 @@ async def drain_window(
                 result = await render_clip(job, provider, caps, files_dir, window_end, poll_interval_s)
             elif job.media_kind is MediaKind.CHAT:
                 result = await render_chat(job, provider, queue, window_end, poll_interval_s)
-            else:
+            elif job.media_kind is MediaKind.DRAMA:
+                result = await render_drama(
+                    job, providers, files_dir=files_dir, runs_dir=get_settings().runs_dir,
+                    deadline=window_end, poll_interval_s=poll_interval_s, on_activity=on_activity,
+                )
+            elif job.media_kind.is_understanding:
                 result = await render_understanding(job, provider, window_end, poll_interval_s)
+            else:
+                raise AIStudioError(f"no renderer for media kind {job.media_kind!r}")
+        except DramaResume as exc:
+            # A designed stop at the lease boundary, not a failure: requeue
+            # with the attempt handed back (see worker._run_one).
+            queue.fail(job.id, f"resume: {exc}", requeue=True, uncounted=True)
+            report.requeued += 1
+            break  # the window is ending; nothing else will fit either
         except ProviderError as exc:
             # The backend's problem, so keep the request — but only while it has
             # attempts left, or requeue becomes an infinite loop.

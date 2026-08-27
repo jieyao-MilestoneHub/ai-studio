@@ -36,19 +36,20 @@ from typing import Any, Protocol
 
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import MediaKind
-from ai_studio.core.errors import AIStudioError, ProviderError
+from ai_studio.core.errors import AIStudioError, DramaResume, ProviderError
 from ai_studio.pipeline.convert_worker import convert_job, needs_llm
 from ai_studio.pipeline.drain import (
     MAX_ATTEMPTS,
     MAX_CONSECUTIVE_FAILURES,
-    make_room_for,
     may_claim,
     render_chat,
     render_clip,
     render_image,
     render_understanding,
 )
+from ai_studio.pipeline.drama import render_drama
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
+from ai_studio.pipeline.residency import make_room_for
 
 _log = logging.getLogger("ai_studio.worker")
 
@@ -204,7 +205,9 @@ async def tick(
     host.wait_ready(session)
     providers = host.providers_for(session)
 
-    prepared = await prepare(queue, host, session, providers, state, prompt_mode=prompt_mode)
+    prepared = await prepare(
+        queue, host, session, providers, state, prompt_mode=prompt_mode, report=report
+    )
 
     kind = next_kind(queue, state)
     job = queue.claim_next(gpu_tier=getattr(session, "tier_label", None), media_kind=kind)
@@ -238,6 +241,7 @@ async def prepare(
     state: WorkerState,
     *,
     prompt_mode: str | None = None,
+    report: WorkerReport | None = None,
 ) -> int:
     """Convert queued requests to claimable ones on the pod. Returns how many.
 
@@ -282,6 +286,11 @@ async def prepare(
             how = await convert_job(queue, job.id, llm, prompt_mode=mode)
             _log.info("job %d prepared: %s", job.id, how)
             done += 1
+            if how.startswith("failed"):
+                # A drama whose screenplay could not be written is FAILED
+                # already (convert_worker); the group must hear it now, since
+                # nothing else will ever claim that row.
+                await _deliver(queue, host, job.id, None, report or WorkerReport())
     elif costly:
         _log.info(
             "%d rewrite(s) deferred: %s still has claimable work",
@@ -293,7 +302,7 @@ async def prepare(
 def should_defer_llm(queue: JobQueue, state: WorkerState) -> bool:
     """Hold the rewrite batch while the resident generation checkpoint still
     has work, so it is not evicted and reloaded around a single rewrite."""
-    if state.resident not in (MediaKind.VIDEO, MediaKind.IMAGE):
+    if state.resident is None or not state.resident.is_generation:
         return False
     return any(
         j.state is JobState.PARSED and j.media_kind is state.resident for j in queue.pending()
@@ -328,8 +337,12 @@ async def _run_one(
     would repeat identically is terminal. Two different answers to "the pod
     died mid-render" is how a request gets silently dropped.
     """
-    provider = providers[job.media_kind]
-    caps = provider.capabilities()
+    # A drama drives the IMAGE and VIDEO providers itself; there is no
+    # `providers[DRAMA]` entry and nothing to ask capabilities of here.
+    provider: Any = providers.get(job.media_kind)
+    if provider is None and job.media_kind is not MediaKind.DRAMA:
+        raise AIStudioError(f"this pod serves no provider for {job.media_kind.value}")
+    caps = provider.capabilities() if provider is not None else None
     started = time.monotonic()
 
     try:
@@ -344,8 +357,28 @@ async def _run_one(
             )
         elif job.media_kind is MediaKind.CHAT:
             result = await render_chat(job, provider, queue, deadline, poll_interval_s)
-        else:
+        elif job.media_kind is MediaKind.DRAMA:
+            result = await render_drama(
+                job, providers, files_dir=files_dir, runs_dir=get_settings().runs_dir,
+                deadline=deadline, poll_interval_s=poll_interval_s,
+                # Per artifact, not per job: a drama is 15-30 minutes and the
+                # reaper's grace is 10. Every fetched still or clip is activity.
+                on_activity=lambda: host.touch_activity(MediaKind.DRAMA.value),
+            )
+        elif job.media_kind.is_understanding:
             result = await render_understanding(job, provider, deadline, poll_interval_s)
+        else:
+            raise AIStudioError(f"no renderer for media kind {job.media_kind!r}")
+    except DramaResume as exc:
+        # Not a failure: the drama stopped itself at the lease boundary with
+        # its state file intact. Requeue and hand the attempt back -- three
+        # honest short windows must not read as three provider failures and
+        # orphan the clips already paid for.
+        queue.fail(job.id, f"resume: {exc}", requeue=True, uncounted=True)
+        report.requeued += 1
+        _log.info("job %d paused for the next window: %s", job.id, exc)
+        report.last_action = "resumed-later"
+        return "resumed-later"
     except ProviderError as exc:
         if job.attempts >= MAX_ATTEMPTS:
             queue.fail(job.id, f"provider failed {job.attempts}x: {exc}")

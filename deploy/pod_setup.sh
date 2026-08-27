@@ -62,7 +62,7 @@ log "card has ${VRAM_GB}GB -> ${QUANT} weights"
 # were added, so a volume provisioned before that gets them on its next open.
 # Bumped to 3 when gpt-oss-20b (/himonkey) joined the download set, 4 when
 # Qwen2-Audio and Qwen2.5-VL replaced Qwen3-Omni-Captioner and Tarsier2.
-SETUP_VERSION=4
+SETUP_VERSION=5   # 5 = Impact-Pack FaceDetailer for /短劇 keyframes (best-effort)
 MARKER="/workspace/.ai-studio-setup-v${SETUP_VERSION}-${QUANT}"
 if [ -f "$MARKER" ] && [ -d "$CU/custom_nodes/ComfyUI-MiniMax-H3-Turbo" ]; then
   log "volume already provisioned ($MARKER); skipping download and install"
@@ -402,6 +402,62 @@ for n in need:
     print("[setup]   " + ("OK  " if n in info else "MISS") + " " + n)
 sys.exit(1 if missing else 0)
 ' || die "required H3 nodes are not registered"
+
+# ── 5b. FaceDetailer for /短劇 keyframes -- BEST EFFORT, never fatal ───────
+# ComfyUI-Impact-Pack (FaceDetailer) + Impact-Subpack (UltralyticsDetectorProvider)
+# and one bbox model. Used only by workflows/flux_dev_i2i_face.json, and only
+# when providers/flux.py sees both nodes in /object_info; without them a drama
+# renders plain image-to-image keyframes and records "face_repair: skipped".
+# So nothing in this block may `die`: a detailer that fails to install must
+# not take H3, Flux, the understanding models and chat down with it. Every
+# step logs its outcome instead. The pip install goes through the venv, like
+# everything else ComfyUI loads (trap 2 in this file's header).
+face_repair_setup() {
+  cd "$CU/custom_nodes" || { log "  face-repair: no custom_nodes dir, skipping"; return 0; }
+  for repo in ltdrdata/ComfyUI-Impact-Pack ltdrdata/ComfyUI-Impact-Subpack; do
+    name="${repo##*/}"
+    if [ -d "$name/.git" ]; then
+      log "  face-repair: $name already present"
+    elif git clone --depth 1 --quiet "https://github.com/$repo" 2>/dev/null; then
+      log "  face-repair: cloned $name"
+    else
+      log "  face-repair: WARNING could not clone $repo; FaceDetailer stays off"
+      return 0
+    fi
+    if [ -f "$name/requirements.txt" ]; then
+      "$CU/.venv-cu128/bin/pip" install -q -r "$name/requirements.txt" 2>&1 \
+        | grep -viE 'warning|notice' | tail -2 \
+        || log "  face-repair: WARNING pip install for $name reported errors"
+    fi
+  done
+  mkdir -p "$M/ultralytics/bbox"
+  if [ ! -f "$M/ultralytics/bbox/face_yolov8m.pt" ]; then
+    hf download Bingsu/adetailer face_yolov8m.pt --local-dir "$M/ultralytics/bbox" \
+      > /workspace/dl-logs/face_yolov8m.pt.log 2>&1 \
+      && log "  face-repair: downloaded face_yolov8m.pt" \
+      || log "  face-repair: WARNING face_yolov8m.pt download failed (see dl-logs)"
+  fi
+  # Impact-Pack registers nodes on ComfyUI start; restart so /object_info
+  # reflects them. Same launch line as step 4, same flags.
+  pkill -f 'main.py --listen'; sleep 3
+  cd "$CU" || return 0
+  # shellcheck disable=SC2086
+  nohup "$PY" main.py --listen 0.0.0.0 --port 8188 --enable-cors-header \
+    $EXTRA --reserve-vram 0.7 > /workspace/comfy.log 2>&1 &
+  for i in $(seq 1 60); do
+    sleep 5
+    curl -sf -m 5 http://127.0.0.1:8188/system_stats >/dev/null 2>&1 && break
+  done
+  curl -s -m 30 http://127.0.0.1:8188/object_info | "$PY" -c '
+import json, sys
+info = json.load(sys.stdin)
+for n in ("FaceDetailer", "UltralyticsDetectorProvider"):
+    print("[setup]   face-repair " + ("OK  " if n in info else "MISS") + " " + n)
+' || log "  face-repair: WARNING could not read /object_info after restart"
+  return 0
+}
+log "installing FaceDetailer for /短劇 (best effort)"
+face_repair_setup || log "  face-repair: WARNING setup returned an error; continuing without it"
 
 # ── 6. start the understanding server -- a second, separate process ───────
 # deploy/inference_server.py is deposited at /workspace/inference_server.py

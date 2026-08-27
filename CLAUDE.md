@@ -23,21 +23,25 @@ derived from
 image-to-video / image-to-image, photo/audio/video then `/說圖` / `/說音` /
 `/說影` to describe it, `/himonkey` for plain-text chat via **gpt-oss-20b**,
 video then `/影音` to get its audio track as an M4A (ffmpeg on the host,
-no pod), and「讓我看看」— quote-reply an earlier request to pull that one
-result back as a free reply when push quota is gone; one spelling each, no
-aliases) — see
+no pod), `/短劇` for a one-minute six-shot drama with a stable lead
+(gpt-oss-20b screenplay → Flux keyframes → H3 image-to-video → ffmpeg;
+`docs/drama.md`), and「讓我看看」— quote-reply an earlier request to pull
+that one result back as a free reply when push quota is gone; one spelling
+each, no aliases) — see
 `docs/line-bot.md`.
 
 Currently built: core model, format policy, H3 prompt builder, Flux prompt
 builder, ComfyUI client, the pod-side understanding-model server and its
-client, stub providers, pod lifecycle, CLI, FastAPI + LINE bot (eight triggers,
-queue, status pages, monthly budget guard), and the **pod-side prompt
+client, stub providers, pod lifecycle, CLI, FastAPI + LINE bot (ten triggers,
+queue, status pages, monthly budget guard), the **pod-side prompt
 rewriter**: every request is rewritten into its model's best input shape by
 gpt-oss-20b on the pod before it renders (`prompts/convert.py` H3 schema +
 community rules, `prompts/flux.py`, `prompts/understanding.py`,
 `prompts/chat.py`), batched by the worker's prepare phase so N clips pay one
 model swap; `_built_by` on the job says which path ran. No serverless
-endpoint is involved (retired 2026-08-27). **Not built:** the editing
+endpoint is involved (retired 2026-08-27). And the `/短劇` pipeline
+(`pipeline/drama.py`: resumable per-artifact state, cost and lease-time
+gates, FaceDetailer on stills only). **Not built:** the editing
 grammar implementation, gate rules, planner, render. The grammar is
 specified in `docs/editing-grammar.md` and waiting. The three understanding
 models' licences: moondream3 unverified (`docs/model-moondream3.md`); the

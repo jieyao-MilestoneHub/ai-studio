@@ -609,3 +609,44 @@ async def test_render_chat_refuses_once_the_monthly_sub_budget_is_exhausted(
         with pytest.raises(AIStudioError):
             await render_chat(claimed, provider, q, _end(60), 0.01)
         assert provider.submitted == [], "must fail before ever submitting"
+
+
+# --------------------------------------------------------------------- /短劇
+
+
+@pytest.mark.asyncio
+async def test_drain_window_dispatches_a_drama_without_a_providers_entry_for_it(tmp_path: Path, monkeypatch) -> None:
+    """There is no `providers[DRAMA]`: a drama drives IMAGE and VIDEO itself.
+    The first cut indexed `providers[job.media_kind]` before the dispatch and
+    a drama raised `KeyError` outside the try -- the job stayed `running` and
+    nobody was told. `session drain` is the operator's tool; it must work."""
+    from ai_studio.pipeline import drain as drain_mod
+
+    seen: dict[str, Any] = {}
+
+    async def fake_render_drama(job: Any, providers: Any, **kw: Any) -> Path:
+        seen["job"] = job.id
+        seen["providers"] = set(providers)
+        out = kw["files_dir"] / f"{job.token}.mp4"
+        out.write_bytes(b"mp4")
+        return out
+
+    monkeypatch.setattr(drain_mod, "render_drama", fake_render_drama)
+
+    class Caps:
+        def capabilities(self) -> Any:
+            return object()
+
+    queue = JobQueue(tmp_path / "q.sqlite3")
+    try:
+        job, _ = queue.enqueue("evt-drain-drama", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+        queue.set_parsed(job.id, {"_built_by": "llm", "_rendered": "t", "screenplay": {"stub": True}, "shots": []})
+        report = await drain_mod.drain_window(
+            queue, {MediaKind.VIDEO: Caps(), MediaKind.IMAGE: Caps()},
+            window_end=datetime.now(timezone.utc) + timedelta(hours=1), files_dir=tmp_path / "files",
+        )
+    finally:
+        queue.close()
+
+    assert report.completed == 1 and report.failed == 0
+    assert seen["job"] == job.id and seen["providers"] == {MediaKind.VIDEO, MediaKind.IMAGE}

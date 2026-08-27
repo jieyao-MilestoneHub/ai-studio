@@ -22,6 +22,12 @@ from ai_studio import media
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import GenMode, JobState, MediaKind
 from ai_studio.core.errors import ProviderJobFailed
+from ai_studio.core.image_provider_spec import (
+    ImageAsset,
+    ImageJob,
+    ImageProviderCapabilities,
+    ImageRequest,
+)
 from ai_studio.core.provider_spec import ClipAsset, ClipJob, ClipRequest, ProviderCapabilities
 from ai_studio.core.understanding_spec import (
     UnderstandingAsset,
@@ -169,6 +175,99 @@ class StubProvider:
             str(dest),
         ]
         media.run(argv, timeout_s=180.0)
+
+
+STUB_IMAGE_CAPABILITIES = ImageProviderCapabilities(
+    provider="stub-flux",
+    model_id="stub-testsrc2-still",
+    native_width=864,
+    native_height=480,
+    modes=frozenset({GenMode.T2I, GenMode.I2I}),
+    output_format="png",
+    cost_per_image_usd=0.0,
+    expected_latency_s=1.0,
+    max_concurrent_jobs=4,
+)
+
+
+class StubImageProvider:
+    """Offline synthetic still provider -- the Flux stand-in `drama-dryrun`
+    uses so the whole `/短劇` stage machine runs with no GPU.
+
+    One `testsrc2` frame, hue-shifted per seed like the clip stub, at the
+    requested size. Image-to-image is honoured only in shape: the source is
+    accepted and ignored, which is enough to exercise the keyframe path and
+    the resume bookkeeping; the point of this class is the plumbing, not the
+    picture.
+    """
+
+    name = "stub-flux"
+
+    def __init__(self, work_dir: Path | str | None = None, **_: Any) -> None:
+        settings = get_settings()
+        self.work_dir = Path(work_dir) if work_dir else settings.runs_dir / "_stub"
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        self._outputs: dict[str, Path] = {}
+
+    def capabilities(self) -> ImageProviderCapabilities:
+        return STUB_IMAGE_CAPABILITIES
+
+    async def submit(self, request: ImageRequest) -> ImageJob:
+        job_id = f"stub-{request.shot_id}"
+        path = self.work_dir / f"{job_id}.png"
+        now = time.time()
+        settings = get_settings()
+        seed = request.seed if request.seed is not None else abs(hash(request.shot_id))
+        argv = [
+            settings.ffmpeg_bin,
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", f"testsrc2=size={request.width}x{request.height}:rate=1",
+            "-vf", f"hue=h={seed % 360}",
+            "-frames:v", "1",
+            str(path),
+        ]
+        try:
+            media.run(argv, timeout_s=60.0)
+        except media.FFmpegError as exc:
+            return ImageJob(
+                provider=self.name, job_id=job_id, shot_id=request.shot_id,
+                state=JobState.FAILED, submitted_at=now, updated_at=time.time(), error=str(exc),
+            )
+        self._outputs[job_id] = path
+        return ImageJob(
+            provider=self.name, job_id=job_id, shot_id=request.shot_id,
+            state=JobState.COMPLETED, submitted_at=now, updated_at=time.time(),
+            raw={"face_repair": bool(request.extra.get("face_repair"))},
+        )
+
+    async def poll(self, job: ImageJob) -> ImageJob:
+        return job
+
+    async def fetch(self, job: ImageJob, dest: Path) -> ImageAsset:
+        import shutil
+
+        source = self._outputs.get(job.job_id)
+        if source is None or not source.is_file():
+            raise media.FFmpegError(f"no stub output for job {job.job_id}")
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if source.resolve() != dest.resolve():
+            shutil.copy2(source, dest)
+        info = media.probe_image(dest)
+        return ImageAsset(
+            shot_id=job.shot_id, key=dest.name, sha256=sha256_file(dest),
+            size_bytes=info.size_bytes, width=info.width, height=info.height,
+            format="png", provider=self.name, job_id=job.job_id, cost_usd=0.0,
+        )
+
+    async def cancel(self, job: ImageJob) -> None:
+        return None
+
+    async def evict(self) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
 
 
 STUB_UNDERSTANDING_CAPABILITIES: dict[MediaKind, UnderstandingCapabilities] = {

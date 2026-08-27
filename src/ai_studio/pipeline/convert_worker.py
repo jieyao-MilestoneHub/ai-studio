@@ -11,11 +11,13 @@ from typing import Any
 
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import MediaKind
+from ai_studio.core.errors import AIStudioError
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
 from ai_studio.prompts import flux as flux_prompts
 from ai_studio.prompts import understanding as understanding_prompts
 from ai_studio.prompts.chat import CHAT_DEVELOPER_PROMPT
 from ai_studio.prompts.convert import LlmClient, convert
+from ai_studio.prompts.drama import ScreenplayError, screenplay_payload, write_screenplay
 from ai_studio.prompts.flux import FluxPrompt
 from ai_studio.prompts.h3 import I2VA_INSTRUCTION, H3Mode, H3Prompt
 
@@ -80,6 +82,8 @@ def raw_payload(job: Job, *, duration_s: float = DEFAULT_DURATION_S) -> dict[str
     the first frame. `duration_s` and `mode` are here because the render
     reads them from the plan, the same as for a structured one.
     """
+    if job.media_kind is MediaKind.DRAMA:
+        raise AIStudioError("a drama has no raw form; it needs the screenwriter")
     text = job.text.strip()
     if job.media_kind is MediaKind.IMAGE:
         return {"text": text, "_rendered": text, "_built_by": "raw"}
@@ -120,6 +124,19 @@ async def convert_job(
         # length -- which `drain.render_chat` carries as `extra["system"]`.
         queue.set_parsed(job.id, {"_built_by": "chat", "_system": CHAT_DEVELOPER_PROMPT})
         return "chat"
+
+    if job.media_kind is MediaKind.DRAMA:
+        # The screenwriter, in any prompt mode: a drama has nothing to be
+        # "raw" from, and there is no template that is six shots of a story.
+        # A failure here is terminal and *told* -- `worker.prepare` delivers
+        # the failure -- rather than a job left queued forever.
+        try:
+            screenplay, how = await write_screenplay(job.text, client)
+        except ScreenplayError as exc:
+            queue.fail(job.id, f"編劇失敗:{exc}")
+            return f"failed: {exc}"
+        queue.set_parsed(job.id, screenplay_payload(screenplay, how))
+        return how
 
     if job.media_kind.is_understanding:
         # The webhook already validated the media; what is built here is the
@@ -186,6 +203,8 @@ def needs_llm(job: Job, prompt_mode: str) -> bool:
     """
     if job.media_kind is MediaKind.CHAT:
         return False
+    if job.media_kind is MediaKind.DRAMA:
+        return True  # the screenwriter is the feature, whatever the mode
     if prompt_mode != "structured":
         return False
     if job.media_kind.is_understanding:

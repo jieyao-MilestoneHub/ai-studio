@@ -170,9 +170,9 @@ generation is a receipt, not a check.
 |---|---|
 | `core` | built — models, capabilities, ids, timecode, errors |
 | `config` | built |
-| `prompts` | built — MiniMax H3 structured schema and the Flux.1-dev prompt builder |
+| `prompts` | built — MiniMax H3 structured schema, the Flux.1-dev prompt builder, and the `/短劇` screenwriter (`prompts/drama.py`) |
 | `editing` | `format_policy` built; the grammar is **specified, not implemented** |
-| `media` | built — ffmpeg/ffprobe invocation, including still-image probing for Flux |
+| `media` | built — ffmpeg/ffprobe invocation, still-image probing for Flux, two-pass `loudnorm` and concat for `/短劇` |
 | `storage` | `local` built; `s3` pending |
 | `comfy` | built — client, graph binding, turbo validation |
 | `inference` | built — `InferenceClient`, the HTTP surface for `deploy/inference_server.py`'s three understanding models |
@@ -180,7 +180,7 @@ generation is a receipt, not a check.
 | `providers` | `stub`/`stub-understanding` and `comfyui` (clip, MiniMax H3) built; `flux` (image, Flux.1-dev) built; `understand-{image,audio,video}` (moondream3/Qwen3-Omni-Captioner/Tarsier2) built; `chat` (gpt-oss-20b) built |
 | `gates` | shell built; no rules yet |
 | `planner`, `render` | not started |
-| `pipeline` | built — SQLite request queue, drain loop, worker with a prepare phase (batched prompt rewriting on the pod via `pod_llm.PodLlmClient`) and a bounded model-affinity claim |
+| `pipeline` | built — SQLite request queue, drain loop, worker with a prepare phase (batched prompt rewriting on the pod via `pod_llm.PodLlmClient`), a bounded model-affinity claim, and the resumable `/短劇` stage machine (`pipeline/drama.py`, state in `runs/drama/<token>/`) |
 | `runtime` | `pod`, `session`, and `budget` built against the live REST v2 schema |
 | `cli` | `doctor`, `format`, `generate`, `pod {capacity,up,status,down}`, `session {open,close,status,reap,drain}`, `line` |
 | `api`, `bots` | built — FastAPI webhook/status/file service and the LINE bot |

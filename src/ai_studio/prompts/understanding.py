@@ -36,7 +36,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ai_studio.core.enums import MediaKind
-from ai_studio.prompts.convert import ConversionError, LlmClient, _extract_json
+from ai_studio.prompts.convert import ConversionError, LlmClient, extract_json
 
 AUDIO_DEFAULT_QUESTION = (
     "請只用繁體中文,依下列格式條列描述這段聲音,不要加開場白:\n"
@@ -173,7 +173,7 @@ async def convert_question(
     for attempt in range(attempts):
         try:
             reply = await client.complete(REWRITE_SYSTEM[modality], user, max_tokens=300)
-            payload: dict[str, Any] = _extract_json(reply)
+            payload: dict[str, Any] = extract_json(reply)
             question = _Question(**payload).question.strip()
             return question, ("understanding-llm" if attempt == 0 else "understanding-llm-retry")
         except (ConversionError, ValidationError, TypeError) as exc:

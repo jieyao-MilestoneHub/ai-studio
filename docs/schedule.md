@@ -169,8 +169,10 @@ process alive.
 waiting.** `session reap` runs every minute; it closes a quiet pod after
 `IMAGE_IDLE_MINUTES` (5) if the last render was an image, `VIDEO_IDLE_MINUTES`
 (10) if it was a clip, `UNDERSTANDING_IDLE_MINUTES` (5) if the last thing
-this pod did was a `/說圖`/`/說音`/`/說影` job, or `CHAT_IDLE_MINUTES` (15)
-after a `/himonkey` reply — the longest of the four, because a chat
+this pod did was a `/說圖`/`/說音`/`/說影` job, `DRAMA_IDLE_MINUTES` (10, and
+`pipeline.drama` touches activity after every still and clip, so a half-hour
+drama never looks idle) after a `/短劇`, or `CHAT_IDLE_MINUTES` (15)
+after a `/himonkey` reply — the longest of the five, because a chat
 conversation pauses and resumes in a way a render request does not, and it
 is sized against the reopen fixed cost rather than any observed pause. The three numbers differ
 because the reloads do: 📏 Flux comes back into VRAM in ~15 s, H3's 32B text

@@ -81,6 +81,13 @@ class ProviderSubmitError(ProviderError):
     """The backend refused the job."""
 
 
+class DramaResume(ProviderError):
+    """A drama stopped on purpose -- the lease is about to end -- and will
+    pick up from its state file next window. Not a failure: the worker
+    requeues it without spending one of its `MAX_ATTEMPTS`, so a drama that
+    honestly needs three short windows is not thrown away on the third."""
+
+
 class ProviderJobFailed(ProviderError):
     """The job reached a terminal failed state on the backend."""
 

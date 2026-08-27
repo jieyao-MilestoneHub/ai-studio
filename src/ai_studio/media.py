@@ -296,6 +296,108 @@ def extract_audio(src: Path, dest: Path, *, bitrate: str = "128k") -> tuple[Path
         raise FFmpegError(f"{dest.name} is {dest.stat().st_size} bytes; LINE's limit is {AUDIO_MAX_BYTES}")
     return dest, round(probe_duration_s(dest) * 1000)
 
+LOUDNORM_TARGET = "I=-14:TP=-1.5:LRA=11"
+"""docs/editing-grammar.md section 5.3: the delivery loudness target."""
+
+
+def normalize_loudness(src: Path, dest: Path, *, timeout_s: float = 600.0) -> list[list[str]]:
+    """Two-pass `loudnorm` (grammar section 5.3). Returns both argv lists.
+
+    Pass 1 measures; pass 2 applies the measured values **with `linear=true`**
+    so one fixed gain is applied across the file. Single-pass loudnorm is a
+    dynamic compressor -- it pumps -- and is forbidden by the grammar. Video is
+    stream-copied: only the audio changes. `-ar 48000` because loudnorm
+    internally resamples to 192 kHz and would otherwise emit that.
+
+    This is also section 5.5 in practice: run it on every generated clip
+    before concatenation, and N independently generated audio beds land at
+    one level instead of jumping at every cut.
+    """
+    src, dest = Path(src), Path(dest)
+    if not src.is_file():
+        raise FFmpegError(f"cannot normalise a missing file: {src}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    binary = get_settings().ffmpeg_bin
+
+    measure = [
+        binary, "-hide_banner", "-nostats", "-i", str(src),
+        "-af", f"loudnorm={LOUDNORM_TARGET}:print_format=json",
+        "-f", "null", "-",
+    ]
+    proc = run(measure, timeout_s=timeout_s)
+    stats = _loudnorm_stats(proc.stderr)
+
+    apply = [
+        binary, "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
+        "-af",
+        (
+            f"loudnorm={LOUDNORM_TARGET}"
+            f":measured_I={stats['input_i']}:measured_TP={stats['input_tp']}"
+            f":measured_LRA={stats['input_lra']}:measured_thresh={stats['input_thresh']}"
+            f":offset={stats['target_offset']}:linear=true:print_format=summary"
+        ),
+        "-ar", "48000",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+        str(dest),
+    ]
+    run(apply, timeout_s=timeout_s)
+    return [measure, apply]
+
+
+def _loudnorm_stats(stderr: str) -> dict[str, str]:
+    """The JSON block loudnorm prints at the end of pass 1."""
+    start, end = stderr.rfind("{"), stderr.rfind("}")
+    if start == -1 or end <= start:
+        raise FFmpegError("loudnorm pass 1 printed no measurement block")
+    try:
+        stats = json.loads(stderr[start : end + 1])
+    except json.JSONDecodeError as exc:
+        raise FFmpegError(f"loudnorm measurement was not JSON: {exc}") from exc
+    needed = ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
+    missing = [k for k in needed if k not in stats]
+    if missing:
+        raise FFmpegError(f"loudnorm measurement lacks {missing}")
+    return {k: str(stats[k]) for k in needed}
+
+
+def concat(clips: list[Path], dest: Path, *, timeout_s: float = 900.0) -> list[str]:
+    """Hard-cut `clips` together into `dest`. Returns the argv.
+
+    The concat demuxer with a re-encode, not `-c copy`: the clips come from
+    separate generations and a copy-concat only works when every stream
+    parameter matches exactly -- when it does not, the failure is a file that
+    plays with frozen frames or no audio after the first cut, discovered
+    after delivery. A single `libx264 -crf 18` pass over a minute of 864x480
+    is seconds of CPU and removes that class of bug. Even dimensions are kept
+    by the source; `+faststart` because LINE streams the file.
+    """
+    if not clips:
+        raise FFmpegError("nothing to concatenate")
+    paths = [Path(c) for c in clips]
+    for path in paths:
+        if not path.is_file():
+            raise FFmpegError(f"cannot concatenate a missing clip: {path}")
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    listing = dest.with_suffix(".concat.txt")
+    # The demuxer's list format; single quotes inside a path are escaped as
+    # '\''. Written utf-8 explicitly -- the Windows default would not be.
+    lines = ["file '" + str(p.resolve()).replace("'", "'\\''") + "'" for p in paths]
+    listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    argv = [
+        get_settings().ffmpeg_bin,
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "concat", "-safe", "0", "-i", str(listing),
+        "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
+        "-movflags", "+faststart",
+        str(dest),
+    ]
+    run(argv, timeout_s=timeout_s)
+    return argv
+
 
 def missing_filters(binary: str | None = None) -> list[str]:
     """Which of `REQUIRED_FILTERS` this ffmpeg build lacks."""

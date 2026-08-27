@@ -219,7 +219,7 @@ upstream needed for recorded narration. What remains is mixing and delivery.
 | | |
 |---|---|
 | **Rule** | Pass 1 `loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json` to measure; pass 2 the same with `measured_*` values **and `linear=true`**. Single-pass is forbidden. |
-| **Lands in** | `editing/audio.py`; asserted by `gates/grammar_gate.py` (argv) and `gates/delivery_gate.py` (measured result) |
+| **Lands in** | `editing/audio.py`; asserted by `gates/grammar_gate.py` (argv) and `gates/delivery_gate.py` (measured result). **Implemented for `/短劇`** in `media.normalize_loudness` (two passes, `linear=true`, argv recorded in `runs/drama/<token>/render_manifest.json`); the gate is still to come |
 | **Mechanism** | Single-pass `loudnorm` *is* a dynamic compressor — it pumps. `linear=true` applies one fixed gain across the whole file, preserving dynamics. |
 | **Source** | Upstream `[reported]` |
 
@@ -237,7 +237,7 @@ upstream needed for recorded narration. What remains is mixing and delivery.
 | | |
 |---|---|
 | **Rule** | Measure every generated clip's loudness independently and align before concatenation. |
-| **Lands in** | `editing/audio.py` |
+| **Lands in** | `editing/audio.py`. **Implemented for `/短劇`** as stage 4 of `pipeline/drama.py`: every clip through `media.normalize_loudness` before `media.concat` |
 | **Mechanism** | Upstream had one continuous recorded narration bed, so this problem did not exist. We have N independently generated clips whose native audio levels have no reason to match, and a level jump at a cut is far more noticeable than a picture jump. |
 | **Source** | Ours `[speculative]` — needs measuring on real H3 output |
 
