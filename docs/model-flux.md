@@ -187,8 +187,13 @@ only the prompt (`docs/model-h3.md`). No equivalent published or measured
 schema advantage exists for Flux, which takes plain natural-language T5/CLIP
 prose, and inventing one would be cargo cult.
 
-There is now an LLM step all the same, and it does exactly one thing that
-matters: **Chinese → English.**
+There is an LLM step all the same (gpt-oss-20b on the pod since 2026-08-27),
+and its first job is **Chinese → English**; its second is the shape the Flux
+community converges on: 1–3 natural sentences, 40–60 words, in the order
+subject → action/pose → setting → materials → lighting (direction, colour,
+quality) → style only if named; no weights, no negatives (phrase positively),
+never the literal "white background" (blurs in dev). A reply over 90 words is
+a failed conversion and is retried, not truncated — CLIP-L reads 77 tokens.
 
 - The trigger message is always Chinese, and Flux's T5/CLIP encoders are very
   weak at it. That makes translation the difference between the picture

@@ -549,7 +549,34 @@ priorities, no concurrency above one.
 - **`--terminate-after` is set on every pod.** It is the backstop for the case
   where this host dies mid-window.
 
-## Measured: the conversion endpoint
+## Conversion on the pod (since 2026-08-27)
+
+Prompt rewriting happens in the **GPU worker**, not the webhook, using the
+gpt-oss-20b already served by `deploy/inference_server.py`. The webhook only
+enqueues. Each worker tick runs a *prepare phase* first
+(`pipeline/worker.py::prepare`): jobs that need no rewriter (chat, a bare
+`/說圖` `/說音` `/說影`, raw mode) are converted at once; the rest are
+converted **all together while gpt-oss is resident** — one
+`make_room_for(CHAT)` evicts ComfyUI's checkpoint, every pending rewrite
+runs, then rendering resumes. So N queued clips pay one gpt-oss load
+(📏 57–68 s) and one H3 load, not 2N. The batch is deferred while a
+generation checkpoint still has parsed work of its own kind, and a bounded
+model-affinity claim (`MAX_AFFINITY_RUN`) keeps the loaded checkpoint busy.
+
+What each model gets is in the `prompts/` package and in each
+`docs/model-*.md` Prompting section; the job's `_built_by` records the path
+(`llm`, `llm-retry`, `template (llm failed: …)`, `raw`,
+`understanding-default|raw|llm|llm-retry|template…`, `chat`).
+
+`/說圖 /說音 /說影` now take **optional** trailing text: it is the user's
+question, rewritten on the pod into that model's best form (English for
+moondream3, 繁體中文 structured for the two Qwen models).
+
+## Historical: the serverless conversion endpoint (retired 2026-08-27)
+
+Kept for the numbers; nothing calls it any more (`llm/endpoint.py` remains
+only for `ScriptedLlmClient` in tests).
+
 
 Deployed as `runpod-workers/worker-vllm` on `ADA_24` with
 `--model-reference https://huggingface.co/Qwen/Qwen2.5-7B-Instruct:main`,
@@ -595,8 +622,10 @@ the schema explicitly forbids.
 
 So the validation layer is earning its place — the output is schema-*valid*
 because `prompts/h3.py` enforces structure — but the *instructions* are only
-partly obeyed. A larger model, or a few-shot example in the system prompt, is the
-obvious next lever if shot splitting matters.
+partly obeyed. Both levers were pulled on 2026-08-27: the rewriter is now
+gpt-oss-20b, and `prompts/convert.py`'s system prompt carries a few-shot
+example (the orange cat that becomes a Van Gogh pixel cat, as two shots)
+that the real parser validates in a unit test.
 
 ## Cost
 

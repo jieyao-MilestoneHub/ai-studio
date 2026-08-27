@@ -29,7 +29,13 @@ back as a free reply when push quota is gone; one spelling each, no aliases) —
 Currently built: core model, format policy, H3 prompt builder, Flux prompt
 builder, ComfyUI client, the pod-side understanding-model server and its
 client, stub providers, pod lifecycle, CLI, FastAPI + LINE bot (eight triggers,
-queue, status pages, monthly budget guard). **Not built:** the editing
+queue, status pages, monthly budget guard), and the **pod-side prompt
+rewriter**: every request is rewritten into its model's best input shape by
+gpt-oss-20b on the pod before it renders (`prompts/convert.py` H3 schema +
+community rules, `prompts/flux.py`, `prompts/understanding.py`,
+`prompts/chat.py`), batched by the worker's prepare phase so N clips pay one
+model swap; `_built_by` on the job says which path ran. No serverless
+endpoint is involved (retired 2026-08-27). **Not built:** the editing
 grammar implementation, gate rules, planner, render. The grammar is
 specified in `docs/editing-grammar.md` and waiting. The three understanding
 models' licences: moondream3 unverified (`docs/model-moondream3.md`); the

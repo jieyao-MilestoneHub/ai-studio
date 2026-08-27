@@ -61,12 +61,14 @@ deployment before trusting it.
 
 ## Settings
 
-- **Prompt**: `/說圖` never sends one (see [line-bot.md](line-bot.md)'s
-  "none of the three take trailing text" rule) — `MoondreamBackend.infer()`
-  falls back to `"Describe this image in detail."` when `prompt` is `None`.
-  Moondream's own API supports a steering question (`.query(image,
-  question)`); a future CLI caller could pass one via
-  `UnderstandingRequest.prompt`, which the LINE path deliberately never does.
+- **Prompt**: two skills, per the model docs. A bare `/說圖` sends no
+  question and `MoondreamBackend.infer()` runs `caption(image,
+  length="long")`; `/說圖 <question>` is rewritten by gpt-oss on the pod
+  into one specific English question (`prompts/understanding.py`) and runs
+  `query(image, question, reasoning=True)`. **English only** — 📏 asked
+  three ways on 2026-08-27 it never wrote Chinese, so the LINE delivery is
+  prefixed 「(moondream3 只能用英文描述)」 rather than paying a second model
+  swap to translate.
 - **Output length**: capped at `UnderstandingCapabilities.max_output_chars`
   (1000, `[speculative]`) on the ai-studio side, and again at
   `MAX_OUTPUT_CHARS` inside `deploy/inference_server.py` — a runaway

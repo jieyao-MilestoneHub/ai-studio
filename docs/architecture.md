@@ -180,7 +180,7 @@ generation is a receipt, not a check.
 | `providers` | `stub`/`stub-understanding` and `comfyui` (clip, MiniMax H3) built; `flux` (image, Flux.1-dev) built; `understand-{image,audio,video}` (moondream3/Qwen3-Omni-Captioner/Tarsier2) built; `chat` (gpt-oss-20b) built |
 | `gates` | shell built; no rules yet |
 | `planner`, `render` | not started |
-| `pipeline` | built — SQLite request queue, drain loop, LLM-conversion worker |
+| `pipeline` | built — SQLite request queue, drain loop, worker with a prepare phase (batched prompt rewriting on the pod via `pod_llm.PodLlmClient`) and a bounded model-affinity claim |
 | `runtime` | `pod`, `session`, and `budget` built against the live REST v2 schema |
 | `cli` | `doctor`, `format`, `generate`, `pod {capacity,up,status,down}`, `session {open,close,status,reap,drain}`, `line` |
 | `api`, `bots` | built — FastAPI webhook/status/file service and the LINE bot |

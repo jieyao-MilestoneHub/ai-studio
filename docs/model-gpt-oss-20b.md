@@ -67,14 +67,26 @@ real token/character ratio and typical reply length are observed.
 
 ## Prompting
 
-`/himonkey` never sends a system prompt or rewrites the user's message
-first — unlike H3/Flux, there is no LLM-conversion step
-(`pipeline/convert_worker.py::convert_job()` routes `MediaKind.CHAT`
-straight to `parsed`). gpt-oss-20b receives the user's own words verbatim,
-plus (if any) their rolling conversation history assembled host-side by
-`JobQueue.recent_chat_turns()` and shipped over as the `history` form field
-on `POST /submit` — never persisted on the pod itself, which is ephemeral.
-See [line-bot.md](line-bot.md) and `core/chat_spec.py`'s module docstring.
+Two roles, both through the harmony format the HF chat template builds
+(system header with `Reasoning: low`; our text lands in the *developer*
+`# Instructions` block via the `system` form field on `POST /submit`):
+
+- **`/himonkey`**: the user's words are never rewritten, but the reply gets
+  `prompts/chat.py::CHAT_DEVELOPER_PROMPT` — persona (HiMonkey / 猴子),
+  繁體中文 台灣用字, 1–3 sentences, no Markdown, say "不知道" rather than
+  invent. 📏 Without it the first live reply introduced itself as ChatGPT and
+  wrote for a document. History still rides as the `history` field,
+  assembled host-side by `JobQueue.recent_chat_turns()`.
+- **The prompt rewriter** for every other model: `pipeline/pod_llm.
+  PodLlmClient` presents this backend as the `LlmClient` the `prompts/`
+  package takes, with `json_only=true` (greedy decode, reply trimmed to its
+  outer braces, 8000-char cap instead of 1000) and `max_new_tokens` up to
+  1536. The worker batches rewrites while the model is resident — see
+  [line-bot.md](line-bot.md) "Conversion on the pod".
+
+`_final_channel()` is 📏 verified: the final channel closes with `<|return|>`;
+a generation that spends its whole budget in `analysis` is reported as
+「想太久了」 rather than leaked.
 
 ## What we have measured ourselves, and what we have not
 
