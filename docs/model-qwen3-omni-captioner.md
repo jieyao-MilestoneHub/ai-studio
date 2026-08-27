@@ -92,6 +92,25 @@ model card is explicit that it does not accept a steering prompt, which is
 also why `/說音` is the one of the three describe triggers where "no
 trailing text" is not merely a consistency choice but a hard requirement.
 
+## 📏 2026-08-27: does not fit a 24GB card on the current stack
+
+Two live attempts on the RTX 4090 (pod `i5s1j69xkcihnn` / `5xzg8itsqs73sz`,
+transformers 5.16.1, torch 2.10, bitsandbytes 0.50.2):
+
+| attempt | result |
+|---|---|
+| official repo, `BitsAndBytesConfig(load_in_4bit=True)` | CUDA OOM at 52% of the 1407 weight shards, 23.9GB used. transformers 5 stores the 128×48 MoE experts as fused 3D parameters, not `nn.Linear`, so bitsandbytes leaves them in fp16 — the "~17–22GB resident" estimate above assumed they would be quantised |
+| `cyankiwi/Qwen3-Omni-30B-A3B-Captioner-AWQ-4bit` (compressed-tensors, `targets: ["Linear"]`) | CUDA OOM at 24.08GB within 60s, same cause — the format also targets `Linear` |
+
+Loader class and inference flow are otherwise correct
+(`Qwen3OmniMoeForConditionalGeneration` + `Qwen3OmniMoeProcessor`, the
+card's chat-template call; `AutoModelForCausalLM` refuses the checkpoint).
+What remains is a stack decision, not a code fix: a transformers<5 venv
+(4.57.x, where experts are per-`Linear` and bitsandbytes quantises them —
+the design this doc assumed), a different audio model that fits fp16, or
+deferring `/說音`. `/說音` requests are accepted and fail on the pod until
+one is made.
+
 ## What we have measured ourselves, and what we have not
 
 📏 **Measured on our own account**
