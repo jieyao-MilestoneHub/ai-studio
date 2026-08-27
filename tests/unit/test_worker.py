@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from ai_studio.core.chat_spec import ChatAsset, ChatCapabilities, ChatJob
 from ai_studio.core.enums import GenMode, MediaKind
 from ai_studio.core.enums import JobState as ClipState
 from ai_studio.core.errors import AIStudioError, CostCeilingExceeded, ProviderError
@@ -53,6 +54,8 @@ UNDERSTANDING_CAPS = UnderstandingCapabilities(
     model_id="fake-moondream",
     modality=MediaKind.IMAGE_UNDERSTAND,
 )
+
+CHAT_CAPS = ChatCapabilities(provider="fake-chat", model_id="fake-gpt-oss-20b")
 
 PROMPT = {"_rendered": "integrated_multimodal_description: [Shot 1] a cat", "_built_by": "llm"}
 
@@ -150,6 +153,48 @@ class FakeUnderstandingProvider:
         return None
 
 
+class FakeChatProvider:
+    """Completes instantly with a canned reply, or fails on demand.
+
+    Deliberately has no `evict()`, same as `FakeUnderstandingProvider` --
+    `make_room_for` must tolerate a provider that does not implement the GPU
+    hand-off.
+    """
+
+    def __init__(self, *, fail_with: Exception | None = None, result_text: str = "hi there") -> None:
+        self.fail_with = fail_with
+        self.result_text = result_text
+        self.submitted: list[str] = []
+
+    def capabilities(self) -> ChatCapabilities:
+        return CHAT_CAPS
+
+    async def submit(self, request: Any) -> ChatJob:
+        self.submitted.append(request.shot_id)
+        if self.fail_with is not None:
+            raise self.fail_with
+        return ChatJob(
+            provider="fake-chat", job_id=f"j-{request.shot_id}",
+            shot_id=request.shot_id, state=ClipState.COMPLETED,
+            submitted_at=0.0, updated_at=0.0,
+        )
+
+    async def poll(self, job: ChatJob) -> ChatJob:
+        return job
+
+    async def fetch(self, job: ChatJob) -> ChatAsset:
+        return ChatAsset(
+            shot_id=job.shot_id, provider="fake-chat", job_id=job.job_id,
+            result_text=self.result_text,
+        )
+
+    async def cancel(self, job: ChatJob) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
 class FakeSession:
     pod_id = "pod-1"
     tier_label = "L40S/SECURE"
@@ -170,6 +215,7 @@ class FakeHost:
         video: FakeProvider | None = None,
         image: FakeProvider | None = None,
         understand: FakeUnderstandingProvider | None = None,
+        chat: FakeChatProvider | None = None,
         ensure_raises: Exception | None = None,
         deliver_raises: Exception | None = None,
         minutes_left: float = 120.0,
@@ -179,6 +225,7 @@ class FakeHost:
         self.video = video or FakeProvider()
         self.image = image or FakeImageProvider()
         self.understand = understand or FakeUnderstandingProvider()
+        self.chat = chat or FakeChatProvider()
         self.opens = 0
         self.waits = 0
         self.touches = 0
@@ -210,6 +257,7 @@ class FakeHost:
             MediaKind.IMAGE_UNDERSTAND: self.understand,
             MediaKind.AUDIO_UNDERSTAND: self.understand,
             MediaKind.VIDEO_UNDERSTAND: self.understand,
+            MediaKind.CHAT: self.chat,
         }
 
     def touch_activity(self, media_kind: str) -> None:
@@ -413,6 +461,56 @@ async def test_an_understanding_failure_is_requeued_like_any_other(
     host = FakeHost(
         understand=FakeUnderstandingProvider(fail_with=ProviderError("cold load timed out"))
     )
+
+    action, report = await _tick(queue, host, tmp_path)
+
+    assert action == "requeued"
+    assert report.requeued == 1
+    assert queue.by_token(job.token).state is JobState.PARSED
+
+
+@pytest.mark.asyncio
+async def test_a_chat_request_completes_with_text_not_a_file(queue, tmp_path: Path) -> None:
+    """A CHAT job must not silently fall into `render_understanding` (which
+    requires `input_media_path`) via a catchall dispatch branch -- it needs
+    its own, and its completion must route through `complete_text` the same
+    as understanding does."""
+    job = _parsed(queue, "你好嗎", kind=MediaKind.CHAT)
+    host = FakeHost()
+
+    action, _ = await _tick(queue, host, tmp_path)
+
+    assert action == "completed"
+    assert host.chat.submitted
+    assert not host.video.submitted and not host.image.submitted and not host.understand.submitted
+    done = queue.by_token(job.token)
+    assert done.result_text == "hi there"
+    assert done.output_path is None
+    assert host.delivered == [(done.id, None)]
+
+
+@pytest.mark.asyncio
+async def test_a_chat_request_remembers_and_isolates_by_user(queue, tmp_path: Path) -> None:
+    """`render_chat` must fetch/append this user's history, and never another
+    user's -- the structural isolation `core.chat_spec` promises."""
+    queue.append_chat_turn("U1", "Cgroup", "user", "earlier message")
+    job = _parsed(queue, "second message", kind=MediaKind.CHAT)
+    host = FakeHost()
+
+    await _tick(queue, host, tmp_path)
+
+    turns = queue.recent_chat_turns("U1")
+    assert ("user", "earlier message") in turns
+    assert ("user", "second message") in turns
+    assert ("assistant", "hi there") in turns
+    assert queue.recent_chat_turns("Uother") == []
+    assert job.token  # the job itself rendered fine alongside the memory writes
+
+
+@pytest.mark.asyncio
+async def test_a_chat_failure_is_requeued_like_any_other(queue, tmp_path: Path) -> None:
+    job = _parsed(queue, "你好", kind=MediaKind.CHAT)
+    host = FakeHost(chat=FakeChatProvider(fail_with=ProviderError("cold load timed out")))
 
     action, report = await _tick(queue, host, tmp_path)
 

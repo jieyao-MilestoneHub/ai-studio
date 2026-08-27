@@ -515,3 +515,127 @@ def test_a_database_created_before_understanding_shipped_migrates_cleanly(
         )
         assert created
         assert job.input_media_path == "/incoming/clip.mp4"
+
+
+# --------------------------------------------------------------- chat memory
+
+
+def test_chat_history_is_isolated_between_users(q: JobQueue) -> None:
+    """The one test that most directly proves F's "never leaks across users"
+    requirement: one user's turns must never surface in another's history."""
+    q.append_chat_turn("Ualice", "Cgroup", "user", "alice's message")
+    q.append_chat_turn("Ualice", "Cgroup", "assistant", "reply to alice")
+    q.append_chat_turn("Ubob", "Cgroup", "user", "bob's message")
+
+    assert q.recent_chat_turns("Ualice") == [
+        ("user", "alice's message"),
+        ("assistant", "reply to alice"),
+    ]
+    assert q.recent_chat_turns("Ubob") == [("user", "bob's message")]
+    assert q.recent_chat_turns("Unobody") == []
+
+
+def test_recent_chat_turns_is_a_rolling_window_oldest_first(q: JobQueue) -> None:
+    for i in range(15):
+        q.append_chat_turn("Ualice", "Cgroup", "user", f"turn {i}")
+
+    turns = q.recent_chat_turns("Ualice", limit=10)
+    assert len(turns) == 10
+    assert [content for _, content in turns] == [f"turn {i}" for i in range(5, 15)]
+
+
+def test_accepted_chat_today_counts_only_chat_jobs(q: JobQueue) -> None:
+    q.enqueue("e-chat-1", "Cgroup", "hi", user_id="Ualice", media_kind=MediaKind.CHAT)
+    q.enqueue("e-chat-2", "Cgroup", "hi again", user_id="Ualice", media_kind=MediaKind.CHAT)
+    q.enqueue("e-video", "Cgroup", "生成 一隻貓", user_id="Ualice", media_kind=MediaKind.VIDEO)
+
+    assert q.accepted_chat_today("Ualice") == 2
+    assert q.accepted_chat_today("Ubob") == 0
+
+
+def test_accepted_today_excludes_chat_so_it_cannot_exhaust_the_shared_cap(q: JobQueue) -> None:
+    """A chat conversation's cadence must not eat a user's video/image
+    allowance -- see `accepted_chat_today()`'s separate counter."""
+    for i in range(5):
+        q.enqueue(f"e-chat-{i}", "Cgroup", f"hi {i}", user_id="Ualice", media_kind=MediaKind.CHAT)
+    q.enqueue("e-video", "Cgroup", "生成 一隻貓", user_id="Ualice", media_kind=MediaKind.VIDEO)
+
+    assert q.accepted_today("Ualice") == 1
+    assert q.accepted_chat_today("Ualice") == 5
+
+
+def test_chat_spend_accumulates_within_the_month(q: JobQueue) -> None:
+    a, _ = q.enqueue("e-chat-a", "Cgroup", "hi", media_kind=MediaKind.CHAT)
+    b, _ = q.enqueue("e-chat-b", "Cgroup", "hi again", media_kind=MediaKind.CHAT)
+    q.enqueue("e-video", "Cgroup", "生成 一隻貓", media_kind=MediaKind.VIDEO)
+
+    assert q.chat_spent_this_month_usd() == 0.0
+
+    q.record_chat_cost(a.id, 0.02)
+    q.record_chat_cost(b.id, 0.03)
+
+    assert q.chat_spent_this_month_usd() == 0.05
+    assert q.by_id(a.id).cost_usd == 0.02
+
+
+def test_chat_spend_ignores_non_chat_jobs_even_with_a_cost_recorded(q: JobQueue) -> None:
+    """Only chat populates `cost_usd` today, but the query itself must stay
+    kind-scoped rather than trusting that invariant implicitly."""
+    video, _ = q.enqueue("e-video", "Cgroup", "生成 一隻貓", media_kind=MediaKind.VIDEO)
+    q.record_chat_cost(video.id, 99.0)
+
+    assert q.chat_spent_this_month_usd() == 0.0
+
+
+def test_a_database_created_before_chat_shipped_migrates_cleanly(tmp_path: Path) -> None:
+    """Same discipline as the media_kind/understanding migration tests: an
+    old database must gain `cost_usd` and the `chat_turns` table rather than
+    fail to open."""
+    path = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE jobs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            token       TEXT    NOT NULL UNIQUE,
+            event_id    TEXT    NOT NULL UNIQUE,
+            group_id    TEXT    NOT NULL,
+            user_id     TEXT,
+            text        TEXT    NOT NULL,
+            state       TEXT    NOT NULL DEFAULT 'queued',
+            media_kind  TEXT    NOT NULL DEFAULT 'video',
+            first_frame_path TEXT,
+            quote_token TEXT,
+            requested_seconds REAL,
+            input_media_path TEXT,
+            prompt_json TEXT,
+            output_path TEXT,
+            result_text TEXT,
+            error       TEXT,
+            gpu_tier    TEXT,
+            created_at  REAL    NOT NULL,
+            parsed_at   REAL,
+            started_at  REAL,
+            finished_at REAL,
+            delivered_at REAL,
+            attempts    INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO jobs (token, event_id, group_id, text, created_at) "
+        "VALUES ('tok', 'evt', 'Cgroup', 'hi', 0)"
+    )
+    conn.commit()
+    conn.close()
+
+    with JobQueue(path) as q:
+        columns = {row[1] for row in q._conn.execute("PRAGMA table_info(jobs)")}
+        assert "cost_usd" in columns
+
+        job = q.by_token("tok")
+        assert job is not None
+        assert job.cost_usd is None
+
+        q.append_chat_turn("Ualice", "Cgroup", "user", "hi")
+        assert q.recent_chat_turns("Ualice") == [("user", "hi")]

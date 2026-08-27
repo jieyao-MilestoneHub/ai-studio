@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     prompt_json TEXT,
     output_path TEXT,
     result_text TEXT,
+    cost_usd    REAL,
     error       TEXT,
     gpu_tier    TEXT,
     created_at  REAL    NOT NULL,
@@ -92,6 +93,16 @@ CREATE TABLE IF NOT EXISTS pod_opens (
     opened_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pod_opens_at ON pod_opens(opened_at);
+
+CREATE TABLE IF NOT EXISTS chat_turns (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT NOT NULL,
+    group_id   TEXT NOT NULL,
+    role       TEXT NOT NULL,
+    content    TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_turns_user ON chat_turns(user_id, created_at);
 """
 
 DAY_TZ = ZoneInfo("Asia/Taipei")
@@ -147,6 +158,12 @@ class Job:
     result_text: str | None
     """The produced description, for an understanding job. `output_path`
     stays None for these -- there is no file, only text."""
+    cost_usd: float | None
+    """What a completed job actually cost, in dollars. Only populated for a
+    chat job today (`pipeline.drain.render_chat` -> `record_chat_cost()`),
+    which is the only kind with a monthly sub-budget to check against -- see
+    `chat_spent_this_month_usd()`. None for every other kind, whose cost is
+    still tracked only at the session level (`runtime.budget.SpendLedger`)."""
     error: str | None
     gpu_tier: str | None
     created_at: float
@@ -171,6 +188,16 @@ def _day_start_ts(now: datetime | None = None) -> float:
     return local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
 
+def _month_start_ts(now: datetime | None = None) -> float:
+    """The 1st of the local month as a POSIX timestamp, for
+    `chat_spent_this_month_usd()`. Same `DAY_TZ` (Asia/Taipei) as the daily
+    caps, and the same boundary `runtime.budget.SpendLedger` uses for its own
+    month key -- repeated here rather than imported, for the same layering
+    reason `DAY_TZ` itself is: `pipeline` sits below `runtime`."""
+    local = (now or datetime.now(timezone.utc)).astimezone(DAY_TZ)
+    return local.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
 def _row_to_job(row: sqlite3.Row) -> Job:
     return Job(
         id=row["id"],
@@ -188,6 +215,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         prompt_json=row["prompt_json"],
         output_path=row["output_path"],
         result_text=row["result_text"],
+        cost_usd=row["cost_usd"],
         error=row["error"],
         gpu_tier=row["gpu_tier"],
         created_at=row["created_at"],
@@ -234,6 +262,8 @@ class JobQueue:
             conn.execute("ALTER TABLE jobs ADD COLUMN input_media_path TEXT")
         if "result_text" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN result_text TEXT")
+        if "cost_usd" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN cost_usd REAL")
 
     def _connect(self) -> sqlite3.Connection:
         """One connection per thread, all pointing at the same file.
@@ -488,8 +518,79 @@ class JobQueue:
         ).fetchall()
         return [_row_to_job(r) for r in rows]
 
+    # -------------------------------------------------------------- chat memory
+
+    def append_chat_turn(self, user_id: str, group_id: str, role: str, content: str) -> None:
+        """Record one turn of a `/himonkey` conversation.
+
+        Host-side, never on the ephemeral pod -- see `pipeline.drain.
+        render_chat` and `core.chat_spec`'s module docstring for why. Every
+        row is keyed on `user_id`, the same identity axis `accepted_today()`
+        already uses for the per-user daily cap: isolation between users'
+        conversations is structural (a query never crosses the key), not a
+        policy someone has to remember to enforce.
+        """
+        self._conn.execute(
+            "INSERT INTO chat_turns (user_id, group_id, role, content, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (user_id, group_id, role, content, time.time()),
+        )
+
+    def recent_chat_turns(self, user_id: str, *, limit: int = 10) -> list[tuple[str, str]]:
+        """This user's last `limit` turns (role, content), oldest first.
+
+        A rolling window, not the full history: bounds prefill cost/latency/
+        billed GPU-seconds as a conversation grows, and gives natural
+        "forgetting" with no explicit reset command needed for a first cut.
+        """
+        rows = self._conn.execute(
+            "SELECT role, content FROM chat_turns WHERE user_id=?"
+            " ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+        return [(r["role"], r["content"]) for r in reversed(rows)]
+
+    def record_chat_cost(self, job_id: int, cost_usd: float) -> None:
+        """Attach what a completed /himonkey turn actually cost, for
+        `chat_spent_this_month_usd()`. Called once, right after `fetch()` in
+        `pipeline.drain.render_chat` -- no other job kind persists a
+        per-job cost today (their spend is tracked only at the session level
+        by `runtime.budget.SpendLedger`), so this column stays chat-only
+        rather than something every kind must populate."""
+        self._conn.execute("UPDATE jobs SET cost_usd=? WHERE id=?", (cost_usd, job_id))
+
+    def chat_spent_this_month_usd(self, *, since: float | None = None) -> float:
+        """This calendar month's total /himonkey spend, checked against
+        `AI_STUDIO_MAX_CHAT_MONTH_USD` by `pipeline.drain.render_chat` before
+        it ever submits a job -- the sub-budget that keeps chat's traffic
+        cadence from silently consuming the money video/image also depend
+        on. Same Asia/Taipei month boundary as `runtime.budget.SpendLedger`.
+        """
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM jobs"
+            " WHERE media_kind=? AND created_at >= ?",
+            (MediaKind.CHAT.value, _month_start_ts() if since is None else since),
+        ).fetchone()
+        return round(float(row["total"]), 6)
+
+    def accepted_chat_today(self, user_id: str, *, since: float | None = None) -> int:
+        """How many `/himonkey` messages this user has had accepted since
+        local midnight -- a separate counter from `accepted_today()`'s
+        all-kinds total, so a normal conversation cannot silently exhaust a
+        user's entire daily video/image allowance too."""
+        if not user_id:
+            return 0
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE user_id=? AND media_kind=? AND created_at >= ?",
+            (user_id, MediaKind.CHAT.value, _day_start_ts() if since is None else since),
+        ).fetchone()
+        return int(row["n"])
+
+    # ---------------------------------------------------------------- caps
+
     def accepted_today(self, user_id: str, *, since: float | None = None) -> int:
-        """How many requests this user has had accepted since local midnight.
+        """How many non-chat requests this user has had accepted since local
+        midnight.
 
         Counts every state, failures included: the cap is on asking, not on
         succeeding, or a user whose prompts keep failing validation would have
@@ -497,12 +598,17 @@ class JobQueue:
         `source.userId` for a user who has not accepted the Official Account
         terms, and lumping all of those together under one budget would let one
         anonymous request starve the next.
+
+        Excludes `/himonkey` chat jobs — see `accepted_chat_today()`, which
+        has its own separate counter. A chat conversation's cadence would
+        otherwise exhaust this same allowance the video/image/understanding
+        triggers share.
         """
         if not user_id:
             return 0
         row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM jobs WHERE user_id=? AND created_at >= ?",
-            (user_id, _day_start_ts() if since is None else since),
+            "SELECT COUNT(*) AS n FROM jobs WHERE user_id=? AND media_kind != ? AND created_at >= ?",
+            (user_id, MediaKind.CHAT.value, _day_start_ts() if since is None else since),
         ).fetchone()
         return int(row["n"])
 

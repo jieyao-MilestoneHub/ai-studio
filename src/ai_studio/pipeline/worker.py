@@ -41,6 +41,7 @@ from ai_studio.pipeline.drain import (
     MAX_CONSECUTIVE_FAILURES,
     make_room_for,
     may_claim,
+    render_chat,
     render_clip,
     render_image,
     render_understanding,
@@ -225,6 +226,8 @@ async def _run_one(
             result = await render_clip(
                 job, provider, caps, files_dir, deadline, poll_interval_s
             )
+        elif job.media_kind is MediaKind.CHAT:
+            result = await render_chat(job, provider, queue, deadline, poll_interval_s)
         else:
             result = await render_understanding(job, provider, deadline, poll_interval_s)
     except ProviderError as exc:
@@ -251,10 +254,10 @@ async def _run_one(
         report.last_action = "failed"
         return "failed"
 
-    # Understanding jobs produce text, not a file: `asset` stays None so
-    # `_deliver` pushes `job.result_text` instead of a media message.
+    # Understanding and chat jobs produce text, not a file: `asset` stays
+    # None so `_deliver` pushes `job.result_text` instead of a media message.
     asset: Path | None = None
-    if job.media_kind.is_understanding:
+    if job.media_kind.is_understanding or job.media_kind is MediaKind.CHAT:
         queue.complete_text(job.id, result)
     else:
         asset = result
