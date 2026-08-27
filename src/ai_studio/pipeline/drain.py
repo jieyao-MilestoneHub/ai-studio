@@ -26,16 +26,20 @@ worker is wedged, empty the queue on the pod that is already open".
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from ai_studio.config.settings import get_settings
+from ai_studio.core.chat_spec import ChatRequest
 from ai_studio.core.enums import GenMode, MediaKind
 from ai_studio.core.errors import AIStudioError, ProviderError
 from ai_studio.core.image_provider_spec import ImageRequest
 from ai_studio.core.provider_spec import ClipRequest
+from ai_studio.core.understanding_spec import UnderstandingRequest
 from ai_studio.pipeline.convert_worker import DEFAULT_DURATION_S, snap_frames
 from ai_studio.pipeline.queue import Job, JobQueue
 
@@ -80,6 +84,58 @@ class ImageProviderLike(Protocol):
     async def aclose(self) -> None: ...
 
 
+class UnderstandingProviderLike(Protocol):
+    def capabilities(self) -> Any: ...
+    async def submit(self, request: UnderstandingRequest) -> Any: ...
+    async def poll(self, job: Any) -> Any: ...
+    async def fetch(self, job: Any) -> Any: ...
+    async def cancel(self, job: Any) -> None: ...
+    async def aclose(self) -> None: ...
+
+
+class ChatProviderLike(Protocol):
+    def capabilities(self) -> Any: ...
+    async def submit(self, request: ChatRequest) -> Any: ...
+    async def poll(self, job: Any) -> Any: ...
+    async def fetch(self, job: Any) -> Any: ...
+    async def cancel(self, job: Any) -> None: ...
+    async def aclose(self) -> None: ...
+
+
+async def make_room_for(job_kind: MediaKind, providers: dict[MediaKind, Any]) -> None:
+    """Evict whichever side's resident model the upcoming job does not need.
+
+    Pull-based GPU hand-off: this is the one place that already knows which
+    job is about to run, so it is the one place responsible for evicting the
+    other workload's model before submitting -- one 24GB card holds at most
+    one of {ComfyUI's H3/Flux checkpoint, an understanding model} at a time.
+    Neither provider needs to know the other's endpoint.
+
+    A provider whose kind is not in `providers` (this pod does not serve it)
+    is skipped; a provider whose `evict()` is a no-op (the offline stubs)
+    costs nothing extra to call.
+    """
+    other_kinds = (
+        (MediaKind.VIDEO, MediaKind.IMAGE)
+        if job_kind.is_understanding or job_kind is MediaKind.CHAT
+        else (
+            MediaKind.IMAGE_UNDERSTAND,
+            MediaKind.AUDIO_UNDERSTAND,
+            MediaKind.VIDEO_UNDERSTAND,
+            MediaKind.CHAT,
+        )
+    )
+    evicted: set[int] = set()
+    for kind in other_kinds:
+        provider = providers.get(kind)
+        if provider is None or id(provider) in evicted:
+            continue
+        evicted.add(id(provider))
+        evict = getattr(provider, "evict", None)
+        if evict is not None:
+            await evict()
+
+
 @dataclass
 class DrainReport:
     """What one window actually achieved. Written to the log and the report."""
@@ -115,7 +171,9 @@ class DrainReport:
 
 async def drain_window(
     queue: JobQueue,
-    providers: dict[MediaKind, ClipProviderLike | ImageProviderLike],
+    providers: dict[
+        MediaKind, ClipProviderLike | ImageProviderLike | UnderstandingProviderLike | ChatProviderLike
+    ],
     *,
     window_end: datetime,
     files_dir: Path,
@@ -161,12 +219,17 @@ async def drain_window(
 
         started = time.monotonic()
         try:
+            await make_room_for(job.media_kind, providers)
             if job.media_kind is MediaKind.IMAGE:
-                asset = await render_image(
+                result: Any = await render_image(
                     job, provider, caps, files_dir, window_end, poll_interval_s
                 )
+            elif job.media_kind is MediaKind.VIDEO:
+                result = await render_clip(job, provider, caps, files_dir, window_end, poll_interval_s)
+            elif job.media_kind is MediaKind.CHAT:
+                result = await render_chat(job, provider, queue, window_end, poll_interval_s)
             else:
-                asset = await render_clip(job, provider, caps, files_dir, window_end, poll_interval_s)
+                result = await render_understanding(job, provider, window_end, poll_interval_s)
         except ProviderError as exc:
             # The backend's problem, so keep the request — but only while it has
             # attempts left, or requeue becomes an infinite loop.
@@ -185,7 +248,10 @@ async def drain_window(
             consecutive_failures += 1
             continue
 
-        queue.complete(job.id, str(asset))
+        if job.media_kind.is_understanding or job.media_kind is MediaKind.CHAT:
+            queue.complete_text(job.id, result)
+        else:
+            queue.complete(job.id, str(result))
         report.completed += 1
         report.seconds.append(time.monotonic() - started)
         consecutive_failures = 0
@@ -298,3 +364,103 @@ async def render_image(
     dest = files_dir / f"{job.token}.{caps.output_format}"
     await provider.fetch(image_job, dest)
     return dest
+
+
+async def render_understanding(
+    job: Job,
+    provider: UnderstandingProviderLike,
+    window_end: datetime,
+    poll_interval_s: float,
+) -> str:
+    """Submit, poll, fetch. One description.
+
+    Unlike `render_clip`/`render_image` there is no output file: the result
+    is text, returned directly rather than written under `files_dir`. No
+    `caps` argument either -- an understanding request has no native
+    width/height/fps to bind, only the input media path already saved by the
+    webhook.
+    """
+    if not job.input_media_path:
+        raise AIStudioError("understanding job has no input_media_path to describe")
+
+    request = UnderstandingRequest(
+        shot_id=f"job{job.id}",
+        modality=job.media_kind,
+        input_media_path=job.input_media_path,
+    )
+
+    understanding_job = await provider.submit(request)
+    while not understanding_job.is_terminal:
+        if datetime.now(timezone.utc) >= window_end:
+            await provider.cancel(understanding_job)
+            raise ProviderError("window closed while the description was running")
+        await asyncio.sleep(poll_interval_s)
+        understanding_job = await provider.poll(understanding_job)
+
+    if not understanding_job.state.is_success:
+        raise ProviderError(
+            f"understanding failed: {understanding_job.error or understanding_job.state.value}"
+        )
+
+    asset = await provider.fetch(understanding_job)
+    return str(asset.result_text)
+
+
+async def render_chat(
+    job: Job,
+    provider: ChatProviderLike,
+    queue: JobQueue,
+    window_end: datetime,
+    poll_interval_s: float,
+) -> str:
+    """Submit, poll, fetch. One chat reply.
+
+    Fetches this user's recent turns before submitting and appends the new
+    pair back on success -- host-side, never on the ephemeral pod (see
+    `core.chat_spec`'s module docstring). `job.user_id` can be None for a
+    LINE user who has not accepted the Official Account terms; there is then
+    no identity to key memory on, so the turn is answered statelessly rather
+    than persisted or cross-mixed with anyone else's -- the same "None is
+    never counted" precedent `JobQueue.accepted_today()` already follows.
+    No `caps` argument, like `render_understanding` -- a chat reply has no
+    native width/height/fps to bind.
+
+    Checks the monthly chat sub-budget *before* submitting anything, and
+    fails loudly (terminal, not requeued) rather than leaving the job
+    silently stuck if it is exhausted: video/image keep running on the same
+    shared $/month ceiling regardless, and the user is told plainly rather
+    than watching the request vanish into an unclaimable backlog.
+    """
+    settings = get_settings()
+    if settings.max_chat_month_usd and queue.chat_spent_this_month_usd() >= settings.max_chat_month_usd:
+        raise AIStudioError(
+            f"本月 /himonkey 用量已達上限(${settings.max_chat_month_usd:.2f}),"
+            "下個月再試。影片與圖片功能不受影響。"
+        )
+
+    history = queue.recent_chat_turns(job.user_id) if job.user_id else []
+
+    request = ChatRequest(
+        shot_id=f"job{job.id}",
+        text=job.text,
+        extra={"history": json.dumps(history, ensure_ascii=False)} if history else {},
+    )
+
+    chat_job = await provider.submit(request)
+    while not chat_job.is_terminal:
+        if datetime.now(timezone.utc) >= window_end:
+            await provider.cancel(chat_job)
+            raise ProviderError("window closed while the reply was generating")
+        await asyncio.sleep(poll_interval_s)
+        chat_job = await provider.poll(chat_job)
+
+    if not chat_job.state.is_success:
+        raise ProviderError(f"chat failed: {chat_job.error or chat_job.state.value}")
+
+    asset = await provider.fetch(chat_job)
+    result = str(asset.result_text)
+    queue.record_chat_cost(job.id, asset.cost_usd)
+    if job.user_id:
+        queue.append_chat_turn(job.user_id, job.group_id, "user", job.text)
+        queue.append_chat_turn(job.user_id, job.group_id, "assistant", result)
+    return result

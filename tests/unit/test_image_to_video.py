@@ -143,7 +143,7 @@ async def test_a_photo_is_not_reused_after_being_claimed(tmp_path: Path) -> None
     (second,) = await _send(handler, _text_event("/圖影 狗", event_id="evt-2"))
 
     assert second.action == "ignored" and second.job is None
-    assert second.detail == "no pending photo"
+    assert second.detail == "no pending image"
     queue.close()
 
 

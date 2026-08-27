@@ -333,6 +333,78 @@ async def _generate(
     )
 
 
+_UNDERSTAND_KINDS = {
+    "image": MediaKind.IMAGE_UNDERSTAND,
+    "audio": MediaKind.AUDIO_UNDERSTAND,
+    "video": MediaKind.VIDEO_UNDERSTAND,
+}
+
+
+@app.command()
+def understand(
+    path: Path = typer.Argument(..., help="Photo/audio/video to describe."),
+    kind: str = typer.Option(..., "--kind", "-k", help=f"One of: {', '.join(_UNDERSTAND_KINDS)}."),
+    provider: str = typer.Option("stub-understanding", "--provider", "-p"),
+) -> None:
+    """Describe one photo/audio/video clip. The offline smoke test for an
+    understanding provider -- the `generate`/`--provider stub` of the
+    understanding path: no GPU, no RunPod account, no money."""
+    try:
+        asyncio.run(_understand(path, kind, provider))
+    except AIStudioError as exc:
+        console.print(f"[red]{type(exc).__name__}:[/red] {exc}")
+        raise typer.Exit(1) from None
+
+
+async def _understand(path: Path, kind: str, provider_name: str) -> None:
+    from ai_studio.core.understanding_spec import UnderstandingRequest
+
+    modality = _UNDERSTAND_KINDS.get(kind)
+    if modality is None:
+        raise AIStudioError(f"--kind must be one of {', '.join(_UNDERSTAND_KINDS)}, got {kind!r}")
+    if not path.is_file():
+        raise AIStudioError(f"no such file: {path}")
+
+    settings = get_settings()
+    backend: Any = get_provider(provider_name, modality=modality)
+    caps = backend.capabilities()
+    console.print(
+        f"[bold]{caps.model_id}[/bold]  modality={caps.modality.value}  "
+        f"accepts_prompt={caps.accepts_prompt}  cost/call ${caps.cost_per_call_usd:.4f}"
+    )
+
+    request = UnderstandingRequest(
+        shot_id=new_run_id(), modality=modality, input_media_path=str(path)
+    )
+    try:
+        job = await backend.submit(request)
+        console.print(f"submitted [cyan]{job.job_id}[/cyan]")
+
+        waited = 0.0
+        poll_s = max(1.0, settings.inference_timeout_s / 6)
+        while not job.is_terminal:
+            await asyncio.sleep(poll_s)
+            waited += poll_s
+            if waited > settings.inference_job_timeout_s:
+                await backend.cancel(job)
+                raise AIStudioError(
+                    f"job {job.job_id} exceeded {settings.inference_job_timeout_s}s"
+                )
+            job = await backend.poll(job)
+            console.print(f"  {job.state.value} ({waited:.0f}s)", highlight=False)
+
+        if not job.state.is_success:
+            raise AIStudioError(f"understanding failed: {job.error or job.state.value}")
+
+        asset = await backend.fetch(job)
+    finally:
+        await backend.aclose()
+
+    console.print(
+        f"\n[green]{asset.modality.value}[/green]  cost ${asset.cost_usd:.4f}\n{asset.result_text}"
+    )
+
+
 line_app = typer.Typer(help="LINE bot: serve the webhook, or discover a group id.")
 app.add_typer(line_app, name="line")
 
@@ -558,6 +630,7 @@ def session_status() -> None:
     table.add_row("closes", s.window_end)
     table.add_row("past window", "yes" if s.past_window() else "no")
     table.add_row("comfy", s.comfy_url)
+    table.add_row("inference", s.inference_url)
     console.print(table)
 
 
@@ -568,6 +641,14 @@ def session_reap(
     ),
     video_idle_minutes: int = typer.Option(
         None, help="Grace after a video render (default: runtime.session.VIDEO_IDLE_MINUTES)."
+    ),
+    understanding_idle_minutes: int = typer.Option(
+        None,
+        help="Grace after an understanding job (default: "
+        "runtime.session.UNDERSTANDING_IDLE_MINUTES).",
+    ),
+    chat_idle_minutes: int = typer.Option(
+        None, help="Grace after a /himonkey reply (default: runtime.session.CHAT_IDLE_MINUTES)."
     ),
 ) -> None:
     """Close the pod once it has gone quiet. Schedule this every minute.
@@ -584,6 +665,10 @@ def session_reap(
         sess.close_if_idle(
             image_idle_minutes=image_idle_minutes or sess.IMAGE_IDLE_MINUTES,
             video_idle_minutes=video_idle_minutes or sess.VIDEO_IDLE_MINUTES,
+            understanding_idle_minutes=(
+                understanding_idle_minutes or sess.UNDERSTANDING_IDLE_MINUTES
+            ),
+            chat_idle_minutes=chat_idle_minutes or sess.CHAT_IDLE_MINUTES,
             hold=hold,
         )
     )
@@ -648,12 +733,23 @@ def session_drain(
         base_url=session.comfy_url,
         hourly_usd=session.cost_per_hr,
     )
+    # Understanding and chat jobs share this pod's one FIFO queue -- a manual
+    # drain that omitted them would KeyError the moment one was claimed.
+    understand_backends = {
+        kind: get_provider(name, base_url=session.inference_url, hourly_usd=session.cost_per_hr)
+        for kind, name in (
+            (MediaKind.IMAGE_UNDERSTAND, "understand-image"),
+            (MediaKind.AUDIO_UNDERSTAND, "understand-audio"),
+            (MediaKind.VIDEO_UNDERSTAND, "understand-video"),
+            (MediaKind.CHAT, "chat"),
+        )
+    }
     queue = JobQueue()
     try:
         report = asyncio.run(
             drain_window(
                 queue,
-                {MediaKind.VIDEO: h3_backend, MediaKind.IMAGE: flux_backend},
+                {MediaKind.VIDEO: h3_backend, MediaKind.IMAGE: flux_backend, **understand_backends},
                 window_end=datetime.fromisoformat(session.window_end),
                 files_dir=settings.files_dir,
                 gpu_tier=session.tier_label,
@@ -748,6 +844,12 @@ class _RuntimeHost:
             sess.mark_provisioned()
         waited = sess.wait_ready(live)
         console.print(f"  ComfyUI ready after {waited:.0f}s")
+        # A second, unrelated process on the same pod: deploy/pod_setup.sh
+        # starts both, but they have separate readiness signals (ComfyUI's
+        # node-pack probe vs a plain health check), so both are waited on
+        # before any job -- including an understanding one -- is claimed.
+        understanding_waited = sess.wait_understanding_ready(live)
+        console.print(f"  inference server ready after {understanding_waited:.0f}s")
         return waited
 
     def providers_for(self, session: object) -> dict[MediaKind, object]:
@@ -779,6 +881,18 @@ class _RuntimeHost:
                 "flux", workflow=flux_workflow, base_url=live.comfy_url,
                 hourly_usd=live.cost_per_hr,
             ),
+            MediaKind.IMAGE_UNDERSTAND: get_provider(
+                "understand-image", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
+            ),
+            MediaKind.AUDIO_UNDERSTAND: get_provider(
+                "understand-audio", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
+            ),
+            MediaKind.VIDEO_UNDERSTAND: get_provider(
+                "understand-video", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
+            ),
+            MediaKind.CHAT: get_provider(
+                "chat", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
+            ),
         }
         self._providers = {live.pod_id: built}
         return built
@@ -800,7 +914,14 @@ class _RuntimeHost:
 
         status_url = f"{self.base_url}/q/{job.token}"
 
-        if asset is None:
+        if job.result_text:
+            # An understanding job (/說圖 /說音 /說影): text, no media object
+            # and no poster -- `asset` is always None for these.
+            messages = line_push.understood_messages(
+                result_text=job.result_text, status_url=status_url, quote_token=job.quote_token,
+            )
+            fallback = f"{job.result_text[:200]}\n{status_url}"
+        elif asset is None:
             messages = line_push.failed_messages(
                 reason=job.error or "unknown", status_url=status_url,
                 prompt=job.text, quote_token=job.quote_token,

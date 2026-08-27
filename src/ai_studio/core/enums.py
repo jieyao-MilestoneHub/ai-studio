@@ -62,12 +62,46 @@ class GenMode(str, Enum):
 
 
 class MediaKind(str, Enum):
-    """What a generation request produces. Drives queue dispatch and provider
-    selection — a video job and an image job share one FIFO queue and one pod,
-    but never the same provider, prompt builder, or asset shape."""
+    """The job-dispatch discriminator: what a job's provider produces --
+    video, image -- or consumes and describes -- a photo, an audio clip, a
+    video clip. One shared FIFO queue and one `providers_for()` dict are
+    dispatched on this single field, so every kind gets exactly one provider,
+    prompt builder (generation kinds only), and asset shape. See
+    `core/understanding_spec.py` for why the *request/job/asset* types for
+    the three understanding kinds are still kept as siblings of
+    `core/provider_spec.py`/`core/image_provider_spec.py` rather than merged
+    into them -- a description has no width, height, fps, or duration."""
 
     VIDEO = "video"
     IMAGE = "image"
+    IMAGE_UNDERSTAND = "image_understand"
+    """/說圖: describe a photo. Backed by moondream3 (or Florence-2)."""
+
+    AUDIO_UNDERSTAND = "audio_understand"
+    """/說音: describe/transcribe an audio clip. Backed by
+    Qwen3-Omni-Captioner -- no text prompt accepted, audio capped at
+    `Settings.max_audio_understand_s`."""
+
+    VIDEO_UNDERSTAND = "video_understand"
+    """/說影: describe a video clip. Backed by Tarsier2."""
+
+    CHAT = "chat"
+    """/himonkey: a plain-text LLM reply, backed by gpt-oss-20b. Deliberately
+    *not* in `_UNDERSTANDING_KINDS` -- `is_understanding` specifically means
+    "describes attached media", and chat describes nothing. It shares the
+    understanding side's GPU slot (see `pipeline.drain.make_room_for`), but
+    that is a VRAM-residency fact, not a semantic one, so call sites that
+    need it join with an explicit `or job_kind is MediaKind.CHAT` rather than
+    being folded into this property."""
+
+    @property
+    def is_understanding(self) -> bool:
+        return self in _UNDERSTANDING_KINDS
+
+
+_UNDERSTANDING_KINDS = frozenset(
+    {MediaKind.IMAGE_UNDERSTAND, MediaKind.AUDIO_UNDERSTAND, MediaKind.VIDEO_UNDERSTAND}
+)
 
 
 class JobState(str, Enum):

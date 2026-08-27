@@ -71,6 +71,44 @@ class Settings(BaseSettings):
         description="Give up on a single clip after this long. H3 at 1280x736 is ~360s.",
     )
 
+    # ---------------------------------------------------------- understanding
+
+    inference_url: str = Field(
+        default="http://127.0.0.1:8189",
+        alias="AI_STUDIO_INFERENCE_URL",
+        description=(
+            "Base URL of deploy/inference_server.py, the pod-side process "
+            "serving moondream3/Qwen3-Omni-Captioner/Tarsier2. On RunPod this "
+            "is the pod proxy https://<pod-id>-8189.proxy.runpod.net -- same "
+            "~100s proxy-timeout caveat as AI_STUDIO_COMFY_URL."
+        ),
+    )
+    inference_timeout_s: float = Field(default=30.0, gt=0, alias="AI_STUDIO_INFERENCE_TIMEOUT_S")
+    inference_job_timeout_s: float = Field(
+        default=300.0,
+        gt=0,
+        alias="AI_STUDIO_INFERENCE_JOB_TIMEOUT_S",
+        description="Give up on one understanding job after this long, "
+        "including a cold model load and the GPU hand-off with ComfyUI.",
+    )
+    max_audio_understand_s: float = Field(
+        default=30.0,
+        gt=0,
+        alias="AI_STUDIO_MAX_AUDIO_UNDERSTAND_S",
+        description="Longest /說音 audio clip accepted, matching "
+        "Qwen3-Omni-Captioner's own stated ceiling. Checked against LINE's "
+        "own reported message duration before the file is even downloaded.",
+    )
+    max_video_understand_s: float = Field(
+        default=120.0,
+        gt=0,
+        alias="AI_STUDIO_MAX_VIDEO_UNDERSTAND_S",
+        description="[speculative] longest /說影 clip accepted -- nothing has "
+        "measured what Tarsier2 actually tolerates or costs per second of "
+        "dense video understanding on this hardware yet. Generous rather "
+        "than tight until benchmarked; tune once measured.",
+    )
+
     # ---------------------------------------------------------- storage
 
     runs_dir: Path = Field(default=Path("runs"), alias="AI_STUDIO_RUNS_DIR")
@@ -118,7 +156,33 @@ class Settings(BaseSettings):
         alias="AI_STUDIO_MAX_JOBS_PER_USER_PER_DAY",
         description="How many requests one LINE user may have accepted in an "
         "Asia/Taipei day. 0 disables the cap. Checked before the request is "
-        "enqueued, so a refusal does not also spend an LLM conversion.",
+        "enqueued, so a refusal does not also spend an LLM conversion. "
+        "/himonkey chat messages are excluded -- see "
+        "max_chat_messages_per_user_per_day.",
+    )
+    max_chat_messages_per_user_per_day: int = Field(
+        default=50,
+        ge=0,
+        alias="AI_STUDIO_MAX_CHAT_MESSAGES_PER_USER_PER_DAY",
+        description="How many /himonkey messages one LINE user may have "
+        "accepted in an Asia/Taipei day. 0 disables the cap. Separate from "
+        "max_jobs_per_user_per_day on purpose: a normal chat conversation's "
+        "cadence would otherwise exhaust a user's entire daily video/image "
+        "allowance too.",
+    )
+    max_chat_month_usd: float = Field(
+        default=15.0,
+        ge=0,
+        alias="AI_STUDIO_MAX_CHAT_MONTH_USD",
+        description="A sub-ceiling on /himonkey's share of max_month_usd, "
+        "enforced by runtime.budget.MonthlyBudgetGuard alongside the "
+        "all-kinds monthly cap. Exists so chat's traffic cadence (many "
+        "short, frequent sessions) cannot silently consume the budget "
+        "video/image also depend on -- once hit, new chat jobs stop being "
+        "claimed for the rest of the month while video/image keep running. "
+        "A starting guess (roughly a third of the default $45 effective GPU "
+        "budget), meant to be retuned from real usage, not a considered "
+        "number.",
     )
 
     ffmpeg_bin: str = Field(default="ffmpeg", alias="AI_STUDIO_FFMPEG_BIN")

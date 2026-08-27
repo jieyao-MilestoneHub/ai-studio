@@ -246,6 +246,25 @@ class ComfyClient:
         except httpx.HTTPError as exc:
             raise ProviderError(f"could not interrupt: {exc}") from exc
 
+    # ------------------------------------------------------------ GPU hand-off
+
+    async def free_memory(self) -> None:
+        """Evict ComfyUI's resident checkpoint without killing the process.
+
+        Called before an understanding job runs on the same 24GB card:
+        ComfyUI does not release a loaded model on its own between jobs, and
+        neither H3 nor Flux comfortably shares VRAM with any of the three
+        understanding models. Best-effort -- a pod with no ComfyUI checkpoint
+        loaded yet (never rendered) has nothing to free, and that is not a
+        failure worth surfacing.
+        """
+        try:
+            await self._client.post(
+                "/free", json={"unload_models": True, "free_memory": True}
+            )
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"could not free ComfyUI's VRAM: {exc}") from exc
+
     # --------------------------------------------------------------- private
 
     async def _get_json(self, path: str) -> dict[str, Any]:

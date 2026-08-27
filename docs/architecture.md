@@ -20,8 +20,9 @@ Everything below is arranged to preserve it.
 L0  core                     data model only; imports nothing internal
 L1  config · prompts · editing   settings, H3 + Flux prompt schemas, editing rules
 L2  media · storage          ffmpeg invocation, artifact stores
-L3  gates · providers · comfy    rule checks, clip/image backends, ComfyUI + LLM protocols
-    llm · planner · render
+L3  gates · providers · comfy    rule checks, clip/image/understanding backends,
+    inference · llm · planner ·   ComfyUI + the pod-side inference-server client +
+    render                        LLM protocols
 L4  pipeline                 request queue, drain loop, stage graph, run/resume
 L5  runtime · cli            pod lifecycle, command line
 L6  api · bots               FastAPI service + LINE bot — nothing imports these
@@ -113,6 +114,32 @@ about money:
    days. Making the copy-into-our-storage step its own method is what stops it
    being the step everyone forgets.
 
+### A third quartet: `UnderstandingProvider`
+
+Alongside `ClipProvider`/`ProviderCapabilities`/`ClipRequest`/`ClipJob`/
+`ClipAsset` and their `Image*` siblings, `core/understanding_spec.py` and
+`providers/base.py`'s `UnderstandingProvider` give the LINE bot's `/說圖`
+`/說音` `/說影` (media in, a text description out) the same submit/poll/
+fetch/cancel shape — same Cloudflare-proxy reasoning (a cold model load for
+a >16GB understanding model is not guaranteed to fit the ~100s window even
+though a warm caption call would). It is a *sibling* type, not a merge into
+`ClipRequest`/`ImageRequest`: a description has no width, height, fps, or
+duration to produce, so forcing it through either would mean inventing
+values that mean nothing — the same argument `image_provider_spec.py` makes
+for a still image having no frame count.
+
+Two things make this quartet different from the other two:
+
+- **No output file.** `fetch()` takes no `dest` — the result is text,
+  already captured in `job.raw` at poll time, not a file to download.
+- **A second, separate server process on the pod.** moondream3-preview,
+  Qwen3-Omni-Captioner, and Tarsier2 are not ComfyUI nodes, so they are not
+  driven through `comfy/client.py` at all. `deploy/inference_server.py`
+  (port 8189) is a small always-resident process with its own lazy
+  load/unload discipline — see `docs/schedule.md`'s "the GPU hand-off"
+  section for how it shares the one 24GB card with ComfyUI's H3/Flux
+  checkpoint without ever holding both at once.
+
 ## Gate ordering is architectural
 
 Gates split PRE / POST. PRE (plan, format, prompt) are pure functions of
@@ -133,8 +160,9 @@ generation is a receipt, not a check.
 | `media` | built — ffmpeg/ffprobe invocation, including still-image probing for Flux |
 | `storage` | `local` built; `s3` pending |
 | `comfy` | built — client, graph binding, turbo validation |
+| `inference` | built — `InferenceClient`, the HTTP surface for `deploy/inference_server.py`'s three understanding models |
 | `llm` | built — endpoint client that converts a chat message into a structured prompt |
-| `providers` | `stub` and `comfyui` (clip, MiniMax H3) built; `flux` (image, Flux.1-dev) built |
+| `providers` | `stub`/`stub-understanding` and `comfyui` (clip, MiniMax H3) built; `flux` (image, Flux.1-dev) built; `understand-{image,audio,video}` (moondream3/Qwen3-Omni-Captioner/Tarsier2) built |
 | `gates` | shell built; no rules yet |
 | `planner`, `render` | not started |
 | `pipeline` | built — SQLite request queue, drain loop, LLM-conversion worker |

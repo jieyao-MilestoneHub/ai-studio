@@ -1,0 +1,312 @@
+"""Understanding: `/說圖` `/說音` `/說影` describe a photo/audio/video clip
+instead of generating one. Same photo-cache mechanism `/圖影`/`/圖圖` use
+(`test_image_to_video.py`), extended to audio and video, but reversed: the
+media is consumed, not produced, so it lands in `input_media_path`, never
+`first_frame_path` -- and none of the three take trailing text, the mirror
+image of the four generation triggers, which require it.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from ai_studio.bots.line.content import LineContentError, NullContentClient
+from ai_studio.bots.line.reply import NullReplyClient
+from ai_studio.bots.line.verify import sign
+from ai_studio.bots.line.webhook import IMAGE_PAIRING_TTL_S, WebhookHandler
+from ai_studio.core.enums import MediaKind
+from ai_studio.pipeline.queue import JobQueue
+
+SECRET = "test-channel-secret"
+GROUP = "Cae56f94637c1234567890abcdef12345"
+USER = "U" + "1" * 32
+
+
+def _media_event(kind: str, *, message_id: str, user: str = USER, event_id: str, **extra) -> dict:
+    message = {"type": kind, "id": message_id, **extra}
+    return {
+        "type": "message",
+        "mode": "active",
+        "webhookEventId": event_id,
+        "timestamp": 1700000000000,
+        "replyToken": "rt-" + event_id,
+        "source": {"type": "group", "groupId": GROUP, "userId": user},
+        "message": message,
+    }
+
+
+def _text_event(text: str, *, user: str = USER, event_id: str = "evt-txt") -> dict:
+    return {
+        "type": "message",
+        "mode": "active",
+        "webhookEventId": event_id,
+        "timestamp": 1700000000000,
+        "replyToken": "rt-" + event_id,
+        "source": {"type": "group", "groupId": GROUP, "userId": user},
+        "message": {"type": "text", "id": "m1", "text": text},
+    }
+
+
+def _body(events: list[dict]) -> bytes:
+    return json.dumps({"destination": "U" + "0" * 32, "events": events}).encode("utf-8")
+
+
+async def _send(handler: WebhookHandler, event: dict):
+    body = _body([event])
+    return await handler.handle(body, sign(body, SECRET))
+
+
+def _wired(tmp_path: Path, *, content=None, clock=None):
+    queue = JobQueue(tmp_path / "q.sqlite3")
+    replier = NullReplyClient()
+    handler = WebhookHandler(
+        queue,
+        replier,
+        channel_secret=SECRET,
+        allowed_group_id=GROUP,
+        base_url="https://vg.example.com/",
+        content=content,
+        incoming_dir=tmp_path / "incoming",
+        clock=clock,
+    )
+    return handler, queue, replier
+
+
+# ------------------------------------------------------------------- /說圖
+
+
+@pytest.mark.asyncio
+async def test_a_photo_then_describe_image_becomes_an_understanding_job(tmp_path: Path) -> None:
+    content = NullContentClient(b"fake-jpeg-bytes")
+    handler, queue, _ = _wired(tmp_path, content=content)
+
+    await _send(handler, _media_event("image", message_id="img-1", event_id="evt-img"))
+    (outcome,) = await _send(handler, _text_event("/說圖"))
+
+    assert outcome.action == "accepted"
+    job = outcome.job
+    assert job is not None
+    assert job.media_kind is MediaKind.IMAGE_UNDERSTAND
+    assert job.input_media_path is not None
+    assert job.first_frame_path is None
+    assert Path(job.input_media_path).read_bytes() == b"fake-jpeg-bytes"
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_describe_image_without_a_photo_is_refused_naming_its_own_trigger(
+    tmp_path: Path,
+) -> None:
+    handler, queue, replier = _wired(tmp_path, content=NullContentClient(b"x"))
+
+    (outcome,) = await _send(handler, _text_event("/說圖"))
+
+    assert outcome.action == "ignored" and outcome.job is None
+    assert queue.counts() == {}
+    reply = replier.sent[0][1][0]
+    assert "照片" in reply and "/說圖" in reply and "/圖影" not in reply
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_describe_image_with_trailing_text_is_refused_not_enqueued(tmp_path: Path) -> None:
+    """None of the three describe triggers take a steering prompt -- not even
+    for image, where the underlying model could technically use one."""
+    content = NullContentClient(b"fake-jpeg-bytes")
+    handler, queue, replier = _wired(tmp_path, content=content)
+
+    await _send(handler, _media_event("image", message_id="img-1", event_id="evt-img"))
+    (outcome,) = await _send(handler, _text_event("/說圖 這是誰"))
+
+    assert outcome.action == "ignored" and outcome.job is None
+    assert queue.counts() == {}
+    assert "不需要額外文字" in replier.sent[0][1][0]
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_describe_image_does_not_shadow_or_get_shadowed_by_i2v_i2i(tmp_path: Path) -> None:
+    content = NullContentClient(b"fake-jpeg-bytes")
+    handler, queue, _ = _wired(tmp_path, content=content)
+
+    await _send(handler, _media_event("image", message_id="img-1", event_id="evt-img"))
+    (outcome,) = await _send(handler, _text_event("/說圖"))
+    assert outcome.job is not None and outcome.job.media_kind is MediaKind.IMAGE_UNDERSTAND
+
+    # The photo was already claimed -- a second photo-consuming trigger finds
+    # nothing cached.
+    (second,) = await _send(handler, _text_event("/圖影 貓", event_id="evt-2"))
+    assert second.action == "ignored"
+    queue.close()
+
+
+# ------------------------------------------------------------------- /說音
+
+
+@pytest.mark.asyncio
+async def test_an_audio_clip_then_describe_audio_becomes_an_understanding_job(
+    tmp_path: Path,
+) -> None:
+    content = NullContentClient(b"fake-audio-bytes")
+    handler, queue, _ = _wired(tmp_path, content=content)
+
+    await _send(
+        handler,
+        _media_event("audio", message_id="aud-1", event_id="evt-aud", duration=8000),
+    )
+    (outcome,) = await _send(handler, _text_event("/說音"))
+
+    assert outcome.action == "accepted"
+    job = outcome.job
+    assert job is not None
+    assert job.media_kind is MediaKind.AUDIO_UNDERSTAND
+    assert job.input_media_path is not None
+    assert Path(job.input_media_path).read_bytes() == b"fake-audio-bytes"
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_audio_over_the_duration_cap_is_never_even_fetched(tmp_path: Path) -> None:
+    """The cap is read off LINE's own `duration` field in the webhook payload
+    itself, so an over-long clip costs zero bandwidth, not just zero GPU."""
+    content = NullContentClient(b"fake-audio-bytes")
+    handler, queue, replier = _wired(tmp_path, content=content)
+
+    (image_outcome,) = await _send(
+        handler,
+        _media_event("audio", message_id="aud-1", event_id="evt-aud", duration=45_000),
+    )
+
+    assert image_outcome.action == "ignored"
+    assert content.calls == [], "an over-long clip must not be downloaded at all"
+    assert not replier.sent, "passive media gets no reply, over cap or not"
+
+    (outcome,) = await _send(handler, _text_event("/說音", event_id="evt-2"))
+    assert outcome.action == "ignored", "nothing was cached, so /說音 finds nothing"
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_describe_audio_without_a_clip_is_refused_naming_its_own_trigger(
+    tmp_path: Path,
+) -> None:
+    handler, queue, replier = _wired(tmp_path, content=NullContentClient(b"x"))
+
+    (outcome,) = await _send(handler, _text_event("/說音"))
+
+    assert outcome.action == "ignored" and outcome.job is None
+    reply = replier.sent[0][1][0]
+    assert "語音" in reply and "/說音" in reply
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_a_photo_is_not_claimed_by_describe_audio(tmp_path: Path) -> None:
+    """/說音 must never claim a photo meant for /說圖 or /圖影."""
+    content = NullContentClient(b"fake-jpeg-bytes")
+    handler, queue, _ = _wired(tmp_path, content=content)
+
+    await _send(handler, _media_event("image", message_id="img-1", event_id="evt-img"))
+    (outcome,) = await _send(handler, _text_event("/說音"))
+
+    assert outcome.action == "ignored"
+    queue.close()
+
+
+# ------------------------------------------------------------------- /說影
+
+
+@pytest.mark.asyncio
+async def test_a_video_clip_then_describe_video_becomes_an_understanding_job(
+    tmp_path: Path,
+) -> None:
+    content = NullContentClient(b"fake-video-bytes")
+    handler, queue, _ = _wired(tmp_path, content=content)
+
+    await _send(
+        handler,
+        _media_event("video", message_id="vid-1", event_id="evt-vid", duration=20_000),
+    )
+    (outcome,) = await _send(handler, _text_event("/說影"))
+
+    assert outcome.action == "accepted"
+    job = outcome.job
+    assert job is not None
+    assert job.media_kind is MediaKind.VIDEO_UNDERSTAND
+    assert job.input_media_path is not None
+    assert Path(job.input_media_path).read_bytes() == b"fake-video-bytes"
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_describe_video_without_a_clip_is_refused_naming_its_own_trigger(
+    tmp_path: Path,
+) -> None:
+    handler, queue, replier = _wired(tmp_path, content=NullContentClient(b"x"))
+
+    (outcome,) = await _send(handler, _text_event("/說影"))
+
+    assert outcome.action == "ignored" and outcome.job is None
+    reply = replier.sent[0][1][0]
+    assert "影片" in reply and "/說影" in reply
+    queue.close()
+
+
+# --------------------------------------------------------------- shared rules
+
+
+@pytest.mark.asyncio
+async def test_a_stale_audio_clip_is_not_used(tmp_path: Path) -> None:
+    clock_value = [0.0]
+
+    def clock():
+        from datetime import datetime, timezone
+
+        return datetime.fromtimestamp(clock_value[0], tz=timezone.utc)
+
+    content = NullContentClient(b"fake-audio-bytes")
+    handler, queue, _ = _wired(tmp_path, content=content, clock=clock)
+
+    await _send(handler, _media_event("audio", message_id="aud-1", event_id="evt-aud", duration=1000))
+    clock_value[0] += IMAGE_PAIRING_TTL_S + 1
+    (outcome,) = await _send(handler, _text_event("/說音"))
+
+    assert outcome.action == "ignored" and outcome.job is None
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_no_content_client_means_audio_and_video_are_silently_ignored(
+    tmp_path: Path,
+) -> None:
+    handler, queue, replier = _wired(tmp_path, content=None)
+
+    (audio_outcome,) = await _send(
+        handler, _media_event("audio", message_id="a1", event_id="evt-a")
+    )
+    (video_outcome,) = await _send(
+        handler, _media_event("video", message_id="v1", event_id="evt-v")
+    )
+
+    assert audio_outcome.action == "ignored"
+    assert video_outcome.action == "ignored"
+    assert not replier.sent
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_audio_fetch_is_logged_and_ignored_not_raised(tmp_path: Path) -> None:
+    class _Failing:
+        async def fetch(self, message_id: str) -> bytes:
+            raise LineContentError("boom")
+
+    handler, queue, _ = _wired(tmp_path, content=_Failing())
+
+    (outcome,) = await _send(
+        handler, _media_event("audio", message_id="a1", event_id="evt-a")
+    )
+    assert outcome.action == "ignored"
+    queue.close()

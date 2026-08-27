@@ -167,10 +167,11 @@ def test_the_rename_happens_after_the_downloads_finish() -> None:
 def test_the_advertised_download_size_includes_the_lora() -> None:
     """The log line is what an operator watches to know whether a stall is
     normal. It was ~51GB before this LoRA's 0.69GB was added, then ~52GB
-    before the Flux base model's ~17GB was added."""
+    before the Flux base model's ~17GB was added, then ~73GB more for the
+    three understanding models."""
     body = POD_SETUP.read_text(encoding="utf-8")
 
-    assert "starting weight downloads (~52GB H3 + ~17GB Flux)" in body
+    assert "starting weight downloads (~52GB H3 + ~17GB Flux + ~73GB understanding models)" in body
 
 
 # ------------------------------------------------- the ComfyUI flag probe

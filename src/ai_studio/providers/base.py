@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from ai_studio.core.chat_spec import ChatAsset, ChatCapabilities, ChatJob, ChatRequest
 from ai_studio.core.image_provider_spec import (
     ImageAsset,
     ImageJob,
@@ -31,6 +32,12 @@ from ai_studio.core.image_provider_spec import (
     ImageRequest,
 )
 from ai_studio.core.provider_spec import ClipAsset, ClipJob, ClipRequest, ProviderCapabilities
+from ai_studio.core.understanding_spec import (
+    UnderstandingAsset,
+    UnderstandingCapabilities,
+    UnderstandingJob,
+    UnderstandingRequest,
+)
 
 
 @runtime_checkable
@@ -87,5 +94,57 @@ class ImageProvider(Protocol):
     async def fetch(self, job: ImageJob, dest: Path) -> ImageAsset: ...
 
     async def cancel(self, job: ImageJob) -> None: ...
+
+    async def aclose(self) -> None: ...
+
+
+@runtime_checkable
+class UnderstandingProvider(Protocol):
+    """A backend that turns an `UnderstandingRequest` into a text description.
+
+    Same submit/poll/fetch/cancel shape as `ClipProvider`/`ImageProvider` for
+    the same reason: a cold model load for a >16GB understanding model could
+    plausibly exceed the ~100s proxy window even though a warm caption call
+    is fast. `fetch()` does no network I/O of its own here -- the result is
+    text already captured in `job.raw` at poll time, not a file to download.
+    """
+
+    name: str
+
+    def capabilities(self) -> UnderstandingCapabilities: ...
+
+    async def submit(self, request: UnderstandingRequest) -> UnderstandingJob: ...
+
+    async def poll(self, job: UnderstandingJob) -> UnderstandingJob: ...
+
+    async def fetch(self, job: UnderstandingJob) -> UnderstandingAsset: ...
+
+    async def cancel(self, job: UnderstandingJob) -> None: ...
+
+    async def aclose(self) -> None: ...
+
+
+@runtime_checkable
+class ChatProvider(Protocol):
+    """A backend that turns a `ChatRequest` into a text reply.
+
+    Same submit/poll/fetch/cancel shape as `UnderstandingProvider` for the
+    same reason: a cold gpt-oss-20b load could plausibly exceed the ~100s
+    proxy window even though a warm reply is fast. Kept as its own Protocol
+    rather than reusing `UnderstandingProvider`'s, because a chat request has
+    no input media to require.
+    """
+
+    name: str
+
+    def capabilities(self) -> ChatCapabilities: ...
+
+    async def submit(self, request: ChatRequest) -> ChatJob: ...
+
+    async def poll(self, job: ChatJob) -> ChatJob: ...
+
+    async def fetch(self, job: ChatJob) -> ChatAsset: ...
+
+    async def cancel(self, job: ChatJob) -> None: ...
 
     async def aclose(self) -> None: ...

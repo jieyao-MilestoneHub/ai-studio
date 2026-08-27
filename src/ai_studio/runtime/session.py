@@ -213,6 +213,12 @@ class Session:
     def comfy_url(self) -> str:
         return f"https://{self.pod_id}-8188.proxy.runpod.net"
 
+    @property
+    def inference_url(self) -> str:
+        """The understanding-model server's proxy URL. Separate process,
+        separate port (8189) -- see `deploy/inference_server.py`."""
+        return f"https://{self.pod_id}-8189.proxy.runpod.net"
+
     def elapsed_hours(self, now: datetime | None = None) -> float:
         started = datetime.fromisoformat(self.opened_at)
         now = now or datetime.now(timezone.utc)
@@ -315,7 +321,7 @@ def open_session(
                         if network_volume_id
                         else ("--volume-in-gb", str(volume_gb))
                     ),
-                    "--ports", "8188/http,8888/http,22/tcp",
+                    "--ports", "8188/http,8888/http,8189/http,22/tcp",
                     "--ssh",
                     "--min-cuda-version", "13.0",
                     # The backstop. If this process dies, the pod still terminates.
@@ -507,6 +513,43 @@ def wait_ready(
         time.sleep(interval_s)
 
 
+def wait_understanding_ready(
+    session: Session,
+    *,
+    timeout_s: float = 300.0,
+    interval_s: float = 10.0,
+    request_timeout_s: float = 10.0,
+) -> float:
+    """Block until `deploy/inference_server.py` answers on the pod.
+
+    A different readiness signal from `wait_ready`'s, deliberately: that
+    server has no node-pack concept and does not need one loaded to be
+    "ready" -- moondream3/Qwen3-Omni-Captioner/Tarsier2 load lazily per
+    request, not at startup. A plain `/healthz` is the whole check, so this
+    is expected to resolve well inside the shorter default timeout above.
+    """
+    url = f"{session.inference_url}/healthz"
+    deadline = time.monotonic() + timeout_s
+    started = time.monotonic()
+    last = "no attempt made"
+
+    while True:
+        try:
+            response = httpx.get(url, timeout=request_timeout_s)
+            if response.status_code == 200:
+                return time.monotonic() - started
+            last = f"HTTP {response.status_code}"
+        except httpx.HTTPError as exc:
+            last = f"{type(exc).__name__}: {exc}"
+
+        if time.monotonic() >= deadline:
+            raise PodError(
+                f"{session.pod_id} did not answer {url} within {timeout_s:.0f}s "
+                f"(last: {last}). The pod is running and billing -- close it."
+            )
+        time.sleep(interval_s)
+
+
 # ----------------------------------------------------------------------- close
 
 
@@ -554,16 +597,31 @@ def close_session(*, name: str = "ai-studio-window") -> list[str]:
 
 IMAGE_IDLE_MINUTES = 5
 VIDEO_IDLE_MINUTES = 10
+UNDERSTANDING_IDLE_MINUTES = 5
+CHAT_IDLE_MINUTES = 15
 """How long a quiet pod is kept after its last render, by what it rendered.
 
-Two numbers because the two reloads cost differently: Flux comes back into
-VRAM in 📏 ~15 s, H3's 32B text encoder in 📏 60-90 s. A pod is worth
-keeping only while the chance of the next request within the grace, times
-the reload it would save, beats the idle minutes -- and in a group chat the
-next message usually comes within five minutes or not for hours. Both are
-`[speculative]` starting points; the reaper log says how often a pod was
-closed and reopened within a few minutes, which is the number that tunes
-them.
+Numbers differ because the reloads cost differently: Flux comes back into
+VRAM in 📏 ~15 s, H3's 32B text encoder in 📏 60-90 s. `UNDERSTANDING_IDLE_MINUTES`
+is `[speculative]` -- nothing has measured a lazy-load cost for moondream3,
+Qwen3-Omni-Captioner, or Tarsier2 on this hardware yet, and the three are not
+even the same size, so one shared number is a starting point, not a
+considered answer. A pod is worth keeping only while the chance of the next
+request within the grace, times the reload it would save, beats the idle
+minutes -- and in a group chat the next message usually comes within five
+minutes or not for hours. The reaper log says how often a pod was closed and
+reopened within a few minutes, which is the number that tunes these.
+
+`CHAT_IDLE_MINUTES` is deliberately the longest grace, and for a different
+reason than the others: a `/himonkey` conversation's cadence is many short
+exchanges with ordinary pauses in between, and every reopen has a real fixed
+floor (`runtime.budget.MIN_SESSION_MINUTES` worth of billing) *and* consumes
+one of the day's `max_pod_opens_per_day` opens -- a ceiling that, once hit,
+blocks new video and image sessions too. A grace long enough to survive a
+conversation's ordinary pauses is both cheaper and safer for the rest of the
+service than one short enough to reopen repeatedly. `[speculative]`, same as
+`UNDERSTANDING_IDLE_MINUTES` -- retune from the reaper log once real chat
+traffic exists, not from this guess.
 """
 
 
@@ -571,6 +629,8 @@ def close_if_idle(
     *,
     image_idle_minutes: int = IMAGE_IDLE_MINUTES,
     video_idle_minutes: int = VIDEO_IDLE_MINUTES,
+    understanding_idle_minutes: int = UNDERSTANDING_IDLE_MINUTES,
+    chat_idle_minutes: int = CHAT_IDLE_MINUTES,
     hold: bool = False,
     name: str = "ai-studio-window",
 ) -> str:
@@ -589,7 +649,15 @@ def close_if_idle(
     state = _read_state_raw()
     last = state.get("last_activity_at") or session.opened_at
     idle = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() / 60
-    grace = image_idle_minutes if state.get("last_media_kind") == "image" else video_idle_minutes
+    overrides = {
+        "image": image_idle_minutes,
+        "video": video_idle_minutes,
+        "image_understand": understanding_idle_minutes,
+        "audio_understand": understanding_idle_minutes,
+        "video_understand": understanding_idle_minutes,
+        "chat": chat_idle_minutes,
+    }
+    grace = overrides.get(str(state.get("last_media_kind") or ""), video_idle_minutes)
     if hold:
         return f"held: work pending ({idle:.0f}min idle, spent ${session.spent_usd():.2f})"
     if idle >= grace:
@@ -601,6 +669,7 @@ def close_if_idle(
 
 SSH_KEY = Path.home() / ".runpod" / "ssh" / "runpodctl-ssh-key"
 SETUP_SCRIPT = Path("deploy/pod_setup.sh")
+INFERENCE_SERVER_SCRIPT = Path("deploy/inference_server.py")
 PROVISION_WAIT_S = 600.0
 PROVISION_RETRY_S = 15.0
 
@@ -612,7 +681,38 @@ def _ssh(argv: list[str], *, stdin: str, timeout_s: float) -> subprocess.Complet
     )
 
 
-def provision(session: Session, *, script: Path = SETUP_SCRIPT) -> None:
+def _ssh_deposit(host: str, port: str, body: str, *, remote_path: str) -> None:
+    """Copy one file's content to `remote_path` over SSH, retrying the
+    connection the same way `provision` does below (the pod's SSH port comes
+    up some seconds after RunPod reports it running). Deposits only -- does
+    not execute anything, unlike `provision`'s own SSH call."""
+    argv = [
+        "ssh", "-i", str(SSH_KEY), "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", "-p", port, f"root@{host}",
+        f"cat > {remote_path}",
+    ]
+    deadline = time.monotonic() + PROVISION_WAIT_S
+    last = ""
+    while True:
+        try:
+            proc = _ssh(argv, stdin=body, timeout_s=60.0)
+        except subprocess.TimeoutExpired:
+            last = "ssh timed out"
+        else:
+            if proc.returncode == 0:
+                return
+            last = (proc.stderr or proc.stdout).strip()[-200:]
+        if time.monotonic() >= deadline:
+            raise PodError(f"could not copy {remote_path} over ssh ({last})")
+        time.sleep(PROVISION_RETRY_S)
+
+
+def provision(
+    session: Session,
+    *,
+    script: Path = SETUP_SCRIPT,
+    inference_script: Path = INFERENCE_SERVER_SCRIPT,
+) -> None:
     """Start `deploy/pod_setup.sh` on the pod, detached, over SSH.
 
     This is the step that used to be a person with a terminal. The worker
@@ -623,14 +723,26 @@ def provision(session: Session, *, script: Path = SETUP_SCRIPT) -> None:
     last act. With the weights on a network volume the script's own fast
     path makes this a ComfyUI restart, about a minute.
 
+    `deploy/inference_server.py` (the understanding-model server) is
+    deposited first, as a second file over the same one-file-at-a-time SSH
+    transport -- it cannot be embedded inline in `pod_setup.sh` without that
+    script becoming unreadable, and `pod_setup.sh`'s own last step starts it
+    once it is in place.
+
     Retries the SSH connection for up to `PROVISION_WAIT_S`: the pod's SSH
     port comes up some seconds after RunPod reports it running.
     """
-    body = script.read_text(encoding="utf-8")
     info = _runpodctl("ssh", "info", session.pod_id)
     host, port = str(info.get("ip") or ""), str(info.get("port") or "")
     if not host or not port:
         raise PodError(f"{session.pod_id}: no ssh endpoint in {info}")
+
+    _ssh_deposit(
+        host, port, inference_script.read_text(encoding="utf-8"),
+        remote_path="/workspace/inference_server.py",
+    )
+
+    body = script.read_text(encoding="utf-8")
     argv = [
         "ssh", "-i", str(SSH_KEY), "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", "-p", port, f"root@{host}",

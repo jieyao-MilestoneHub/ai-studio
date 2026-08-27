@@ -110,6 +110,20 @@ async def convert_job(
     if job is None:
         return "skipped: not queued"
 
+    if job.media_kind is MediaKind.CHAT:
+        # No prompt to build and no LLM rewrite: gpt-oss-20b gets the user's
+        # raw text directly, so this goes straight to claimable -- a distinct
+        # tag from "understanding" so logs/tests can tell the two apart.
+        queue.set_parsed(job.id, {"_built_by": "chat"})
+        return "chat"
+
+    if job.media_kind.is_understanding:
+        # No prompt to build: the webhook already validated everything an
+        # understanding job needs (a cached photo/audio/video, the audio
+        # duration cap) before enqueueing it. Go straight to claimable.
+        queue.set_parsed(job.id, {"_built_by": "understanding"})
+        return "understanding"
+
     length = clamp_duration(job.requested_seconds) if job.requested_seconds else duration_s
     mode_setting = prompt_mode or get_settings().prompt_mode
     if mode_setting == "raw":

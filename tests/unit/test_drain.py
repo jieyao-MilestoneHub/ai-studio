@@ -14,11 +14,18 @@ from typing import Any
 
 import pytest
 
+from ai_studio.core.chat_spec import ChatAsset, ChatCapabilities, ChatJob
 from ai_studio.core.enums import GenMode, MediaKind
 from ai_studio.core.enums import JobState as ClipState
+from ai_studio.core.errors import AIStudioError, ProviderError
 from ai_studio.core.image_provider_spec import ImageAsset, ImageProviderCapabilities
 from ai_studio.core.provider_spec import ClipAsset, ClipJob, ProviderCapabilities
-from ai_studio.pipeline.drain import STOP_CLAIMING_BEFORE_S, drain_window
+from ai_studio.pipeline.drain import (
+    STOP_CLAIMING_BEFORE_S,
+    drain_window,
+    make_room_for,
+    render_chat,
+)
 from ai_studio.pipeline.queue import JobQueue
 
 CAPS = ProviderCapabilities(
@@ -124,6 +131,43 @@ class FakeImageProvider:
 
     async def cancel(self, job: ClipJob) -> None:
         return None
+
+    async def aclose(self) -> None:
+        return None
+
+
+class FakeChatProvider:
+    """The chat counterpart to `FakeProvider`/`FakeImageProvider`. Completes
+    instantly, or hangs past the window's close on demand."""
+
+    def __init__(self, *, never_finish: bool = False, result_text: str = "hi there") -> None:
+        self.never_finish = never_finish
+        self.result_text = result_text
+        self.submitted: list[Any] = []
+        self.cancelled = 0
+
+    def capabilities(self) -> ChatCapabilities:
+        return ChatCapabilities(provider="fake-chat", model_id="fake-gpt-oss-20b")
+
+    async def submit(self, request: Any) -> ChatJob:
+        self.submitted.append(request)
+        state = ClipState.RUNNING if self.never_finish else ClipState.COMPLETED
+        return ChatJob(
+            provider="fake-chat", job_id=f"j-{request.shot_id}", shot_id=request.shot_id,
+            state=state, submitted_at=0.0, updated_at=0.0,
+        )
+
+    async def poll(self, job: ChatJob) -> ChatJob:
+        return job
+
+    async def fetch(self, job: ChatJob) -> ChatAsset:
+        return ChatAsset(
+            shot_id=job.shot_id, provider="fake-chat", job_id=job.job_id,
+            result_text=self.result_text, cost_usd=0.01,
+        )
+
+    async def cancel(self, job: ChatJob) -> None:
+        self.cancelled += 1
 
     async def aclose(self) -> None:
         return None
@@ -418,3 +462,150 @@ def test_frame_counts_snap_up_to_the_17k_plus_5_grid() -> None:
     assert snap_frames(240) == 243
     assert snap_frames(243) == 243
     assert snap_frames(10) == MIN_FRAMES
+
+
+# ------------------------------------------------------------- GPU hand-off
+
+
+class _EvictOnly:
+    """The minimal shape `make_room_for` needs: an `evict()` and nothing
+    else, matching a real provider closely enough for this."""
+
+    def __init__(self, name: str, sink: list[str]) -> None:
+        self.name = name
+        self._sink = sink
+
+    async def evict(self) -> None:
+        self._sink.append(self.name)
+
+
+@pytest.mark.asyncio
+async def test_make_room_for_chat_evicts_video_and_image() -> None:
+    """A chat job needs ComfyUI's checkpoint evicted, exactly like an
+    understanding job -- CHAT shares the understanding side's slot even
+    though `MediaKind.CHAT.is_understanding` is False."""
+    evicted: list[str] = []
+    providers = {
+        MediaKind.VIDEO: _EvictOnly("video", evicted),
+        MediaKind.IMAGE: _EvictOnly("image", evicted),
+        MediaKind.CHAT: _EvictOnly("chat", evicted),
+    }
+    await make_room_for(MediaKind.CHAT, providers)
+    assert set(evicted) == {"video", "image"}
+
+
+@pytest.mark.asyncio
+async def test_make_room_for_video_evicts_chat_alongside_understanding() -> None:
+    """The reverse direction: a generation job's eviction list must now
+    include CHAT, not just the three understanding kinds."""
+    evicted: list[str] = []
+    providers = {
+        MediaKind.IMAGE_UNDERSTAND: _EvictOnly("image_understand", evicted),
+        MediaKind.AUDIO_UNDERSTAND: _EvictOnly("audio_understand", evicted),
+        MediaKind.VIDEO_UNDERSTAND: _EvictOnly("video_understand", evicted),
+        MediaKind.CHAT: _EvictOnly("chat", evicted),
+    }
+    await make_room_for(MediaKind.VIDEO, providers)
+    assert set(evicted) == {"image_understand", "audio_understand", "video_understand", "chat"}
+
+
+@pytest.mark.asyncio
+async def test_make_room_for_tolerates_a_provider_with_no_evict() -> None:
+    class _NoEvict:
+        pass
+
+    await make_room_for(MediaKind.CHAT, {MediaKind.VIDEO: _NoEvict()})  # must not raise
+
+
+# ----------------------------------------------------------------- render_chat
+
+
+@pytest.mark.asyncio
+async def test_render_chat_fetches_and_appends_history(tmp_path: Path) -> None:
+    with JobQueue(tmp_path / "q.sqlite3") as q:
+        q.append_chat_turn("U1", "Cgroup", "user", "earlier")
+        job, _ = q.enqueue(
+            "evt-c1", "Cgroup", "second message", user_id="U1", media_kind=MediaKind.CHAT
+        )
+        q.set_parsed(job.id, {"_built_by": "chat"})
+        claimed = q.claim_next()
+        assert claimed is not None
+
+        provider = FakeChatProvider()
+        result = await render_chat(claimed, provider, q, _end(60), 0.01)
+
+        assert result == "hi there"
+        (request,) = provider.submitted
+        assert json.loads(request.extra["history"]) == [["user", "earlier"]]
+        turns = q.recent_chat_turns("U1")
+        assert ("user", "second message") in turns
+        assert ("assistant", "hi there") in turns
+
+
+@pytest.mark.asyncio
+async def test_render_chat_is_stateless_for_an_unidentifiable_user(tmp_path: Path) -> None:
+    """`user_id=None` (LINE omits it for a user who has not accepted the
+    Official Account terms) must not crash or write memory nobody can key
+    on -- the same "None is never counted" precedent `accepted_today()`
+    already follows."""
+    with JobQueue(tmp_path / "q.sqlite3") as q:
+        job, _ = q.enqueue("evt-c-anon", "Cgroup", "hi", user_id=None, media_kind=MediaKind.CHAT)
+        q.set_parsed(job.id, {"_built_by": "chat"})
+        claimed = q.claim_next()
+        assert claimed is not None
+
+        provider = FakeChatProvider()
+        result = await render_chat(claimed, provider, q, _end(60), 0.01)
+
+        assert result == "hi there"
+        (request,) = provider.submitted
+        assert request.extra == {}
+
+
+@pytest.mark.asyncio
+async def test_render_chat_cancels_and_raises_when_the_window_closes(tmp_path: Path) -> None:
+    with JobQueue(tmp_path / "q.sqlite3") as q:
+        job, _ = q.enqueue("evt-c2", "Cgroup", "hi", media_kind=MediaKind.CHAT)
+        q.set_parsed(job.id, {"_built_by": "chat"})
+        claimed = q.claim_next()
+        assert claimed is not None
+
+        provider = FakeChatProvider(never_finish=True)
+        with pytest.raises(ProviderError):
+            await render_chat(claimed, provider, q, _end(-1), 0.01)
+        assert provider.cancelled == 1
+
+
+@pytest.mark.asyncio
+async def test_render_chat_records_its_own_cost(tmp_path: Path) -> None:
+    with JobQueue(tmp_path / "q.sqlite3") as q:
+        job, _ = q.enqueue("evt-c3", "Cgroup", "hi", media_kind=MediaKind.CHAT)
+        q.set_parsed(job.id, {"_built_by": "chat"})
+        claimed = q.claim_next()
+        assert claimed is not None
+
+        await render_chat(claimed, FakeChatProvider(), q, _end(60), 0.01)
+
+        assert q.by_id(job.id).cost_usd == 0.01
+        assert q.chat_spent_this_month_usd() == 0.01
+
+
+@pytest.mark.asyncio
+async def test_render_chat_refuses_once_the_monthly_sub_budget_is_exhausted(
+    tmp_path: Path,
+) -> None:
+    """Fails loudly, terminal, *before* ever submitting -- video/image must
+    keep working on the same shared $/month ceiling regardless."""
+    with JobQueue(tmp_path / "q.sqlite3") as q:
+        spent, _ = q.enqueue("evt-spent", "Cgroup", "x", media_kind=MediaKind.CHAT)
+        q.record_chat_cost(spent.id, 999.0)
+
+        job, _ = q.enqueue("evt-c4", "Cgroup", "hi", media_kind=MediaKind.CHAT)
+        q.set_parsed(job.id, {"_built_by": "chat"})
+        claimed = q.claim_next()
+        assert claimed is not None
+
+        provider = FakeChatProvider()
+        with pytest.raises(AIStudioError):
+            await render_chat(claimed, provider, q, _end(60), 0.01)
+        assert provider.submitted == [], "must fail before ever submitting"

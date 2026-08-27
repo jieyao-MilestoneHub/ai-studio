@@ -12,21 +12,26 @@ when working under `twin/`; nothing below applies there.
 
 ### ai-studio
 
-AI video generation on RunPod: **MiniMax H3** clips and **Flux.1-dev** images
-generated through ComfyUI on a shared GPU pod, then assembled with an editing
-grammar derived from
+AI video generation *and* understanding on RunPod: **MiniMax H3** clips and
+**Flux.1-dev** images generated through ComfyUI, plus **moondream3**,
+**Qwen3-Omni-Captioner**, and **Tarsier2** describing a photo/audio/video clip
+back — all on a shared GPU pod, generation assembled with an editing grammar
+derived from
 [`Hao0321/video-autopilot-kit`](https://github.com/Hao0321/video-autopilot-kit)
-(MIT). A FastAPI service + LINE bot lets a group chat trigger either
+(MIT). A FastAPI service + LINE bot lets a group chat trigger any of them
 (`/影片` for video, `/圖片` for image, photo then `/圖影` / `/圖圖` for
-image-to-video / image-to-image; one spelling each, no aliases) — see
+image-to-video / image-to-image, photo/audio/video then `/說圖` / `/說音` /
+`/說影` to describe it; one spelling each, no aliases) — see
 `docs/line-bot.md`.
 
 Currently built: core model, format policy, H3 prompt builder, Flux prompt
-builder, ComfyUI client, stub provider, pod lifecycle, CLI, FastAPI + LINE bot
-(dual trigger, queue, status pages, monthly budget guard). **Not built:** the
-editing grammar implementation, gate rules, planner, render, and any
-image/video *understanding* path (generation-only today). The grammar is
-specified in `docs/editing-grammar.md` and waiting.
+builder, ComfyUI client, the pod-side understanding-model server and its
+client, stub providers, pod lifecycle, CLI, FastAPI + LINE bot (six triggers,
+queue, status pages, monthly budget guard). **Not built:** the editing
+grammar implementation, gate rules, planner, render. The grammar is
+specified in `docs/editing-grammar.md` and waiting. The three understanding
+models' licences have not yet been verified — see `docs/model-moondream3.md`,
+`docs/model-qwen3-omni-captioner.md`, `docs/model-tarsier2.md`.
 
 ## Commands
 
@@ -75,7 +80,7 @@ Layers, enforced by `import-linter` contracts in `pyproject.toml`:
 
 ```
 L0 core → L1 config·prompts·editing → L2 media·storage
-   → L3 gates·providers·comfy·planner·render → L4 pipeline → L5 runtime·cli → L6 api·bots
+   → L3 gates·providers·comfy·inference·planner·render → L4 pipeline → L5 runtime·cli → L6 api·bots
 ```
 
 Four contracts, each protecting something specific:

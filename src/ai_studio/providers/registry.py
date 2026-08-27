@@ -11,9 +11,14 @@ from collections.abc import Callable
 from typing import Any
 
 from ai_studio.core.errors import UnknownProviderError
-from ai_studio.providers.base import ClipProvider, ImageProvider
+from ai_studio.providers.base import (
+    ChatProvider,
+    ClipProvider,
+    ImageProvider,
+    UnderstandingProvider,
+)
 
-ProviderFactory = Callable[..., ClipProvider | ImageProvider]
+ProviderFactory = Callable[..., ClipProvider | ImageProvider | UnderstandingProvider | ChatProvider]
 
 _REGISTRY: dict[str, ProviderFactory] = {}
 
@@ -27,7 +32,9 @@ def available() -> list[str]:
     return sorted(_REGISTRY)
 
 
-def get_provider(name: str, **kwargs: Any) -> ClipProvider | ImageProvider:
+def get_provider(
+    name: str, **kwargs: Any
+) -> ClipProvider | ImageProvider | UnderstandingProvider | ChatProvider:
     _ensure_builtins()
     try:
         factory = _REGISTRY[name]
@@ -51,9 +58,10 @@ def _ensure_builtins() -> None:
         return
     _builtins_loaded = True
 
-    from ai_studio.providers.stub import StubProvider
+    from ai_studio.providers.stub import StubProvider, StubUnderstandingProvider
 
     register("stub", StubProvider)
+    register("stub-understanding", StubUnderstandingProvider)
 
     from ai_studio.providers.comfyui import ComfyUIProvider
 
@@ -62,3 +70,20 @@ def _ensure_builtins() -> None:
     from ai_studio.providers.flux import FluxComfyUIProvider
 
     register("flux", FluxComfyUIProvider)
+
+    from ai_studio.core.enums import MediaKind
+    from ai_studio.providers.understanding import UnderstandingProvider
+
+    # Three names, one class: each binds a different `modality` at
+    # construction time so `--provider understand-image` (etc) is selectable
+    # directly, even though all three share one wire protocol.
+    for name, modality in (
+        ("understand-image", MediaKind.IMAGE_UNDERSTAND),
+        ("understand-audio", MediaKind.AUDIO_UNDERSTAND),
+        ("understand-video", MediaKind.VIDEO_UNDERSTAND),
+    ):
+        register(name, lambda modality=modality, **kw: UnderstandingProvider(modality=modality, **kw))
+
+    from ai_studio.providers.chat import ChatProvider as _ChatProvider
+
+    register("chat", _ChatProvider)
