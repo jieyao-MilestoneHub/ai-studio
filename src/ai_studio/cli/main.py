@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
@@ -345,18 +346,24 @@ def understand(
     path: Path = typer.Argument(..., help="Photo/audio/video to describe."),
     kind: str = typer.Option(..., "--kind", "-k", help=f"One of: {', '.join(_UNDERSTAND_KINDS)}."),
     provider: str = typer.Option("stub-understanding", "--provider", "-p"),
+    prompt: str | None = typer.Option(
+        None, "--prompt", "-q",
+        help="A question for the model, sent as typed. Omit for the engineered default.",
+    ),
 ) -> None:
     """Describe one photo/audio/video clip. The offline smoke test for an
     understanding provider -- the `generate`/`--provider stub` of the
     understanding path: no GPU, no RunPod account, no money."""
     try:
-        asyncio.run(_understand(path, kind, provider))
+        asyncio.run(_understand(path, kind, provider, prompt=prompt))
     except AIStudioError as exc:
         console.print(f"[red]{type(exc).__name__}:[/red] {exc}")
         raise typer.Exit(1) from None
 
 
-async def _understand(path: Path, kind: str, provider_name: str) -> None:
+async def _understand(
+    path: Path, kind: str, provider_name: str, *, prompt: str | None = None
+) -> None:
     from ai_studio.core.understanding_spec import UnderstandingRequest
 
     modality = _UNDERSTAND_KINDS.get(kind)
@@ -374,7 +381,8 @@ async def _understand(path: Path, kind: str, provider_name: str) -> None:
     )
 
     request = UnderstandingRequest(
-        shot_id=new_run_id(), modality=modality, input_media_path=str(path)
+        shot_id=new_run_id(), modality=modality, input_media_path=str(path),
+        prompt=prompt or None,
     )
     try:
         job = await backend.submit(request)
@@ -503,6 +511,66 @@ def line_capture_group(
     console.print("  the group id will be printed here, and replied into the chat")
     console.print("")
     _run_server(host, port)
+
+
+_REWRITE_KINDS = ("video", "image", "image-q", "audio-q", "video-q")
+
+
+@app.command("rewrite")
+def rewrite(
+    text: str = typer.Argument(..., help="The group member's words, as they would type them."),
+    kind: str = typer.Option(..., "--kind", "-k", help=f"One of: {', '.join(_REWRITE_KINDS)}."),
+    seconds: float = typer.Option(10.12, "--seconds", help="Clip length, video only."),
+) -> None:
+    """Run the prompt rewriter on an open pod and print what the model would get.
+
+    The live smoke test of prompts/convert.py, prompts/flux.py and
+    prompts/understanding.py against gpt-oss-20b -- no LINE, no render. Needs
+    a pod with the inference server up (AI_STUDIO_INFERENCE_URL); evicting
+    ComfyUI's checkpoint is left to you (it is the worker's job in service).
+    """
+    try:
+        asyncio.run(_rewrite(text, kind, seconds))
+    except AIStudioError as exc:
+        console.print(f"[red]{type(exc).__name__}:[/red] {exc}")
+        raise typer.Exit(1) from None
+
+
+async def _rewrite(text: str, kind: str, seconds: float) -> None:
+    from ai_studio.inference.client import InferenceClient
+    from ai_studio.pipeline.pod_llm import PodLlmClient
+    from ai_studio.prompts import flux as flux_prompts
+    from ai_studio.prompts import understanding as und
+    from ai_studio.prompts.convert import convert
+    from ai_studio.prompts.h3 import H3Mode
+
+    if kind not in _REWRITE_KINDS:
+        raise AIStudioError(f"--kind must be one of {', '.join(_REWRITE_KINDS)}, got {kind!r}")
+    settings = get_settings()
+    llm = PodLlmClient(
+        InferenceClient(settings.inference_url, timeout_s=settings.inference_timeout_s),
+        job_timeout_s=settings.inference_job_timeout_s,
+    )
+    started = time.monotonic()
+    try:
+        if kind == "video":
+            h3, how = await convert(text, llm, duration_s=seconds, mode=H3Mode.T2VA)
+            out = h3.render()
+        elif kind == "image":
+            fx, how = await flux_prompts.convert(text, llm)
+            out = fx.render()
+        else:
+            modality = {
+                "image-q": MediaKind.IMAGE_UNDERSTAND,
+                "audio-q": MediaKind.AUDIO_UNDERSTAND,
+                "video-q": MediaKind.VIDEO_UNDERSTAND,
+            }[kind]
+            question, how = await und.convert_question(text, llm, modality=modality)
+            out = question or "(no question: caption path)"
+    finally:
+        await llm.aclose()
+    console.print(f"[bold]built_by[/bold] {how}   {time.monotonic() - started:.1f}s")
+    console.print(out, highlight=False, markup=False)
 
 
 session_app = typer.Typer(
@@ -690,7 +758,9 @@ def session_drain(
     A 48GB card takes the fp8 graph and applies the LoRA in bypass; a 24GB card
     takes int8 with the LoRA merged, which the node pack itself calls softer.
     """
+    from ai_studio.inference.client import InferenceClient
     from ai_studio.pipeline.drain import drain_window
+    from ai_studio.pipeline.pod_llm import PodLlmClient
     from ai_studio.pipeline.queue import JobQueue
     from ai_studio.runtime import session as sess
 
@@ -758,6 +828,12 @@ def session_drain(
                 # Without this a long render looks like idleness and the reaper
                 # closes the window out from under the clip being rendered.
                 on_activity=sess.touch_activity,
+                # The rewriter on the same pod; queued requests are converted
+                # up front, one gpt-oss residency for the batch.
+                llm=PodLlmClient(
+                    InferenceClient(session.inference_url, timeout_s=settings.inference_timeout_s),
+                    job_timeout_s=settings.inference_job_timeout_s,
+                ),
             )
         )
     finally:
@@ -781,6 +857,7 @@ class _RuntimeHost:
         self.name = name
         self.poll_seconds = poll_seconds
         self._providers: dict[str, dict[MediaKind, object]] = {}
+        self._llms: dict[str, object] = {}
 
         settings = get_settings()
         self.files_dir = Path(settings.files_dir)
@@ -897,6 +974,25 @@ class _RuntimeHost:
         self._providers = {live.pod_id: built}
         return built
 
+    def llm_for(self, session: object) -> object:
+        """The prompt rewriter on this pod: gpt-oss-20b through the inference
+        server, one client per pod like `providers_for`. Never a serverless
+        endpoint (decision 2026-08-27) -- see `pipeline.pod_llm`."""
+        from ai_studio.inference.client import InferenceClient
+        from ai_studio.pipeline.pod_llm import PodLlmClient
+        from ai_studio.runtime.session import Session
+
+        live = cast(Session, session)
+        if live.pod_id not in self._llms:
+            settings = get_settings()
+            self._llms = {
+                live.pod_id: PodLlmClient(
+                    InferenceClient(live.inference_url, timeout_s=settings.inference_timeout_s),
+                    job_timeout_s=settings.inference_job_timeout_s,
+                )
+            }
+        return self._llms[live.pod_id]
+
     def touch_activity(self, media_kind: str) -> None:
         from ai_studio.runtime import session as sess
 
@@ -917,10 +1013,16 @@ class _RuntimeHost:
         if job.result_text:
             # An understanding job (/說圖 /說音 /說影): text, no media object
             # and no poster -- `asset` is always None for these.
+            text = job.result_text
+            if job.media_kind is MediaKind.IMAGE_UNDERSTAND:
+                # 📏 moondream3 never writes Chinese. Translating it here
+                # would mean another model swap on the one card (~60 s per
+                # photo), so the note is the honest, free answer.
+                text = f"(moondream3 只能用英文描述)\n{text}"
             messages = line_push.understood_messages(
-                result_text=job.result_text, status_url=status_url, quote_token=job.quote_token,
+                result_text=text, status_url=status_url, quote_token=job.quote_token,
             )
-            fallback = f"{job.result_text[:200]}\n{status_url}"
+            fallback = f"{text[:200]}\n{status_url}"
         elif asset is None:
             messages = line_push.failed_messages(
                 reason=job.error or "unknown", status_url=status_url,

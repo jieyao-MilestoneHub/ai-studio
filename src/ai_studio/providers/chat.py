@@ -75,7 +75,10 @@ class ChatProvider:
     async def submit(self, request: ChatRequest) -> ChatJob:
         now = time.time()
         history = request.extra.get("history")
-        job_id = await self.client.submit_chat_job(request.text, history=history)
+        # The developer/system instruction block for the reply, chosen by
+        # the pipeline (prompts/chat.py) -- the provider only carries it.
+        system = request.extra.get("system")
+        job_id = await self.client.submit_chat_job(request.text, history=history, system=system)
         return ChatJob(
             provider=self.name,
             job_id=job_id,

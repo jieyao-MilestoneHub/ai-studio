@@ -206,3 +206,23 @@ async def test_unload_posts_to_unload_and_raises_on_failure() -> None:
     with pytest.raises(ProviderError):
         await client2.unload()
     await client2.aclose()
+
+
+@pytest.mark.asyncio
+async def test_submit_chat_job_sends_the_rewriter_knobs_only_when_set() -> None:
+    bodies: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(request.content.decode())
+        return httpx.Response(200, json={"job_id": "j"})
+
+    client = InferenceClient("http://pod:8189", transport=httpx.MockTransport(handler))
+    await client.submit_chat_job("hi")
+    await client.submit_chat_job(
+        "hi", system="SYS", max_new_tokens=600, reasoning_effort="low", json_only=True
+    )
+    await client.aclose()
+
+    assert "system" not in bodies[0] and "json_only" not in bodies[0]
+    assert "system=SYS" in bodies[1] and "max_new_tokens=600" in bodies[1]
+    assert "reasoning_effort=low" in bodies[1] and "json_only=true" in bodies[1]

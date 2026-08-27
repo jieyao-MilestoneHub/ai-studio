@@ -102,7 +102,14 @@ class InferenceClient:
         return str(job_id)
 
     async def submit_chat_job(
-        self, message: str, *, history: str | None = None
+        self,
+        message: str,
+        *,
+        history: str | None = None,
+        system: str | None = None,
+        max_new_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+        json_only: bool = False,
     ) -> str:
         """Enqueue a chat turn. Returns a job id. Sibling to `submit_job()`,
         not an overload of it: chat has no media to upload, and `history` is
@@ -114,10 +121,17 @@ class InferenceClient:
         try:
             response = await self._client.post(
                 "/submit",
+                # Each optional knob is sent only when set, so a plain chat
+                # turn's request shape is unchanged (see GenerationOptions
+                # in deploy/inference_server.py for what they mean).
                 data={
                     "modality": "chat",
                     "prompt": message,
                     **({"history": history} if history else {}),
+                    **({"system": system} if system else {}),
+                    **({"max_new_tokens": str(max_new_tokens)} if max_new_tokens else {}),
+                    **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
+                    **({"json_only": "true"} if json_only else {}),
                 },
             )
         except httpx.HTTPError as exc:

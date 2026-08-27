@@ -7,8 +7,8 @@ cold start does not reliably fit in that budget.
 Route budget discipline:
 
 - `POST /callback` does an HMAC, a few comparisons, one SQLite insert and one
-  reply. Nothing else. The LLM conversion runs in a background task *after* the
-  response is sent; the GPU render happens hours later in the window.
+  reply. Nothing else. Prompt rewriting and the GPU render both happen in the
+  worker process, on the pod, when a job is claimed.
 - `GET /q/{token}` and `GET /files/{name}` are plain reads.
 
 Because results are delivered as a link rather than a LINE video message, the
@@ -32,7 +32,7 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 
 from ai_studio.bots.line.content import LineContentClient
@@ -40,19 +40,9 @@ from ai_studio.bots.line.reply import LineReplyClient, NullReplyClient
 from ai_studio.bots.line.webhook import InvalidSignature, WebhookHandler
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import MediaKind
-from ai_studio.llm.endpoint import RunpodLlmClient
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
 
 _log = logging.getLogger("ai_studio.webhook")
-
-_LLM_UNSET = object()
-"""Distinguishes "no override passed" from "explicitly no LLM" for `llm=`.
-
-`None` is itself a meaningful, valid value for `llm` -- it is what turns on the
-template fallback -- so it cannot double as the "use settings" default without
-making that fallback impossible to select on purpose from a test.
-"""
-
 
 def _pod_is_warm() -> bool:
     """A pod is open and inside its lease. Read per request, not cached: the
@@ -68,7 +58,6 @@ def create_app(
     queue: JobQueue | None = None,
     handler: WebhookHandler | None = None,
     files_dir: Path | None = None,
-    llm: RunpodLlmClient | None = _LLM_UNSET,  # type: ignore[assignment]
 ) -> FastAPI:
     """Build the app. Dependencies are injectable so tests need no credentials."""
     settings = get_settings()
@@ -81,21 +70,9 @@ def create_app(
     app.state.files_dir = Path(files_dir or settings.files_dir)
     app.state.files_dir.mkdir(parents=True, exist_ok=True)
 
-    # `_convert_later` reads `app.state.llm`; unset, it falls back to the
-    # template prompt (a working path, just the 26.0-quality one, not the
-    # 367.6 structured one). Both credentials have to be present for a call
-    # that can actually authenticate.
-    if llm is _LLM_UNSET:
-        llm = (
-            RunpodLlmClient(
-                settings.llm_endpoint_id,
-                settings.runpod_api_key.get_secret_value(),
-                model=settings.llm_model,
-            )
-            if settings.llm_endpoint_id and settings.runpod_api_key
-            else None
-        )
-    app.state.llm = llm
+    # No prompt conversion here any more: the rewriter is gpt-oss-20b on the
+    # pod, and the GPU worker converts each request in its prepare phase
+    # (pipeline/worker.py). This process only enqueues.
 
     if handler is None:
         secret = settings.line_channel_secret
@@ -136,7 +113,7 @@ def create_app(
     # ------------------------------------------------------------- webhook
 
     @app.post("/callback")
-    async def callback(request: Request, background: BackgroundTasks) -> PlainTextResponse:
+    async def callback(request: Request) -> PlainTextResponse:
         # Raw bytes: the signature is over exactly what was sent. Parsing first
         # and re-encoding would change the body and never verify.
         body = await request.body()
@@ -156,12 +133,8 @@ def create_app(
         else:
             _log.info("callback ok: %s", ", ".join(_summarise(o) for o in outcomes))
 
-        # Conversion runs after the response goes out, so it cannot eat the
-        # two-second budget however slow the LLM endpoint's cold start is.
         for outcome in outcomes:
-            if outcome.action == "accepted" and outcome.job is not None:
-                background.add_task(_convert_later, app, outcome.job.id)
-            elif outcome.action == "memberJoined":
+            if outcome.action == "memberJoined":
                 # The set of people who can spend GPU time just changed.
                 # Nothing here polls the roster, so this is the only notice.
                 _log.warning("member(s) JOINED the group: %s", outcome.detail)
@@ -225,24 +198,10 @@ def _summarise(outcome: Any) -> str:
     return " ".join(parts)
 
 
-async def _convert_later(app: FastAPI, job_id: int) -> None:
-    """Turn a queued request into a validated H3 prompt.
-
-    Imported lazily and failure-tolerant: a conversion problem must leave the
-    request in the queue for a retry, not take down the web process.
-    """
-    try:
-        from ai_studio.pipeline.convert_worker import convert_job
-
-        await convert_job(app.state.queue, job_id, getattr(app.state, "llm", None))
-    except Exception:  # background task: the job stays queued for a retry
-        return
-
-
 # ----------------------------------------------------------------- rendering
 
 _STATE_ZH = {
-    JobState.QUEUED: ("解析中", "正在把你的描述轉成模型看得懂的分鏡"),
+    JobState.QUEUED: ("等待生成", "已排入佇列;GPU 開機後會先把你的描述整理成模型看得懂的提示"),
     JobState.PARSED: ("等待生成", "已排入佇列,GPU 開機中或排隊中"),
     JobState.RUNNING: ("生成中", "正在算圖,約 5 分鐘"),
     JobState.DONE: ("完成", ""),
@@ -287,8 +246,9 @@ def state_text(job: Job) -> tuple[str, str]:
         return _RUNNING_ZH[kind]
     if job.state is JobState.PARSED:
         return _WAITING_ZH[kind]
-    if job.state is JobState.QUEUED and (kind.is_understanding or kind is MediaKind.CHAT):
-        return _WAITING_ZH[kind]
+    if job.state is JobState.QUEUED:
+        label, _ = _WAITING_ZH[kind]
+        return label, _STATE_ZH[JobState.QUEUED][1]
     return _STATE_ZH[job.state]
 
 

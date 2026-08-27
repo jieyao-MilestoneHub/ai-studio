@@ -215,22 +215,17 @@ def check_signature_and_dedupe() -> CheckResult:
 
 
 def check_queue_and_conversion() -> CheckResult:
-    """3. A real Chinese request becomes an English prompt.
+    """3. A queued Chinese request becomes a claimable English prompt.
 
-    Needs the LLM endpoint. Without it the template fallback runs and the
-    stored prompt is still Chinese — which is a working code path but not the
-    thing this check is for, so it skips.
+    Offline on purpose: the real rewriter is gpt-oss-20b on the pod, which
+    does not exist before a window opens, so this proves the queue -> prompt
+    -> `_rendered` path with a scripted reply and no network. The live check
+    is `ai-studio rewrite --kind image "..."` against an open pod.
     """
-    name = "queue and LLM conversion"
-    settings = get_settings()
-    if not settings.llm_endpoint_id:
-        return _skip(3, name, "AI_STUDIO_LLM_ENDPOINT_ID is not set")
-    if settings.runpod_api_key is None:
-        return _skip(3, name, "RUNPOD_API_KEY is not set (the LLM endpoint needs it too)")
-
+    name = "queue and prompt conversion (offline)"
     import asyncio
 
-    from ai_studio.llm.endpoint import RunpodLlmClient
+    from ai_studio.llm.endpoint import ScriptedLlmClient
     from ai_studio.pipeline.convert_worker import convert_job
     from ai_studio.pipeline.queue import JobQueue
 
@@ -241,12 +236,11 @@ def check_queue_and_conversion() -> CheckResult:
             "pf-convert", "Cpreflight", "一隻橘貓坐在窗邊看雨",
             user_id="Upreflight", media_kind=_image_kind(),
         )
-        client = RunpodLlmClient(
-            settings.llm_endpoint_id,
-            settings.runpod_api_key.get_secret_value(),
-            model=settings.llm_model,
+        client = ScriptedLlmClient(
+            '{"prompt": "An orange tabby cat sits on a windowsill watching the rain, '
+            'soft grey daylight from the window, wet glass, wooden frame"}'
         )
-        how = asyncio.run(convert_job(queue, job.id, client))
+        how = asyncio.run(convert_job(queue, job.id, client, prompt_mode="structured"))
         stored = queue.by_id(job.id)
         if stored is None or stored.prompt is None:
             return _fail(3, name, "the job was never parsed")
@@ -254,7 +248,7 @@ def check_queue_and_conversion() -> CheckResult:
         if not rendered.isascii():
             return _fail(3, name, f"the prompt is not English ({how}): {rendered[:60]}")
         return _pass(3, name, f"built_by={how}, rendered={rendered[:60]}")
-    except Exception as exc:  # a cold endpoint, a bad id, no network
+    except Exception as exc:
         return _fail(3, name, f"{type(exc).__name__}: {exc}")
     finally:
         queue.close()

@@ -41,7 +41,7 @@ from ai_studio.core.image_provider_spec import ImageRequest
 from ai_studio.core.provider_spec import ClipRequest
 from ai_studio.core.understanding_spec import UnderstandingRequest
 from ai_studio.pipeline.convert_worker import DEFAULT_DURATION_S, snap_frames
-from ai_studio.pipeline.queue import Job, JobQueue
+from ai_studio.pipeline.queue import Job, JobQueue, JobState
 
 STOP_CLAIMING_BEFORE_S = 8 * 60
 """Reserve the last eight minutes of the window for finishing, not starting.
@@ -181,11 +181,18 @@ async def drain_window(
     poll_interval_s: float = 15.0,
     max_clips: int | None = None,
     on_activity: Any = None,
+    llm: Any = None,
 ) -> DrainReport:
     """Generate clips and images until the window closes or the queue empties.
 
     One shared pod, one FIFO queue, dispatched per job by `media_kind` —
     `providers` must have an entry for every kind the queue might contain.
+
+    `llm` is the prompt rewriter on the pod (`pipeline.pod_llm.PodLlmClient`)
+    or None; queued requests are converted with it up front, after evicting
+    ComfyUI's checkpoint once, so the batch pays one gpt-oss load. The worker
+    loop does the same in `worker.prepare`; this is the operator's manual
+    equivalent.
 
     `on_activity` is called after each render so the idle reaper's timer
     resets — otherwise a long-running window looks idle and gets closed
@@ -196,6 +203,13 @@ async def drain_window(
     files_dir.mkdir(parents=True, exist_ok=True)
 
     caps_by_kind = {kind: provider.capabilities() for kind, provider in providers.items()}
+
+    if any(j.state is JobState.QUEUED for j in queue.pending()):
+        from ai_studio.pipeline.convert_worker import convert_pending
+
+        if llm is not None:
+            await make_room_for(MediaKind.CHAT, providers)
+        await convert_pending(queue, llm)
 
     # Anything left `running` belongs to a window that ended badly. Reclaim it
     # before starting, or it sits there forever.
@@ -383,10 +397,17 @@ async def render_understanding(
     if not job.input_media_path:
         raise AIStudioError("understanding job has no input_media_path to describe")
 
+    # The question was built at conversion (prompts/understanding.py): the
+    # engineered default, or the user's own question rewritten. None means
+    # "no question" -- the server's caption path for a photo. A row parsed
+    # before this key existed also lands on None and still runs.
+    plan = job.prompt or {}
+    question = plan.get("_question") or None
     request = UnderstandingRequest(
         shot_id=f"job{job.id}",
         modality=job.media_kind,
         input_media_path=job.input_media_path,
+        prompt=str(question) if question else None,
     )
 
     understanding_job = await provider.submit(request)
@@ -440,11 +461,15 @@ async def render_chat(
 
     history = queue.recent_chat_turns(job.user_id) if job.user_id else []
 
-    request = ChatRequest(
-        shot_id=f"job{job.id}",
-        text=job.text,
-        extra={"history": json.dumps(history, ensure_ascii=False)} if history else {},
-    )
+    extra: dict[str, Any] = {}
+    if history:
+        extra["history"] = json.dumps(history, ensure_ascii=False)
+    # The developer prompt chosen at conversion (prompts/chat.py). Absent on
+    # a row parsed before it existed -- the server then answers with none.
+    system = (job.prompt or {}).get("_system")
+    if system:
+        extra["system"] = str(system)
+    request = ChatRequest(shot_id=f"job{job.id}", text=job.text, extra=extra)
 
     chat_job = await provider.submit(request)
     while not chat_job.is_terminal:

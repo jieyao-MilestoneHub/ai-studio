@@ -32,13 +32,16 @@ class Settings(BaseSettings):
 
     runpod_api_key: SecretStr | None = Field(default=None, alias="RUNPOD_API_KEY")
     prompt_mode: str = Field(
-        default="raw",
+        default="structured",
         alias="AI_STUDIO_PROMPT_MODE",
         pattern="^(raw|structured)$",
-        description="raw: the user's own words go to the model verbatim, no LLM "
-        "call. structured: the LLM rewrites them into the H3 shot schema / a "
-        "Flux prompt (prompts/convert.py, prompts/flux.py). The structured code "
-        "stays; raw is what the group asked for.",
+        description="structured (default since 2026-08-27): gpt-oss-20b on the pod "
+        "rewrites every request into its model's best input shape before it is "
+        "rendered -- the H3 shot schema (📏 26.0 -> 367.6), a Flux natural-language "
+        "prompt, or an understanding model's question (prompts/convert.py, "
+        "prompts/flux.py, prompts/understanding.py). raw: the user's words go to "
+        "the model verbatim, no rewrite. The rewriter is never a serverless "
+        "endpoint; see pipeline/pod_llm.py.",
     )
     hf_token: SecretStr | None = Field(
         default=None,
@@ -222,9 +225,6 @@ class Settings(BaseSettings):
         "many days. `ai-studio gc` and the daily timer enforce it. 0 keeps "
         "everything (and lets the disk fill -- only for a short-lived host).",
     )
-
-    llm_endpoint_id: str | None = Field(default=None, alias="AI_STUDIO_LLM_ENDPOINT_ID")
-    llm_model: str = Field(default="Qwen/Qwen2.5-7B-Instruct", alias="AI_STUDIO_LLM_MODEL")
 
     line_channel_secret: SecretStr | None = Field(default=None, alias="LINE_CHANNEL_SECRET")
     line_channel_access_token: SecretStr | None = Field(

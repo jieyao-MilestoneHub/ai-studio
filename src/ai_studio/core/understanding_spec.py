@@ -82,10 +82,10 @@ class UnderstandingRequest(BaseModel):
     modality: MediaKind
     input_media_path: str
     prompt: str | None = None
-    """Steering text. Always `None` from the LINE webhook path -- none of
-    the three triggers accept trailing text -- but the field exists for a
-    future CLI/caller that wants one, for a modality whose capability
-    declares `accepts_prompt=True`."""
+    """The question put to the model. Built at conversion
+    (`prompts.understanding`): the engineered default for a bare trigger, or
+    the user's own trailing text rewritten into the model's best form. None
+    means "no question" -- the server's caption path for a photo."""
 
     extra: dict[str, Any] = Field(
         default_factory=dict,

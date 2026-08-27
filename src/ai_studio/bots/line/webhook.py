@@ -293,13 +293,11 @@ class WebhookHandler:
             return Outcome("ignored", detail="no trigger word")
         prompt, media_kind, wants_media, requested_seconds = stripped
 
-        if media_kind.is_understanding:
-            # None of the three describe triggers take trailing text -- the
-            # mirror image of the four generation triggers, which require it.
-            if prompt:
-                await self._safe_reply(reply_token, self._usage(media_kind, wants_media))
-                return Outcome("ignored", detail="describe trigger takes no text")
-        elif not prompt:
+        # The describe triggers take *optional* text since 2026-08-27: bare,
+        # the model gets its engineered default question; with text, that
+        # question is rewritten into the model's best form on the pod
+        # (prompts/understanding.py). Generation and chat still need words.
+        if not media_kind.is_understanding and not prompt:
             await self._safe_reply(reply_token, self._usage(media_kind, wants_media))
             return Outcome("ignored", detail="empty prompt")
 
@@ -571,6 +569,11 @@ class WebhookHandler:
         """
         if job.media_kind is MediaKind.CHAT:
             eta = "已經在線上,幾秒內回覆" if self.is_warm() else "暖機中,第一句回覆可能要等幾分鐘"
+        elif job.media_kind.is_understanding:
+            # 📏 2026-08-27: 27-65 s to load the model, seconds to answer.
+            eta = "辨識約 1 到 2 分鐘(含載入模型)"
+            if job.media_kind is MediaKind.IMAGE_UNDERSTAND:
+                eta += ",這個看圖模型只會用英文回答"
         else:
             eta = "圖約 30 秒、影片約 2 分鐘" if self.is_warm() else "暖機中:圖約 3 分鐘、影片約 5 分鐘"
         line = f"收到,{eta},想查進度可以看\n{self._link(job)}"
@@ -648,7 +651,7 @@ class WebhookHandler:
                 f"或先傳照片再「{self.i2v_trigger} …」讓照片動起來、"
                 f"「{self.i2i_trigger} …」重畫照片。也可以先傳照片/語音/影片,"
                 f"再說「{self.describe_image_trigger}」/「{self.describe_audio_trigger}」/"
-                f"「{self.describe_video_trigger}」聽聽 AI 怎麼形容。"
+                f"「{self.describe_video_trigger}」聽聽 AI 怎麼形容(後面可以加想問的話)。"
                 f"想聊天就用「{self.chat_trigger} …」。"
                 f"做好但還沒送到的成品,說「{self.show_trigger}」領取。",
             )
@@ -710,6 +713,12 @@ class WebhookHandler:
                 return rest.strip(), kind, wants_media, seconds
         return None
 
+    _DESCRIBE_EXAMPLE: ClassVar[dict[MediaKind, str]] = {
+        MediaKind.IMAGE_UNDERSTAND: "這是什麼品種的狗",
+        MediaKind.AUDIO_UNDERSTAND: "他在唱什麼歌",
+        MediaKind.VIDEO_UNDERSTAND: "他最後做了什麼",
+    }
+
     def _media_trigger(self, media_kind: MediaKind, wants_media: str) -> str:
         """Which trigger word claims this pending media -- for refusal/usage text."""
         if media_kind is MediaKind.IMAGE_UNDERSTAND:
@@ -737,7 +746,11 @@ class WebhookHandler:
         if media_kind.is_understanding:
             assert wants_media is not None  # every understanding kind wants media
             trigger = self._media_trigger(media_kind, wants_media)
-            return f"用法:先{self._MEDIA_VERB[wants_media]},再輸入 {trigger}(不需要額外文字)"
+            example = self._DESCRIBE_EXAMPLE[media_kind]
+            return (
+                f"用法:先{self._MEDIA_VERB[wants_media]},再輸入 {trigger};"
+                f"後面可以加想問的話,例如「{trigger} {example}」"
+            )
         if media_kind is MediaKind.CHAT:
             return f"用法:{self.chat_trigger} <想說的話>"
         if wants_media:
@@ -749,7 +762,7 @@ class WebhookHandler:
         trigger = self._media_trigger(media_kind, wants_media)
         noun = self._MEDIA_NOUN[wants_media]
         verb = self._MEDIA_VERB[wants_media]
-        tail = "" if media_kind.is_understanding else " <想看的畫面>"
+        tail = "(可加一句想問的)" if media_kind.is_understanding else " <想看的畫面>"
         return (
             f"找不到你的{noun}。先{verb}到群組,再說「{trigger}{tail}」"
             f"({int(IMAGE_PAIRING_TTL_S // 60)} 分鐘內有效)。"

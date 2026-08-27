@@ -34,8 +34,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import MediaKind
 from ai_studio.core.errors import AIStudioError, ProviderError
+from ai_studio.pipeline.convert_worker import convert_job, needs_llm
 from ai_studio.pipeline.drain import (
     MAX_ATTEMPTS,
     MAX_CONSECUTIVE_FAILURES,
@@ -84,6 +86,11 @@ class WindowHost(Protocol):
     def providers_for(self, session: Any) -> dict[MediaKind, Any]:
         """The clip and image backends bound to that pod."""
 
+    def llm_for(self, session: Any) -> Any:
+        """The prompt rewriter bound to that pod (gpt-oss-20b through the
+        inference server, `pipeline.pod_llm.PodLlmClient`), or None to
+        convert with the template fallback and no LLM at all."""
+
     def touch_activity(self, media_kind: str) -> None:
         """Reset the idle reaper's timer, recording what was just rendered."""
 
@@ -94,6 +101,27 @@ class WindowHost(Protocol):
         library layer may import, so the loop cannot reach the push client and
         the composition root hands it down instead.
         """
+
+
+MAX_AFFINITY_RUN = 6
+"""How many jobs of the resident kind may be claimed in a row before the
+worker falls back to strict FIFO. Model affinity is what keeps a loaded
+checkpoint busy instead of swapping it out (📏 45-90 s per swap on the RTX
+4090), but unbounded it would let a stream of images starve a queued clip."""
+
+
+@dataclass
+class WorkerState:
+    """What the loop believes about the card, carried between ticks.
+
+    `resident` is the kind whose model the worker last put on the GPU --
+    CHAT after a rewrite batch, the rendered kind after a render. It is a
+    belief, not a probe: the inference server and ComfyUI do the actual
+    eviction (`make_room_for`), this only steers which job to claim next.
+    """
+
+    resident: MediaKind | None = None
+    affinity_run: int = 0
 
 
 @dataclass
@@ -146,6 +174,8 @@ async def tick(
     files_dir: Path,
     report: WorkerReport,
     poll_interval_s: float = 15.0,
+    state: WorkerState | None = None,
+    prompt_mode: str | None = None,
 ) -> str:
     """One pass of the loop. Returns what it did, for the log and the tests.
 
@@ -155,19 +185,11 @@ async def tick(
     """
     report.ticks += 1
     now = host.now()
+    state = state if state is not None else WorkerState()
 
     if not queue.pending():
         report.last_action = "idle"
         return "idle"
-
-    if not claimable(queue):
-        # Something is queued but still being converted (~40 s cold on the
-        # LLM endpoint). Open the pod now so the two cold starts overlap
-        # instead of queueing behind each other; the user's wait is the
-        # longer of the two, not the sum.
-        host.ensure_pod(queue)
-        report.last_action = "warming"
-        return "warming"
 
     deadline = host.claim_deadline(now)
     if not may_claim(deadline):
@@ -176,22 +198,116 @@ async def tick(
         report.last_action = "too-late"
         return "too-late"
 
+    # Conversion needs the pod too now (the rewriter is gpt-oss-20b on it), so
+    # a queued-but-unconverted request opens the pod the same as a parsed one.
     session = host.ensure_pod(queue)
     host.wait_ready(session)
     providers = host.providers_for(session)
 
-    job = queue.claim_next(gpu_tier=getattr(session, "tier_label", None))
-    if job is None:
-        # Someone else took it between the check and the claim. Harmless: the
-        # atomic claim is exactly what makes that a non-event rather than a
-        # double charge.
-        report.last_action = "raced"
-        return "raced"
+    prepared = await prepare(queue, host, session, providers, state, prompt_mode=prompt_mode)
 
-    return await _run_one(
+    kind = next_kind(queue, state)
+    job = queue.claim_next(gpu_tier=getattr(session, "tier_label", None), media_kind=kind)
+    if job is None and kind is not None:
+        job = queue.claim_next(gpu_tier=getattr(session, "tier_label", None))
+    if job is None:
+        # Nothing claimable: either everything is still queued behind a
+        # deferred rewrite (see prepare) or someone else took it between the
+        # check and the claim. Both harmless -- the atomic claim is what makes
+        # the race a non-event rather than a double charge.
+        report.last_action = "prepared" if prepared else "raced"
+        return report.last_action
+
+    if job.media_kind is state.resident:
+        state.affinity_run += 1
+    else:
+        state.affinity_run = 0
+    outcome = await _run_one(
         queue, host, job, providers, files_dir=files_dir,
         deadline=deadline, report=report, poll_interval_s=poll_interval_s,
     )
+    state.resident = job.media_kind
+    return outcome
+
+
+async def prepare(
+    queue: JobQueue,
+    host: WindowHost,
+    session: Any,
+    providers: dict[MediaKind, Any],
+    state: WorkerState,
+    *,
+    prompt_mode: str | None = None,
+) -> int:
+    """Convert queued requests to claimable ones on the pod. Returns how many.
+
+    Two groups. Jobs that need no rewriter (chat; a bare describe trigger;
+    raw-mode generation) are converted at once -- nothing to load. Jobs that
+    need gpt-oss (structured-mode generation; a describe trigger with a
+    question) are converted **all together while it is resident**: one
+    `make_room_for(CHAT)` evicts whatever ComfyUI held, then every pending
+    rewrite runs against the loaded model. N clips pay one gpt-oss load and
+    one H3 load, not 2N (📏 57-90 s per load).
+
+    The costly group is *deferred* while a generation checkpoint is resident
+    and still has claimable work of its own kind: finishing that batch first
+    avoids paying H3's reload twice. A late arrival waits one batch, then gets
+    its own rewrite. Chat is never in the costly group, so a chat job cannot
+    force a swap on its own.
+
+    A rewrite failure never drops a job: `prompts.convert` / `prompts.flux` /
+    `prompts.understanding` all fall back to a labelled template payload
+    (`_built_by` says so), and a client that cannot reach the pod at all
+    surfaces as `template (llm failed: ...)` the same way.
+    """
+    queued = [j for j in queue.unparsed(limit=50) if j.state is JobState.QUEUED]
+    if not queued:
+        return 0
+    mode = prompt_mode or get_settings().prompt_mode
+    cheap = [j for j in queued if not needs_llm(j, mode)]
+    costly = [j for j in queued if needs_llm(j, mode)]
+
+    done = 0
+    for job in cheap:
+        await convert_job(queue, job.id, None, prompt_mode=mode)
+        done += 1
+
+    if costly and not should_defer_llm(queue, state):
+        llm = host.llm_for(session)
+        if llm is not None:
+            await make_room_for(MediaKind.CHAT, providers)
+            state.resident = MediaKind.CHAT
+            state.affinity_run = 0
+        for job in costly:
+            how = await convert_job(queue, job.id, llm, prompt_mode=mode)
+            _log.info("job %d prepared: %s", job.id, how)
+            done += 1
+    elif costly:
+        _log.info(
+            "%d rewrite(s) deferred: %s still has claimable work",
+            len(costly), state.resident.value if state.resident else "?",
+        )
+    return done
+
+
+def should_defer_llm(queue: JobQueue, state: WorkerState) -> bool:
+    """Hold the rewrite batch while the resident generation checkpoint still
+    has work, so it is not evicted and reloaded around a single rewrite."""
+    if state.resident not in (MediaKind.VIDEO, MediaKind.IMAGE):
+        return False
+    return any(
+        j.state is JobState.PARSED and j.media_kind is state.resident for j in queue.pending()
+    )
+
+
+def next_kind(queue: JobQueue, state: WorkerState) -> MediaKind | None:
+    """The kind to claim next: the resident one while it has claimable work
+    and the affinity run is under `MAX_AFFINITY_RUN`; else None for FIFO."""
+    if state.resident is None or state.affinity_run >= MAX_AFFINITY_RUN:
+        return None
+    if any(j.state is JobState.PARSED and j.media_kind is state.resident for j in queue.pending()):
+        return state.resident
+    return None
 
 
 async def _run_one(
@@ -345,12 +461,13 @@ async def serve(
     report.requeued += queue.release_running("worker restarted")
 
     consecutive_failures = 0
+    state = WorkerState()
 
     while max_ticks is None or report.ticks < max_ticks:
         try:
             action = await tick(
                 queue, host, files_dir=files_dir, report=report,
-                poll_interval_s=poll_interval_s,
+                poll_interval_s=poll_interval_s, state=state,
             )
         except AIStudioError as exc:
             # Hours, budget, the daily open cap, a pod that never answered.

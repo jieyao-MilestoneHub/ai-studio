@@ -81,6 +81,29 @@ _log = logging.getLogger("inference_server")
 
 UPLOAD_DIR = Path("/workspace/inference_uploads")
 MAX_OUTPUT_CHARS = 1000
+MAX_JSON_OUTPUT_CHARS = 8000
+"""For `json_only` jobs (the prompt rewriter): an H3 shot plan is well over
+1000 characters, and truncating it mid-object would fail every conversion."""
+MAX_NEW_TOKENS_CEILING = 1536
+"""The most a caller may ask for; keeps UNLOAD_WAIT_TIMEOUT_S honest."""
+
+
+@dataclass
+class GenerationOptions:
+    """Per-request knobs a caller may set on /submit. All optional; every
+    backend that does not understand one ignores it.
+
+    `system` is the harmony developer/system instruction block for gpt-oss
+    (persona for /himonkey; "you are a prompt engineer, reply with JSON" for
+    the rewriter). `json_only` switches to greedy decoding, trims the reply
+    to its outermost braces, and lifts the output cap to MAX_JSON_OUTPUT_CHARS.
+    """
+
+    system: str | None = None
+    max_new_tokens: int | None = None
+    reasoning_effort: str | None = None
+    json_only: bool = False
+
 """Ceiling on a returned description/reply -- mirrors
 `ai_studio.core.understanding_spec.UnderstandingCapabilities.max_output_chars`
 / `ai_studio.core.chat_spec.ChatCapabilities.max_output_chars` on the other
@@ -101,8 +124,38 @@ class ModelBackend(Protocol):
     def load(self) -> None: ...
     def unload(self) -> None: ...
     def infer(
-        self, media_path: Path | None, prompt: str | None, *, history: str | None = None
+        self,
+        media_path: Path | None,
+        prompt: str | None,
+        *,
+        history: str | None = None,
+        options: GenerationOptions | None = None,
     ) -> str: ...
+
+
+AUDIO_DEFAULT_QUESTION = (
+    "請只用繁體中文,依下列格式條列描述這段聲音,不要加開場白:\n"
+    "類型:(人聲說話 / 唱歌 / 音樂 / 環境音 / 混合)\n"
+    "內容:(若有人說話或唱歌,盡量逐字寫出說的內容;若是音樂,寫出樂器、曲風、節奏、有無人聲)\n"
+    "細節:(說話者人數與性別、語言、語氣情緒;背景聲、環境、音質)\n"
+    "一句話總結:"
+)
+"""What /說音 asks when the user adds no question. One language, a fixed
+shape: 📏 2026-08-27 a two-language ask came back with the English half
+dropped. Byte-identical to `ai_studio.prompts.understanding.AUDIO_DEFAULT_QUESTION`
+(this file cannot import the package); a unit test pins the two together."""
+
+VIDEO_DEFAULT_QUESTION = (
+    "請只用繁體中文(台灣用字,不要簡體字)描述這段影片,依下列項目條列,不要加開場白:\n"
+    "場景:(地點、時間、天氣、環境)\n"
+    "人物/主體:(人數、外觀、衣著)\n"
+    "動作與變化:(依時間順序,開頭 → 中段 → 結尾 發生了什麼)\n"
+    "畫面文字:(字幕、招牌、標誌上的文字,逐字寫出;沒有就寫「無」)\n"
+    "鏡頭:(靜止或移動、拍攝角度、有無剪接)\n"
+    "一句話總結:"
+)
+"""What /說影 asks when the user adds no question. 📏 2026-08-27 the model
+wrote 声音 once without the 台灣用字 instruction."""
 
 
 class MoondreamBackend:
@@ -137,7 +190,14 @@ class MoondreamBackend:
         self._model = None
         torch.cuda.empty_cache()
 
-    def infer(self, media_path: Path | None, prompt: str | None, *, history: str | None = None) -> str:
+    def infer(
+        self,
+        media_path: Path | None,
+        prompt: str | None,
+        *,
+        history: str | None = None,
+        options: GenerationOptions | None = None,
+    ) -> str:
         from PIL import Image
 
         assert media_path is not None  # only "chat" jobs ever omit it
@@ -146,9 +206,15 @@ class MoondreamBackend:
         # instruction, a Traditional-Chinese question, "Answer in Traditional
         # Chinese only"), moondream3 answered in English every time -- the
         # model does not write Chinese, so the caption stays English.
-        question = prompt or "Describe this image in detail."
-        result = self._model.query(image, question)
-        return str(result.get("answer", result) if isinstance(result, dict) else result)
+        # Two skills, per the model docs: `caption(length=...)` for a
+        # description (no question), `query(question, reasoning=True)` for
+        # a specific one. A bare "describe this" through query() is the
+        # weaker path; the long caption is what the model was trained to do.
+        if prompt:
+            result = self._model.query(image, prompt, reasoning=True)
+            return str(result.get("answer", result) if isinstance(result, dict) else result)
+        result = self._model.caption(image, length="long")
+        return str(result.get("caption", result) if isinstance(result, dict) else result)
 
 
 class Qwen2AudioBackend:
@@ -190,11 +256,18 @@ class Qwen2AudioBackend:
         self._processor = None
         torch.cuda.empty_cache()
 
-    def infer(self, media_path: Path | None, prompt: str | None, *, history: str | None = None) -> str:
+    def infer(
+        self,
+        media_path: Path | None,
+        prompt: str | None,
+        *,
+        history: str | None = None,
+        options: GenerationOptions | None = None,
+    ) -> str:
         import librosa
 
         assert media_path is not None  # only "chat" jobs ever omit it
-        question = prompt or "請用繁體中文詳細描述這段聲音的內容,再用英文重述一次。"
+        question = prompt or AUDIO_DEFAULT_QUESTION
         conversation = [{
             "role": "user",
             "content": [{"type": "audio", "audio_url": str(media_path)}, {"type": "text", "text": question}],
@@ -214,7 +287,7 @@ class Qwen2AudioBackend:
         audio, _ = librosa.load(str(wav), sr=sr, mono=True)
         inputs = self._processor(text=text, audio=[audio], return_tensors="pt", padding=True)
         inputs = inputs.to("cuda")
-        out = self._model.generate(**inputs, max_new_tokens=256)
+        out = self._model.generate(**inputs, max_new_tokens=384)
         out = out[:, inputs["input_ids"].shape[1]:]
         return str(self._processor.batch_decode(
             out, skip_special_tokens=True, clean_up_tokenization_spaces=False
@@ -235,7 +308,9 @@ class Qwen25VLVideoBackend:
     modality = "video"
     model_id = os.environ.get("AI_STUDIO_VIDEO_MODEL_ID", "Qwen/Qwen2.5-VL-7B-Instruct")
     accepts_prompt = True
-    MAX_PIXELS = 360 * 420
+    MAX_PIXELS = int(os.environ.get("AI_STUDIO_VIDEO_MAX_PIXELS", str(360 * 420)))
+    """Per sampled frame. 480*480+ improves grounding per the Qwen docs; an
+    env var so the experiment is a restart, not a redeploy."""
     FPS = 1.0
 
     def __init__(self) -> None:
@@ -258,11 +333,18 @@ class Qwen25VLVideoBackend:
         self._processor = None
         torch.cuda.empty_cache()
 
-    def infer(self, media_path: Path | None, prompt: str | None, *, history: str | None = None) -> str:
+    def infer(
+        self,
+        media_path: Path | None,
+        prompt: str | None,
+        *,
+        history: str | None = None,
+        options: GenerationOptions | None = None,
+    ) -> str:
         from qwen_vl_utils import process_vision_info
 
         assert media_path is not None  # only "chat" jobs ever omit it
-        question = prompt or "請用繁體中文詳細描述這段影片的內容,再用英文重述一次。"
+        question = prompt or VIDEO_DEFAULT_QUESTION
         messages = [{
             "role": "user",
             "content": [
@@ -279,7 +361,7 @@ class Qwen25VLVideoBackend:
             text=[text], images=image_inputs, videos=video_inputs, padding=True,
             return_tensors="pt",
         ).to("cuda")
-        out = self._model.generate(**inputs, max_new_tokens=256)
+        out = self._model.generate(**inputs, max_new_tokens=512)
         out = out[:, inputs["input_ids"].shape[1]:]
         return str(self._processor.batch_decode(
             out, skip_special_tokens=True, clean_up_tokenization_spaces=False
@@ -335,8 +417,22 @@ class GptOssChatBackend:
         self._tokenizer = None
         torch.cuda.empty_cache()
 
-    def infer(self, media_path: Path | None, prompt: str | None, *, history: str | None = None) -> str:
+    def infer(
+        self,
+        media_path: Path | None,
+        prompt: str | None,
+        *,
+        history: str | None = None,
+        options: GenerationOptions | None = None,
+    ) -> str:
+        opts = options or GenerationOptions()
         messages: list[dict[str, str]] = []
+        if opts.system:
+            # The HF gpt-oss chat template renders a system-role message as
+            # the harmony *developer* "# Instructions" block and synthesises
+            # the real system header (identity, cutoff, date, Reasoning:
+            # <effort>) itself from `reasoning_effort`.
+            messages.append({"role": "system", "content": opts.system})
         if history:
             # (role, content) pairs, oldest first -- see
             # `ai_studio.pipeline.queue.JobQueue.recent_chat_turns`, the
@@ -356,16 +452,30 @@ class GptOssChatBackend:
         # chat wants the short answer, not the deliberation.
         inputs = self._tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, return_tensors="pt", return_dict=True,
-            reasoning_effort="low",
+            reasoning_effort=opts.reasoning_effort or "low",
         ).to("cuda")
-        output_ids = self._model.generate(**inputs, max_new_tokens=self.MAX_NEW_TOKENS)
+        max_new = min(opts.max_new_tokens or self.MAX_NEW_TOKENS, MAX_NEW_TOKENS_CEILING)
+        gen_kwargs: dict[str, Any] = {"max_new_tokens": max_new}
+        if opts.json_only:
+            gen_kwargs["do_sample"] = False  # a schema wants the argmax, not a sample
+        output_ids = self._model.generate(**inputs, **gen_kwargs)
         prompt_len = inputs["input_ids"].shape[-1]
         # Keep the special tokens: harmony's channel markers ARE special
         # tokens, and with skip_special_tokens=True the decode came back as
         # "analysis<thinking>assistantfinal<reply>" -- the leak _final_channel
         # exists to prevent (📏 first real generation, 2026-08-27).
         decoded = self._tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=False)
-        return _final_channel(decoded)
+        text = _final_channel(decoded)
+        return _outer_json(text) if opts.json_only else text
+
+
+def _outer_json(text: str) -> str:
+    """The outermost {...} of a reply, or the reply unchanged if there is no
+    pair -- the caller's JSON parser then fails loudly on it."""
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        return text[start:end + 1]
+    return text
 
 
 def _final_channel(text: str) -> str:
@@ -417,6 +527,7 @@ class Job:
     history: str | None = None
     """JSON-encoded (role, content) pairs, oldest first -- chat only. See
     `GptOssChatBackend.infer()`."""
+    options: GenerationOptions = field(default_factory=lambda: GenerationOptions())
     state: str = "queued"  # queued | running | completed | failed
     result_text: str | None = None
     error: str | None = None
@@ -452,7 +563,7 @@ only holds a weak reference to a task created with `create_task`, so an
 unreferenced one can be garbage-collected mid-run, silently killing the job.
 Discarded via the task's own done-callback once it finishes."""
 
-UNLOAD_WAIT_TIMEOUT_S = 120.0
+UNLOAD_WAIT_TIMEOUT_S = 180.0
 """How long eviction waits for an in-flight `infer()` call to clear before
 giving up and unloading anyway. Must stay comfortably above
 `GptOssChatBackend.MAX_NEW_TOKENS`'s own worst-case generation time so this
@@ -578,11 +689,13 @@ async def _run_job(job: Job) -> None:
         _slot.in_flight += 1
         try:
             result = await asyncio.to_thread(
-                backend.infer, job.media_path, job.prompt, history=job.history
+                backend.infer, job.media_path, job.prompt,
+                history=job.history, options=job.options,
             )
         finally:
             _slot.in_flight -= 1
-        job.result_text = result[:MAX_OUTPUT_CHARS]
+        cap = MAX_JSON_OUTPUT_CHARS if job.options.json_only else MAX_OUTPUT_CHARS
+        job.result_text = result[:cap]
         job.state = "completed"
     except Exception as exc:  # a job's own failure must not crash the server
         _log.exception("job %s failed", job.job_id)
@@ -618,6 +731,10 @@ async def submit(
     modality: str = Form(...),
     prompt: str | None = Form(None),
     history: str | None = Form(None),
+    system: str | None = Form(None),
+    max_new_tokens: int | None = Form(None),
+    reasoning_effort: str | None = Form(None),
+    json_only: bool = Form(False),
 ) -> JSONResponse:
     if modality not in _BACKENDS:
         raise HTTPException(400, f"unknown modality {modality!r}, expected one of {list(_BACKENDS)}")
@@ -632,7 +749,18 @@ async def submit(
         media_path.write_bytes(await media.read())
 
     job_id = uuid.uuid4().hex
-    job = Job(job_id=job_id, modality=modality, media_path=media_path, prompt=prompt, history=history)
+    if reasoning_effort not in (None, "low", "medium", "high"):
+        raise HTTPException(400, f"reasoning_effort must be low|medium|high, got {reasoning_effort!r}")
+    options = GenerationOptions(
+        system=system or None,
+        max_new_tokens=min(max_new_tokens, MAX_NEW_TOKENS_CEILING) if max_new_tokens else None,
+        reasoning_effort=reasoning_effort,
+        json_only=json_only,
+    )
+    job = Job(
+        job_id=job_id, modality=modality, media_path=media_path, prompt=prompt,
+        history=history, options=options,
+    )
     _jobs[job_id] = job
     # Fire-and-forget: the caller polls. A cold model load can plausibly
     # exceed the ~100s Cloudflare window on RunPod's pod proxy even though a

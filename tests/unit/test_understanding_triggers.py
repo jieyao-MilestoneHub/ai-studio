@@ -112,18 +112,29 @@ async def test_describe_image_without_a_photo_is_refused_naming_its_own_trigger(
 
 
 @pytest.mark.asyncio
-async def test_describe_image_with_trailing_text_is_refused_not_enqueued(tmp_path: Path) -> None:
-    """None of the three describe triggers take a steering prompt -- not even
-    for image, where the underlying model could technically use one."""
+async def test_describe_image_with_trailing_text_is_accepted_as_the_question(tmp_path: Path) -> None:
+    """Since 2026-08-27 the describe triggers take optional text: it is the
+    user's question, rewritten on the pod into the model's best form. Kept
+    verbatim on the job so the rewrite has the original to work from."""
     content = NullContentClient(b"fake-jpeg-bytes")
     handler, queue, replier = _wired(tmp_path, content=content)
 
     await _send(handler, _media_event("image", message_id="img-1", event_id="evt-img"))
     (outcome,) = await _send(handler, _text_event("/說圖 這是誰"))
 
-    assert outcome.action == "ignored" and outcome.job is None
-    assert queue.counts() == {}
-    assert "不需要額外文字" in replier.sent[0][1][0]
+    assert outcome.action == "accepted" and outcome.job is not None
+    assert outcome.job.text == "這是誰"
+    assert queue.counts() == {"queued": 1}
+    assert "只會用英文回答" in replier.sent[-1][1][0]
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_describe_usage_advertises_the_optional_question(tmp_path: Path) -> None:
+    handler, queue, replier = _wired(tmp_path, content=NullContentClient(b"x"))
+    (outcome,) = await _send(handler, _text_event("/說圖"))
+    assert outcome.action == "ignored"  # no photo cached
+    assert "可加一句想問的" in replier.sent[-1][1][0]
     queue.close()
 
 

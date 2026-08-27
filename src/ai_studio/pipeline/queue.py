@@ -393,18 +393,32 @@ class JobQueue:
         row = cur.fetchone()
         return _row_to_job(row) if row else None
 
-    def claim_next(self, gpu_tier: str | None = None) -> Job | None:
+    def claim_next(
+        self, gpu_tier: str | None = None, *, media_kind: MediaKind | None = None
+    ) -> Job | None:
         """Atomically take the oldest `parsed` job and mark it `running`.
 
         One statement, so two drainers cannot both claim the same job and pay
-        for the same clip twice.
+        for the same clip twice. `media_kind` narrows it to one kind -- the
+        worker's model-affinity claim, which keeps the checkpoint already on
+        the card busy instead of swapping (see `worker.next_kind`).
         """
-        cur = self._conn.execute(
-            "UPDATE jobs SET state=?, started_at=?, attempts=attempts+1, gpu_tier=?"
-            " WHERE id = (SELECT id FROM jobs WHERE state=? ORDER BY created_at LIMIT 1)"
-            " RETURNING *",
-            (JobState.RUNNING.value, time.time(), gpu_tier, JobState.PARSED.value),
-        )
+        if media_kind is None:
+            cur = self._conn.execute(
+                "UPDATE jobs SET state=?, started_at=?, attempts=attempts+1, gpu_tier=?"
+                " WHERE id = (SELECT id FROM jobs WHERE state=? ORDER BY created_at LIMIT 1)"
+                " RETURNING *",
+                (JobState.RUNNING.value, time.time(), gpu_tier, JobState.PARSED.value),
+            )
+        else:
+            cur = self._conn.execute(
+                "UPDATE jobs SET state=?, started_at=?, attempts=attempts+1, gpu_tier=?"
+                " WHERE id = (SELECT id FROM jobs WHERE state=? AND media_kind=?"
+                "            ORDER BY created_at LIMIT 1)"
+                " RETURNING *",
+                (JobState.RUNNING.value, time.time(), gpu_tier, JobState.PARSED.value,
+                 media_kind.value),
+            )
         row = cur.fetchone()
         return _row_to_job(row) if row else None
 

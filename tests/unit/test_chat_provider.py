@@ -136,3 +136,19 @@ async def test_evict_calls_unload() -> None:
     await provider.evict()
     assert calls == ["/unload"]
     await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_submit_forwards_the_system_prompt_from_extra() -> None:
+    bodies: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/submit":
+            bodies.append(request.content.decode())
+            return httpx.Response(200, json={"job_id": "job-1"})
+        return httpx.Response(200, json={"state": "completed", "result_text": "ok"})
+
+    provider = _provider(handler)
+    await provider.submit(ChatRequest(shot_id="j", text="hi", extra={"system": "# Instructions"}))
+    await provider.aclose()
+    assert "system=%23+Instructions" in bodies[0] or "system=%23%20Instructions" in bodies[0]

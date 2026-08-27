@@ -60,7 +60,10 @@ class _FakeBackend:
     def unload(self) -> None:
         self.unloaded = True
 
-    def infer(self, media_path: object, prompt: object, *, history: object = None) -> str:
+    def infer(
+        self, media_path: object, prompt: object, *, history: object = None, options: object = None
+    ) -> str:
+        self.last_options = options
         return "ok"
 
 
@@ -359,3 +362,119 @@ async def test_a_non_oom_load_failure_is_not_retried(monkeypatch) -> None:
     with pytest.raises(ValueError):
         await srv._ensure_loaded("broken2")
     assert attempts["n"] == 1
+
+
+# ------------------------------------------------ /submit options (the rewriter)
+
+
+def test_generation_options_default_to_off() -> None:
+    opts = srv.GenerationOptions()
+    assert (opts.system, opts.max_new_tokens, opts.reasoning_effort, opts.json_only) == (
+        None, None, None, False
+    )
+
+
+@pytest.mark.asyncio
+async def test_submit_carries_the_options_onto_the_job_and_clamps_tokens(monkeypatch) -> None:
+    """The rewriter asks for a system block, JSON-only decoding and a larger
+    token budget through /submit; the ceiling keeps UNLOAD_WAIT_TIMEOUT_S honest."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setitem(srv._BACKENDS, "chat", lambda: _FakeBackend("chat"))
+    srv._slot.backend = None
+    with TestClient(srv.app) as c:
+        r = c.post("/submit", data={
+            "modality": "chat", "prompt": "hi", "system": "# Instructions\nbe brief",
+            "max_new_tokens": "99999", "reasoning_effort": "low", "json_only": "true",
+        })
+        assert r.status_code == 200, r.text
+        job = srv._jobs[r.json()["job_id"]]
+        assert job.options.system == "# Instructions\nbe brief"
+        assert job.options.max_new_tokens == srv.MAX_NEW_TOKENS_CEILING
+        assert job.options.json_only is True
+        assert job.options.reasoning_effort == "low"
+
+        bad = c.post("/submit", data={"modality": "chat", "prompt": "hi", "reasoning_effort": "max"})
+        assert bad.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_json_only_lifts_the_output_cap(monkeypatch) -> None:
+    """An H3 shot plan is well over MAX_OUTPUT_CHARS; truncating it mid-object
+    would fail every rewrite. json_only jobs get the larger cap."""
+
+    class _Long(_FakeBackend):
+        def infer(self, media_path, prompt, *, history=None, options=None) -> str:
+            return "{" + "x" * 5000 + "}"
+
+    monkeypatch.setitem(srv._BACKENDS, "long", lambda: _Long("long"))
+    srv._slot.backend = None
+    plain = srv.Job(job_id="p", modality="long", media_path=None, prompt="q")
+    await srv._run_job(plain)
+    assert plain.state == "completed" and len(plain.result_text) == srv.MAX_OUTPUT_CHARS
+
+    rich = srv.Job(
+        job_id="r", modality="long", media_path=None, prompt="q",
+        options=srv.GenerationOptions(json_only=True),
+    )
+    await srv._run_job(rich)
+    assert rich.state == "completed" and len(rich.result_text) == 5002
+
+
+def test_outer_json_trims_to_the_braces_and_leaves_bare_text_alone() -> None:
+    assert srv._outer_json('Sure! {"a": 1} hope it helps') == '{"a": 1}'
+    assert srv._outer_json('{"a": {"b": 2}}') == '{"a": {"b": 2}}'
+    assert srv._outer_json("no braces here") == "no braces here"
+
+
+def test_gpt_oss_puts_the_system_block_first_and_honours_the_options() -> None:
+    """Message assembly for the rewriter role, with a fake tokenizer/model:
+    the system block leads, history follows, the user turn is last, and the
+    chat template is asked for the requested effort."""
+    import json
+
+    class _Inputs(dict):
+        def to(self, device):
+            return self
+
+    class _Tensor:
+        shape = (1, 7)
+
+        def __getitem__(self, item):
+            return self
+
+    class _Tok:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def apply_chat_template(self, messages, **kw):
+            self.calls.append({"messages": messages, **kw})
+            return _Inputs(input_ids=_Tensor())
+
+        def decode(self, ids, **kw):
+            return '<|channel|>final<|message|>{"prompt": "a cat"}<|return|>'
+
+    class _Model:
+        def __init__(self) -> None:
+            self.kwargs: dict = {}
+
+        def generate(self, **kw):
+            self.kwargs = kw
+            return [_Tensor()]
+
+    backend = srv.GptOssChatBackend()
+    backend._tokenizer = _Tok()
+    backend._model = _Model()
+    history = json.dumps([["user", "早"], ["assistant", "早安"]])
+    out = backend.infer(
+        None, "Request: 一隻貓", history=history,
+        options=srv.GenerationOptions(system="SYS", max_new_tokens=600, json_only=True),
+    )
+
+    assert out == '{"prompt": "a cat"}'
+    call = backend._tokenizer.calls[0]
+    assert [m["role"] for m in call["messages"]] == ["system", "user", "assistant", "user"]
+    assert call["messages"][0]["content"] == "SYS"
+    assert call["reasoning_effort"] == "low"
+    assert backend._model.kwargs["max_new_tokens"] == 600
+    assert backend._model.kwargs["do_sample"] is False
