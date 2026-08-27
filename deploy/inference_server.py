@@ -341,8 +341,14 @@ class GptOssChatBackend:
         # "pt") hands back a BatchEncoding (a dict), not a tensor -- passed
         # positionally to generate() it died with KeyError: 'shape'. Ask for
         # the dict explicitly and unpack it.
+        # reasoning_effort="low" is a documented gpt-oss chat-template
+        # kwarg. 📏 2026-08-27: at the default effort a one-line question
+        # spent the whole 512-token budget inside the analysis channel and
+        # never reached "final" -- the reply was thinking or nothing. A group
+        # chat wants the short answer, not the deliberation.
         inputs = self._tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt", return_dict=True
+            messages, add_generation_prompt=True, return_tensors="pt", return_dict=True,
+            reasoning_effort="low",
         ).to("cuda")
         output_ids = self._model.generate(**inputs, max_new_tokens=self.MAX_NEW_TOKENS)
         prompt_len = inputs["input_ids"].shape[-1]
@@ -375,6 +381,11 @@ def _final_channel(text: str) -> str:
     stripped = "assistantfinal"
     if stripped in text:
         return text.rsplit(stripped, 1)[1].strip()
+    if "<|channel|>analysis" in text or text.startswith("analysis"):
+        # The budget ran out inside the thinking channel. Leaking that trace
+        # as the reply is the failure this function exists to prevent; say
+        # what happened instead.
+        return "(想太久了,這次沒有寫出回答 -- 請再問一次,或問短一點)"
     return text.strip()
 
 

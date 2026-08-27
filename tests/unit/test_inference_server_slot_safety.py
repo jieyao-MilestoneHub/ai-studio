@@ -289,3 +289,11 @@ def test_final_channel_cuts_at_return_and_survives_stripped_special_tokens() -> 
     assert srv._final_channel(raw) == "我是 AI 語言助手。"
     stripped = "analysisUser wants one sentence.assistantfinal我是 AI 語言助手。"
     assert srv._final_channel(stripped) == "我是 AI 語言助手。"
+
+
+def test_final_channel_never_leaks_a_truncated_analysis() -> None:
+    """📏 2026-08-27: a generation that spent its whole token budget in the
+    analysis channel must not be returned as the reply."""
+    truncated = "<|channel|>analysis<|message|>The user writes in Chinese and I should"
+    out = srv._final_channel(truncated)
+    assert "The user writes" not in out and out
