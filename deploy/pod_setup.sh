@@ -109,8 +109,13 @@ log "installing the understanding-model stack (transformers/accelerate/bitsandby
 # conflicts with what moondream3/Qwen3-Omni-Captioner/Tarsier2's
 # trust_remote_code modeling code needs -- check `pip check` output on the
 # first real deployment, before trusting this venv serves both processes.
+# kernels==0.16.0: what transformers 5.16 needs to run gpt-oss-20b's native
+# MXFP4. Without it the loader says "defaulting to dequantizing the model
+# to bf16" -- 40GB, an OOM on a 24GB card (observed live 2026-08-27). The
+# version window is transformers' own (0.16 <= v < 0.17).
 ./.venv-cu128/bin/pip install -q --upgrade transformers accelerate bitsandbytes \
-  soundfile librosa pillow fastapi 'uvicorn[standard]' python-multipart 2>&1 \
+  soundfile librosa pillow fastapi 'uvicorn[standard]' python-multipart \
+  'kernels==0.16.0' 2>&1 \
   | grep -viE 'warning|notice' | tail -3
 # python-multipart: FastAPI's File()/Form()/UploadFile support is an optional
 # feature dependency, not pulled in by fastapi or uvicorn[standard] on their

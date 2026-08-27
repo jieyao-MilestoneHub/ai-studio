@@ -63,6 +63,7 @@ and run standalone (`python3 inference_server.py`), so it has no access to
 from __future__ import annotations
 
 import asyncio
+import os
 import json
 import logging
 import time
@@ -158,7 +159,11 @@ class Qwen3OmniCaptionerBackend:
     """
 
     modality = "audio"
-    model_id = "Qwen/Qwen3-Omni-30B-A3B-Captioner"
+    model_id = os.environ.get("AI_STUDIO_AUDIO_MODEL_ID", "Qwen/Qwen3-Omni-30B-A3B-Captioner")
+    """Overridable so a pre-quantized build of the same captioner can be
+    tried without editing this file: a repo whose config.json carries its
+    own `quantization_config` is loaded as-is (no bitsandbytes); the
+    official full-precision repo gets 4-bit bitsandbytes on load."""
     accepts_prompt = False
     max_input_seconds = 30.0
 
@@ -179,12 +184,20 @@ class Qwen3OmniCaptionerBackend:
         # configuration class Qwen3OmniMoeConfig"); the model card's own
         # classes load it. `attn_implementation="flash_attention_2"` from the
         # card is left out -- flash-attn is not installed in ComfyUI's venv.
-        quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
+        from transformers import AutoConfig
+
         self._processor = Qwen3OmniMoeProcessor.from_pretrained(self.model_id)
-        self._model = Qwen3OmniMoeForConditionalGeneration.from_pretrained(
-            self.model_id, quantization_config=quant_config, device_map="cuda",
-            dtype=torch.float16,
-        )
+        prequantized = getattr(AutoConfig.from_pretrained(self.model_id), "quantization_config", None)
+        kwargs: dict[str, Any] = {"device_map": "cuda", "dtype": torch.float16}
+        if not prequantized:
+            # 📏 2026-08-27: this path OOMs on a 24GB card with transformers
+            # 5.16 -- the MoE experts are fused 3D parameters there, not
+            # nn.Linear, so bitsandbytes leaves them in fp16 (~24GB alone).
+            # Kept for a transformers<5 venv; see docs/model-qwen3-omni-captioner.md.
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16
+            )
+        self._model = Qwen3OmniMoeForConditionalGeneration.from_pretrained(self.model_id, **kwargs)
 
     def unload(self) -> None:
         import torch
