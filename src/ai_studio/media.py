@@ -246,6 +246,57 @@ def poster(
     )
 
 
+def probe_duration_s(path: Path) -> float:
+    """The container's duration in seconds, for a file that may have no video
+    stream at all (an audio-only M4A). `probe()` insists on a video stream
+    because it describes what a *clip* provider produced; this asks ffprobe
+    only about the format."""
+    path = Path(path)
+    if not path.is_file():
+        raise FFmpegError(f"cannot probe missing file: {path}")
+    proc = run(
+        [get_settings().ffprobe_bin, "-v", "error", "-print_format", "json",
+         "-show_format", str(path)],
+        timeout_s=60.0,
+    )
+    payload = json.loads(proc.stdout or "{}")
+    return _first_float(payload.get("format", {}).get("duration"), default=0.0)
+
+
+AUDIO_MAX_BYTES = 200 * 1024 * 1024
+"""LINE's ceiling for an audio message object (`[reported]`, Messaging API
+reference). An AAC track at 128 kbps is ~1 MB/min, so a phone clip never
+comes close; the check is here so the failure is ours, not LINE's."""
+
+
+def extract_audio(src: Path, dest: Path, *, bitrate: str = "128k") -> tuple[Path, int]:
+    """Write the audio track of `src` as an M4A (AAC) at `dest`. Returns the
+    path and the track's duration in **milliseconds** -- what LINE's audio
+    message object wants.
+
+    `/影音`'s one job. Pure ffmpeg, no GPU, no pod: the only trigger that
+    costs nothing but the host's CPU. Re-encodes rather than `-c:a copy`
+    because LINE plays M4A/AAC and a phone clip's track may be anything;
+    `-vn` drops the picture. Raises `FFmpegError` when the clip has no audio
+    stream at all -- an empty file "succeeding" is how a user waits on a
+    message that never plays.
+    """
+    src, dest = Path(src), Path(dest)
+    info = probe(src)
+    if not info.has_audio:
+        raise FFmpegError(f"{src.name} has no audio track to extract")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    binary = get_settings().ffmpeg_bin
+    run([
+        binary, "-v", "error", "-y", "-i", str(src),
+        "-vn", "-c:a", "aac", "-b:a", bitrate, "-movflags", "+faststart",
+        str(dest),
+    ])
+    if dest.stat().st_size > AUDIO_MAX_BYTES:
+        raise FFmpegError(f"{dest.name} is {dest.stat().st_size} bytes; LINE's limit is {AUDIO_MAX_BYTES}")
+    return dest, round(probe_duration_s(dest) * 1000)
+
+
 def missing_filters(binary: str | None = None) -> list[str]:
     """Which of `REQUIRED_FILTERS` this ffmpeg build lacks."""
     binary = binary or get_settings().ffmpeg_bin

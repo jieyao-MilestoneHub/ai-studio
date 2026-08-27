@@ -111,6 +111,20 @@ against this project's use** the way MiniMax H3's and Flux's have. See
 `docs/model-moondream3.md`, `docs/model-qwen3-omni-captioner.md`,
 `docs/model-tarsier2.md` for what is (and is not yet) verified.
 
+## A free trigger: `/影音`
+
+| trigger | produces | runs on |
+|---|---|---|
+| a video, then `/影音` | that clip's audio track as an M4A (AAC 128 kbps), sent as a LINE **audio message** in the reply | ffmpeg on the host — no GPU, no pod, no queue |
+
+The only trigger that costs nothing but CPU, which is why it is handled
+inline in the webhook rather than enqueued: the worker would open a
+$0.74/hr pod for an ffmpeg call. Same pairing rule as `/說影` (your own
+clip, within 5 minutes), same free reply as「讓我看看」(no push quota). A
+clip with no audio track, or one ffmpeg refuses, is said in words. The file
+lands under `AI_STUDIO_FILES_DIR` and is swept by the same retention as the
+renders.
+
 ## An eighth trigger: chat
 
 | trigger | produces | model |

@@ -321,3 +321,66 @@ async def test_a_failed_audio_fetch_is_logged_and_ignored_not_raised(tmp_path: P
     )
     assert outcome.action == "ignored"
     queue.close()
+
+
+# ------------------------------------------------------------ /影音 (inline)
+
+
+@pytest.mark.asyncio
+async def test_extract_audio_replies_with_an_audio_message_and_no_job(tmp_path: Path, monkeypatch) -> None:
+    """`/影音` never touches the queue or the GPU: the sender's cached clip
+    goes through ffmpeg on the host and comes back in the free reply."""
+    from ai_studio import media
+
+    calls: list[tuple[Path, Path]] = []
+
+    def fake_extract(src: Path, dest: Path, **_):
+        calls.append((Path(src), Path(dest)))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"m4a")
+        return dest, 4321
+
+    monkeypatch.setattr(media, "extract_audio", fake_extract)
+    content = NullContentClient(b"fake-mp4-bytes")
+    handler, queue, replier = _wired(tmp_path, content=content)
+    handler.files_dir = tmp_path / "files"
+
+    await _send(handler, _media_event("video", message_id="vid-1", event_id="evt-vid", duration=4000))
+    (outcome,) = await _send(handler, _text_event("/影音"))
+
+    assert outcome.action == "extract_audio" and outcome.detail.endswith("_audio.m4a")
+    assert queue.counts() == {}, "no job, no pod"
+    assert calls and calls[0][1].name.endswith("_audio.m4a")
+    _, messages = replier.sent_messages[-1]
+    assert messages[0]["type"] == "audio"
+    assert messages[0]["duration"] == 4321
+    assert messages[0]["originalContentUrl"].startswith("https://vg.example.com/files/")
+    assert "4.3 秒" in messages[1]["text"]
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_extract_audio_without_a_clip_says_so(tmp_path: Path) -> None:
+    handler, queue, replier = _wired(tmp_path, content=NullContentClient(b"x"))
+    handler.files_dir = tmp_path / "files"
+    (outcome,) = await _send(handler, _text_event("/影音"))
+    assert outcome.action == "ignored"
+    assert "找不到你的影片" in replier.sent[-1][1][0]
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_extract_audio_reports_a_silent_clip_in_words(tmp_path: Path, monkeypatch) -> None:
+    from ai_studio import media
+
+    def no_track(src: Path, dest: Path, **_):
+        raise media.FFmpegError(f"{Path(src).name} has no audio track to extract")
+
+    monkeypatch.setattr(media, "extract_audio", no_track)
+    handler, queue, replier = _wired(tmp_path, content=NullContentClient(b"fake-mp4-bytes"))
+    handler.files_dir = tmp_path / "files"
+    await _send(handler, _media_event("video", message_id="vid-2", event_id="evt-vid2", duration=4000))
+    (outcome,) = await _send(handler, _text_event("\uff0f影音"))  # the IME's fullwidth solidus
+    assert outcome.action == "extract_audio" and outcome.detail == "failed"
+    assert "沒有聲音軌" in replier.sent[-1][1][0]
+    queue.close()

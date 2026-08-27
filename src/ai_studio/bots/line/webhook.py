@@ -74,6 +74,11 @@ DEFAULT_DESCRIBE_VIDEO_TRIGGER = "/說影"
 """Describe a video clip. Backed by Tarsier2."""
 
 DEFAULT_CHAT_TRIGGER = "/himonkey"
+DEFAULT_EXTRACT_AUDIO_TRIGGER = "/影音"
+"""Video in, its audio track out as an M4A -- pure ffmpeg on the host, no
+GPU, no pod, no queue, answered in the free reply. The first trigger that
+spends no money; that is why it is handled inline here rather than enqueued
+(the worker would open a $0.74/hr pod for an ffmpeg call)."""
 DEFAULT_SHOW_TRIGGER = "讓我看看"
 """The pull trigger: hand over finished results in a free *reply* instead of
 a metered push. Exists for the month in which the push quota is gone -- the
@@ -163,6 +168,7 @@ class WebhookHandler:
         describe_video_trigger: str = DEFAULT_DESCRIBE_VIDEO_TRIGGER,
         chat_trigger: str = DEFAULT_CHAT_TRIGGER,
         show_trigger: str = DEFAULT_SHOW_TRIGGER,
+        extract_audio_trigger: str = DEFAULT_EXTRACT_AUDIO_TRIGGER,
         files_dir: Path | None = None,
         max_audio_understand_s: float = MAX_AUDIO_UNDERSTAND_S,
         max_video_understand_s: float = MAX_VIDEO_UNDERSTAND_S,
@@ -188,6 +194,7 @@ class WebhookHandler:
         self.describe_video_trigger = describe_video_trigger
         self.chat_trigger = chat_trigger
         self.show_trigger = show_trigger
+        self.extract_audio_trigger = extract_audio_trigger
         self.files_dir = Path(files_dir) if files_dir is not None else None
         self.max_audio_understand_s = max_audio_understand_s
         self.max_video_understand_s = max_video_understand_s
@@ -287,6 +294,8 @@ class WebhookHandler:
         if self._is_show_request(text):
             quoted = str(message.get("quotedMessageId") or "") or None
             return await self._show(group_id or "", reply_token, quoted_message_id=quoted)
+        if self._is_extract_audio_request(text):
+            return await self._extract_audio(group_id or "", source.get("userId"), reply_token)
 
         stripped = self._strip_trigger(text)
         if stripped is None:
@@ -653,6 +662,7 @@ class WebhookHandler:
                 f"再說「{self.describe_image_trigger}」/「{self.describe_audio_trigger}」/"
                 f"「{self.describe_video_trigger}」聽聽 AI 怎麼形容(後面可以加想問的話)。"
                 f"想聊天就用「{self.chat_trigger} …」。"
+                f"傳影片再說「{self.extract_audio_trigger}」可以把聲音抽成音檔。"
                 f"做好但還沒送到的成品,說「{self.show_trigger}」領取。",
             )
             return Outcome("status")
@@ -770,6 +780,57 @@ class WebhookHandler:
 
     def _is_status_query(self, text: str) -> bool:
         return any(text.startswith(w) for w in STATUS_WORDS)
+
+    def _is_extract_audio_request(self, text: str) -> bool:
+        if text[:1] == "\uff0f":
+            text = "/" + text[1:]
+        return text.split(maxsplit=1)[:1] == [self.extract_audio_trigger] or text == self.extract_audio_trigger
+
+    async def _extract_audio(self, group_id: str, user_id: str | None, reply_token: str) -> Outcome:
+        """`/影音`: the audio track of the sender's last video, as an M4A.
+
+        Inline, not enqueued: ffmpeg on this host, no GPU. The clip must be
+        the sender's own cached one (same rule as `/說影`). Delivered as a
+        LINE audio message in the free reply -- no push quota -- with the
+        link as a text fallback, and every failure said in words: no clip,
+        no audio track, or ffmpeg refusing the file.
+        """
+        path = self._take_pending_video(group_id, user_id)
+        if path is None:
+            await self._safe_reply(reply_token, self._no_pending_media_for_extract())
+            return Outcome("ignored", detail="extract-audio: no pending video")
+        if self.files_dir is None:
+            await self._safe_reply(reply_token, "這台主機沒有設定檔案目錄,無法轉出音檔。")
+            return Outcome("ignored", detail="extract-audio: no files_dir")
+
+        from ai_studio.media import FFmpegError, extract_audio
+
+        dest = self.files_dir / f"{Path(path).stem}_audio.m4a"
+        try:
+            out, duration_ms = extract_audio(Path(path), dest)
+        except FFmpegError as exc:
+            reason = "這段影片沒有聲音軌" if "no audio track" in str(exc) else f"轉檔失敗:{str(exc)[:80]}"
+            await self._safe_reply(reply_token, f"{reason}\n(影片本身不會被保存)")
+            _log.warning("extract-audio failed for %s: %s", path, exc)
+            return Outcome("extract_audio", detail="failed")
+
+        url = f"{self.base_url}/files/{out.name}"
+        messages: list[dict[str, Any]] = [
+            {"type": "audio", "originalContentUrl": url, "duration": max(duration_ms, 1)},
+            {"type": "text", "text": f"音檔轉好了({duration_ms / 1000:.1f} 秒,m4a)\n{url}"},
+        ]
+        try:
+            await self.replier.reply_messages(reply_token, messages)
+        except Exception as exc:  # the 200 matters more; see _safe_reply
+            _log.warning("extract-audio reply failed: %s", exc)
+            return Outcome("extract_audio", detail="reply failed")
+        return Outcome("extract_audio", detail=out.name)
+
+    def _no_pending_media_for_extract(self) -> str:
+        return (
+            f"找不到你的影片。先傳一段影片到群組,再說「{self.extract_audio_trigger}」"
+            f"({int(IMAGE_PAIRING_TTL_S // 60)} 分鐘內有效)。"
+        )
 
     def _is_show_request(self, text: str) -> bool:
         if text[:1] in ("/", "\uff0f"):
