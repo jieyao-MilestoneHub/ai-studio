@@ -12,6 +12,10 @@ requires-python = ">=3.11,<3.14"
 dependencies = [
     "typer>=0.12",
     "rich>=13.7",
+    "google-genai>=2.20.0",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.15.0",
+    "fsspec>=2026.7.0",
 ]
 
 [project.scripts]
@@ -41,7 +45,10 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
-ignore = ["E501"]
+# RUF001-3 flag ambiguous fullwidth punctuation — correct for ai-studio's
+# English-only source, wrong here: twin's docstrings routinely quote SPEC.md
+# verbatim, which is written in Chinese with fullwidth punctuation by design.
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
 # typer's whole API is call-in-default (`= typer.Option(...)`). B008 is correct
@@ -52,8 +59,11 @@ ignore = ["E501"]
 python_version = "3.11"
 strict = true
 files = ["src/twin"]
-# No `pydantic.mypy` plugin yet — pydantic isn't a dependency until Phase 1
-# adds core/fragment.py and core/trajectory.py.
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = "fsspec.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

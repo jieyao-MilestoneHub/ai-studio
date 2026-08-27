@@ -2,10 +2,10 @@
 
 | 項目 | 值 |
 |---|---|
-| 版本 | 0.2 |
-| 日期 | 2026-08-27（Phase 0 程式部分完成） |
+| 版本 | 0.3 |
+| 日期 | 2026-08-27（Phase 0、Phase 1 程式部分完成） |
 | 依據 | SPEC.md v0.4、EVAL.md v0.2、INTERVIEW.md v0.2（見附錄） |
-| 狀態 | Phase 0 護欄與套件骨架已落地（人工帳號步驟待辦，見該節）；Phase 1 起仍為草稿。路線圖依 SPEC/EVAL 的既有裁決推導，未包含任何本文件自行代決的規範性內容 |
+| 狀態 | Phase 0（護欄/套件骨架）、Phase 1（Fragment schema／split／teacher.py／最小 ingest）程式部分皆已落地；兩者各自的人工步驟（GCP/雲端帳號、使用者真實資料）仍待辦，見各自章節。Phase 2 起仍為草稿。路線圖依 SPEC/EVAL 的既有裁決推導，未包含任何本文件自行代決的規範性內容 |
 
 ---
 
@@ -58,21 +58,29 @@ Phase 0（護欄）
 **驗收**：對 `data/` 底下的測試檔案 commit 會被 hook 擋下（**已用真實 commit 嘗試驗證，見上**）；GCP console 確認無 billing 帳號（**仍待辦**）；README 已有聲明（**已完成**）。
 **類型**：程式（已完成）+ 人工（帳號部分仍待辦）。
 
-**仍待辦（人工，阻塞 Phase 1）**：
+**仍待辦（人工）**：
 1. 建立 Teacher 專用 GCP 專案並確認未綁 billing。
 2. 開通 Modal、Cloudflare R2、Kaggle/Lightning AI 帳號。
-Phase 1 的 `teacher.py` 需要（1）的專案憑證才能綁定 Gemini Flash 免費層；Phase 4 的訓練算力需要（2）。在此之前，Phase 1 只能先做不依賴 Teacher 呼叫的部分（Fragment schema、split 判定邏輯本身），無法跑真正的 ingest。
+（1）的專案憑證是 `teacher.py` 實際發出第一次真實 Gemini 呼叫的前提；Phase 4 的訓練算力需要（2）。實作發現：介面本身、`GeminiTeacher` 綁定、D9 的 RPD ledger 皆不需要真實憑證即可寫出並測試（google-genai SDK 的呼叫用 dependency-injected client 驗證，見 Phase 1）——真正卡住的只有「對著真實帳號打一次真的請求」這件事，所以（1）未完成不再擋 Phase 1 動工，但仍擋 Phase 2（S1 題庫生成需要真的 Teacher 呼叫）。
 
 ### Phase 1 — L1 骨架 + 最小可用 ingest（產出第一個真實 held-out 時段）
 
-- Fragment schema（§4.4）：所有 MUST 欄位落地，含 `split`、`third_party_spans`（可為空陣列）。
-- ingest 時決定 `split`（§4.8），有測試覆蓋；此邏輯之後永遠不可搬到訓練期。
-- `teacher.py` 介面（可替換，v1 綁 Gemini Flash 免費層），呼叫策略「少次、大批」（D9），接到 Phase 0 的 GCP 專案。
-- 對一個真實、純文字的資料來源做最小 ingest（例如訊息或筆記匯出），足以產出一個真正的 `heldout` 時段。多模態降維（§4.2）刻意延後。
+**狀態：程式部分已完成（2026-08-27）。以使用者真實資料跑一次正式 ingest 仍待辦（見下方「仍待辦」）。**
+
+- [x] Fragment schema（§4.4）：所有 MUST 欄位落地（`core/fragment.py`：`Fragment`、`EventTime`、`Entities`、`ThirdPartySpan`），含 `split`、`third_party_spans`（預設空陣列）。模型設為 `frozen=True`（data-contract skill 規則3：split/event_time 寫入後唯讀，語言層面直接強制，不只是靠慣例）。`event_time`／`precision` 皆為必填，不給預設值——遵照 §4.4「precision MUST 顯式表示」，避免虛假預設信心。新增 `tests/unit/test_schema_matches_spec.py`：直接解析 SPEC.md §4.4 的 `jsonc` 區塊（剝除註解後即為合法 JSON，含巢狀 `event_time`/`entities`/`third_party_spans[]`）比對 `Fragment.model_fields`，SPEC 與程式碼分歧時測試會紅，而非維護一份手工同步的 schema 檔（見 PLAN §3.6 的取捨理由）；同檔案另有一支 grep 測試斷言 repo 中沒有 `core/fragment.py` 建構子以外的 `"fragment_id"` 字面量。
+- [x] ingest 時決定 `split`（§4.8）：`ingest/split.py` 的 `decide_split()`（純函式，train/heldout/sealed 三段時間切分，`sealed_cutoff < train_cutoff` 時明確拋錯）與 `sealed_cutoff_for()`（依 EVAL.md §9 的 20% 保留分割計算 sealed 邊界，取 heldout 視窗中最晚的一段）。測試覆蓋於 `tests/unit/test_split.py`（10 個測試，含邊界值、跨 awareness 比較會拋 `TypeError` 而非靜默錯誤）；未加任何可跳過的 marker。此邏輯之後永遠不可搬到訓練期——`twin.train` 尚未存在，但 import-linter 的 C1 契約已預先擋死 `train ⊬ memory`，`ingest.split` 本身則因為在分層中位於 `train` 之下、且 `train` 尚無任何程式碼引用它，暫時只靠「這條路徑還沒被寫出來」保護，等 Phase 4 寫 `train/data.py` 時要對照 §3.5 的設計補上真正的過濾測試。
+- [x] `teacher.py` 介面（可替換）：`Teacher` Protocol（單一 `generate(prompt, *, response_schema) -> T` 方法，刻意通用，Phase 2/3/9 共用同一呼叫形狀）+ `GeminiTeacher`（v1 綁定，client 以 dependency injection 注入，測試用假 client，不需真實憑證）+ `TeacherCallLedger`（比照 `ai_studio.runtime.budget.SpendLedger` 的 day-scoped JSON ledger 形狀，只是量測請求數而非金額，落實 D9「少次、大批」——RPD 耗盡時 `_refuse_if_exhausted()` 主動拒絕而非讓呼叫悄悄失敗）。**已核實**（非猜測）：直接 `uv add google-genai` 並用 `inspect` 內省已安裝的 `google-genai==2.20.0` 套件，確認 `GenerateContentConfig.response_schema` 接受 pydantic model class、`GenerateContentResponse.parsed` 會回傳已解析物件，而非憑記憶假設 SDK 形狀。`config/settings.py` 新增（原規劃未列在 Phase 1，但 teacher.py 讀取憑證/模型名稱是必要支撐）：`gemini_model` 刻意不給預設值——SPEC.md §5.2 只裁決「Gemini Flash 系列」這個家族，沒有釘死單一 model ID，且免費層資格是逐模型判定的，猜一個字串進去正是 D8 想擋的「突發帳單」失敗徵狀的來源。**尚未對真實帳號打過任何一次真的請求**（Phase 0 的 GCP 專案仍待辦）。
+- [x] 對一個真實、純文字的資料來源做最小 ingest：選擇 LINE 聊天記錄純文字匯出（`ingest/sources/line.py` 解析器 + `ingest/fragment.py` 組裝成 `Fragment`），對應 SPEC.md §6.4/D27 已裁決的 v1 Surface，是「訊息匯出」這個建議最貼合規格的選擇。`ingest/store.py` 以 fsspec 寫入/讀回 JSONL（§7.2「所有路徑 MUST 為 URI」的要求，即使目前只會解析到 `file://`）。**驗收标准已用貼近真實形狀的資料端到端跑過一次**（非 pytest，手動腳本，見下方「仍待辦」）：6 筆訊息、100% 涵蓋 MUST 欄位、零筆缺 `event_time`、`heldout`/`sealed` 時間確實晚於 `train`。**尚未對使用者真正的 LINE 匯出檔跑過**——匯出格式的確切樣式（分行符號、日期表示法可能因語系/App 版本而異）只在拿到真實檔案時才能最終確認，`ingest/sources/line.py` 的 docstring 已註明這點，解析器對無法辨識的行會直接拋錯而非靜默跳過。
+- [x] **`third_party_spans` 實際標註（§4.9、§8 護欄1）**——`spec-auditor` 初次審查判為 BLOCK 後修正：原實作只讓欄位「可為空陣列」，但一個雙人 LINE 對話裡，另一方的每一則訊息本身就是全文皆屬第三方內容，留空不符合「MUST 於 ingest 階段標註...成本已付」。修正為 `fragments_from_line_export()` 新增必填參數 `principal_display_name`（無預設值——不知道本人在這份匯出裡的顯示名稱，就無法判斷誰是第三方，沒有安全的預設可退）；非本人 sender 的訊息，整段 `content` 標記一個涵蓋全文的 `ThirdPartySpan`。**明確不含**：本人自己訊息中「提及」第三方的偵測（屬 §4.9 更細緻的實體抽取，`ingest/entities.py`，留待後續 phase）。同一輪順手修正 `spec-auditor` 另外點出的 SHOULD 偏離：`_format_event_time_value()` 讓 `event_time.value` 依 `precision` 正確截斷（原本不論 precision 一律輸出分鐘級字串，LINE 恰好都是分鐘級所以沒炸過，但下一個非分鐘精度的來源重用這支共用函式時會產生「虛假精確度」）。複審後 `spec-auditor` 判定 PASS。
 
 **依據**：SPEC.md §4.4、§4.8/D21、§4.9/D23、§5.2、§7.1/D12。
-**驗收**：ingest 產出的碎片 100% 涵蓋 MUST 欄位；腳本檢查零筆缺 `event_time`；`heldout` 時段的時間確實晚於 `train` 時段。
-**類型**：程式（需使用者提供原始匯出檔案——少量人工）。
+**驗收**：ingest 產出的碎片 100% 涵蓋 MUST 欄位（**已用測試與手動端到端腳本驗證，見上**）；腳本檢查零筆缺 `event_time`（**已驗證**）；`heldout` 時段的時間確實晚於 `train` 時段（**已驗證**）；`third_party_spans` 對非本人發言者的訊息確實有標註（**已驗證，見上**）。
+**類型**：程式（已完成）+ 人工（**仍待辦**：提供使用者真實匯出檔案，對其跑一次正式 ingest）。
+**審查**：`spec-auditor`（初次 BLOCK → 修正 → 複審 PASS）、`data-hygiene`（PASS，時間洩漏/切分污染/frozen-model 防寫入三項未見違規；記錄兩項非阻塞觀察：`write_fragments_jsonl` 的全覆寫語意在未來多來源 ingest 前需先定使用慣例，`train/data.py` 的 split 過濾測試仍待 Phase 4 補上）。
+
+**仍待辦**：
+1. 使用者提供一份真實的 LINE 聊天記錄（或其他純文字）匯出檔案，對其實際執行 `fragments_from_line_export()` 並用 `write_fragments_jsonl()` 落地到 `twin/data/`（gitignored）。
+2. Phase 0 的 GCP 專案就緒後，對 `GeminiTeacher` 打第一次真實請求，確認 RPD ledger 與 D8 的「未啟用 billing」防線在真實流量下仍然成立。
 
 ### Phase 2 — S1 題庫 + Wave 1 作答（**專案第 0 天**）
 
