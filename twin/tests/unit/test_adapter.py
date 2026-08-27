@@ -4,16 +4,23 @@ SPEC.md §7.4/§7.5."""
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from twin.core.adapter import AdapterManifest, ModelSpec
+from twin.core.adapter import (
+    AdapterManifest,
+    ModelSpec,
+    read_adapter_manifest,
+    write_adapter_manifest,
+)
 
 
 def _manifest(**overrides: object) -> AdapterManifest:
     defaults: dict[str, object] = dict(
         run_id="run-001",
+        principal_id="default",
         adapter_uri="file:///data/adapters/run-001/adapter.safetensors",
         model_spec=ModelSpec(base_model_id="some-org/some-8b-model", base_model_revision="main"),
         seed=42,
@@ -36,3 +43,10 @@ def test_adapter_manifest_is_frozen() -> None:
     manifest = _manifest()
     with pytest.raises(ValidationError):
         manifest.global_step = 2000  # type: ignore[misc]
+
+
+def test_write_then_read_adapter_manifest_round_trips(tmp_path: Path) -> None:
+    manifest = _manifest()
+    uri = f"file://{tmp_path}/manifest.json"
+    write_adapter_manifest(manifest, uri)
+    assert read_adapter_manifest(uri) == manifest

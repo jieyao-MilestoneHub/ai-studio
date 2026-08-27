@@ -69,6 +69,30 @@ class Settings(BaseSettings):
         description="fsspec URI. SPEC.md §7.2: all data-artifact paths MUST be "
         "URIs; MUST NOT be bare local paths.",
     )
+    trajectory_store_uri: str = Field(
+        default="file://./data/trajectories.jsonl",
+        alias="TWIN_TRAJECTORY_STORE_URI",
+        description="fsspec URI read by twin.train.data.load_training_examples "
+        "(via twin.ingest.store). Same reasoning as fragment_store_uri.",
+    )
+    checkpoint_store_uri: str | None = Field(
+        default=None,
+        alias="TWIN_CHECKPOINT_STORE_URI",
+        description="fsspec URI, the root twin.train.checkpoint syncs training "
+        "checkpoints and the final AdapterManifest under (SPEC.md §7.2/§7.4). No "
+        "default on purpose, same reasoning as gemini_model: guessing an R2 "
+        "bucket path risks silently writing checkpoints somewhere wrong once the "
+        "real bucket exists. MUST be set before running train.py for real.",
+    )
+    adapter_encryption_key: SecretStr | None = Field(
+        default=None,
+        alias="TWIN_ADAPTER_ENCRYPTION_KEY",
+        description="fernet.Fernet key (see core.encryption.generate_key / "
+        "examples/generate_adapter_encryption_key.py). No default — SPEC.md §8: "
+        "'Adapter 為個資...MUST 加密儲存'. A generated-and-shipped default key "
+        "would defeat the point entirely, so this MUST be set before "
+        "train.py writes or reads any adapter weights for real.",
+    )
 
 
 _settings: Settings | None = None

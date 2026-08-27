@@ -2,10 +2,10 @@
 
 | 項目 | 值 |
 |---|---|
-| 版本 | 0.4 |
-| 日期 | 2026-08-27（Phase 0、Phase 1 完成；L2/L3/L4/harness interface-first 補建完成，見 §3.8） |
+| 版本 | 0.5 |
+| 日期 | 2026-08-27（Phase 0、Phase 1 完成；L2/L3/L4/harness interface-first 補建完成，見 §3.8；Phase 4 訓練垂直切片程式部分完成，見下方與 Phase 4 章節） |
 | 依據 | SPEC.md v0.4、EVAL.md v0.2、INTERVIEW.md v0.2（見附錄） |
-| 狀態 | Phase 0（護欄/套件骨架）、Phase 1（Fragment schema／split／teacher.py／最小 ingest）程式部分皆已落地；兩者各自的人工步驟（GCP/雲端帳號、使用者真實資料）仍待辦，見各自章節。§3.8 記錄了一輪跨 phase 的 interface-first 補建（L2/L3/L4/harness 的介面與 core 的支撐型別），刻意不算某個特定 phase 完成，細節仍待鎖定區塊時補上。Phase 2 起仍為草稿。路線圖依 SPEC/EVAL 的既有裁決推導，未包含任何本文件自行代決的規範性內容 |
+| 狀態 | Phase 0（護欄/套件骨架）、Phase 1（Fragment schema／split／teacher.py／最小 ingest）程式部分皆已落地；兩者各自的人工步驟（GCP/雲端帳號、使用者真實資料）仍待辦，見各自章節。§3.8 記錄了一輪跨 phase 的 interface-first 補建（L2/L3/L4/harness 的介面與 core 的支撐型別），刻意不算某個特定 phase 完成，細節仍待鎖定區塊時補上。**Phase 4（最小 L2 + 精簡軌跡集 + 第一版 LoRA）程式部分已完成**（底模定案 Qwen3-8B，`train/{formatting,model,checkpoint,reproducibility,run}.py`、根目錄 `train.py`、`launch/*`，SPEC §7.4 的 kill-9/resume CI 測試已通過，見該章節「狀態」）；LoRA rank 硬體 probe、真實資料訓練跑仍待辦。Phase 2、3、5 起仍為草稿。路線圖依 SPEC/EVAL 的既有裁決推導，未包含任何本文件自行代決的規範性內容 |
 
 ---
 
@@ -105,14 +105,30 @@ Phase 0（護欄）
 
 ### Phase 4 — 最小 L2 + 精簡軌跡集 + 第一版（精簡）LoRA（與 14 天等待平行）
 
-- 最小 `recall(query, time_hint)`，以一般工具（C4）形式包在 Phase 1 的碎片之上——刻意簡陋（關鍵字 + 時間窗過濾），尚非完整的 Episode/Period 分層。
-- 精簡軌跡集（§4.10），取自容易觀測、有明確 ground truth 的行為資料——刻意跳過嚴謹的硬負例篩選（§4.3 明確允許在大規模歷史 ingest 之前，先以較低信心或無曝光門檻的負例上路，因為 S3 不在 kill switch 的關鍵路徑上）。
-- 選定底模：8B、open-weight、permissive license（§5.1）；抽測繁簡一致性。
-- `train.py` 走 TRL + Accelerate（§7.6 禁止自建 trainer）；checkpoint 契約（§7.4：adapter、optimizer state、LR schedule、RNG state、`global_step`、dataloader cursor）；`run_id` 綁定 seed/dataset_hash/config_hash（§7.5）；載入時做工具名稱遮蔽（§5.3/D16）；Modal/Kaggle 的 `launch/*.sh`（D12）。
+**狀態：訓練垂直切片（`train/model.py`、`checkpoint.py`、`run.py`、`reproducibility.py`、新增 `train/formatting.py`、根目錄 `train.py`、`launch/*`）程式部分已完成（2026-08-27）。最小 `recall()` 已在 §3.8 建好；精簡軌跡集本身（取自真實行為資料）與 LoRA rank 的硬體 probe、真實一輪訓練仍待辦，見下方「仍待辦」。**
 
-**依據**：SPEC.md §3.1/C4、§4.10、§5.1、§5.2、§5.3/D16、§7.3–§7.6、§7.1/D12。
-**驗收（CI，非人工）**：`train.py --resume auto` 撐過訓練中途的 `kill -9`，loss 曲線連續（§7.4 明文列為 CI 項目）；產出一個有標籤的 LoRA artifact `T`。
+- 最小 `recall(query, time_hint)`，以一般工具（C4）形式包在 Phase 1 的碎片之上——刻意簡陋（關鍵字 + 時間窗過濾），尚非完整的 Episode/Period 分層。（已於 §3.8 落地）
+- 精簡軌跡集（§4.10），取自容易觀測、有明確 ground truth 的行為資料——刻意跳過嚴謹的硬負例篩選（§4.3 明確允許在大規模歷史 ingest 之前，先以較低信心或無曝光門檻的負例上路，因為 S3 不在 kill switch 的關鍵路徑上）。**仍待辦**：這批真實精簡軌跡集本身尚未產生，`train/formatting.py` 已備妥把 `Trajectory` 轉成 SFTTrainer 訓練樣本的管線（含 §5.3/D16 的工具名稱遮蔽），等軌跡資料就緒即可餵入。
+- 選定底模：**Qwen3-8B**（dense、Apache-2.0，2025-05 發布）——8B 級、open-weight、permissive license（§5.1）。與 Qwen3.5-9B（Unsloth 官方文件明講不建議 QLoRA 4-bit，量化品質劣化，bf16-LoRA 需 22GB 超出 T4 預算）、Breeze-7B-Instruct-v1.0（唯一過授權關的繁中專用選項，但生態小、agentic 能力弱、已停止更新）、Llama-3-Taiwan／TAIDE／Gemma 2-3（皆因授權條款不符「Apache-2.0 同等」被排除）比較後定案。繁中/台灣用語預設偏簡體的已知代價，計畫靠訓練資料本身（精簡軌跡集）矯正，而非 prompt。**抽測繁簡一致性仍待辦**（需真實訓練跑完成後才能做）。
+- `train.py` 走 TRL + Accelerate（§7.6 禁止自建 trainer）；checkpoint 契約（§7.4：adapter、optimizer state、LR schedule、RNG state、`global_step`、dataloader cursor）——**已用真實 `kill -9` + `--resume auto` 驗證**（`tests/unit/test_train_checkpoint_kill_resume.py`：全本地、無網路依賴的玩具 Qwen3 模型，真子行程 `SIGKILL`，比對中斷續跑與不中斷對照組的逐步 loss 曲線，容忍度依實測校準）；`run_id` 綁定 seed/dataset_hash/config_hash（§7.5，`train/reproducibility.py`）；載入時做工具名稱遮蔽（§5.3/D16，接在 `train/formatting.py`）；Modal/Kaggle/Lightning 的 `launch/*`（D12）。
+- **Adapter 權重（checkpoint 與最終產出）皆加密儲存**（§8：「Adapter 為個資...MUST 加密儲存」）——`core/encryption.py`（Fernet 對稱加密）、`train/checkpoint.py` 把每次 checkpoint／最終 adapter 打包成單一加密封存檔上傳，`config/settings.py` 新增 `TWIN_ADAPTER_ENCRYPTION_KEY`（無預設值，理由同 `gemini_model`），`examples/generate_adapter_encryption_key.py` 供操作者產生金鑰。範圍明確界定於 adapter 權重本身，不含 `AdapterManifest` JSON（後者是 run_id/雜湊/時間戳等 metadata，本身無法反推行為特徵）。
+- **`reply` 在訓練資料中確實表示成跟其他工具同層級的 tool call**（§11-A/D28/D29：「回覆為 tool call」）——`train/formatting.py` 把 `ActionStep` 先轉成合成的 `ToolCallStep(tool="reply", args={surface, content})` 再進 §5.3/D16 的工具名稱遮蔽，讓 `reply` 進入跟 `recall`／`web_search` 同一個遮蔽詞彙池，而不是被模型學成一個永遠不變、不遮蔽的特殊字面量。
+
+**這一輪的 `spec-auditor` 審查**：初次審查判 BLOCK，四項發現——(1) adapter 加密儲存缺失（§8，已修正，見上）、(2) `reply` 未表示成 tool call（§11-A/D28/D29，已修正，見上）、(3) `launch/*` 非純 shell 對 §7.1 字面解讀的不確定性（已記錄於下方「已知偏離」第 1 項，維持現狀，需人裁決）、(4) §7.3 spot/preemptible 未记录（已查證並記錄於下方「已知偏離」第 3 項）。修正 (1)(2) 過程中同時發現並修正一個獨立的正確性 bug：`trainer.model.save_pretrained(final_adapter_uri)` 直接把 fsspec URI 字串傳給不認得 URI scheme 的 `save_pretrained`，會悄悄寫到錯誤的本機路徑而非真正落地——現在改為先存本機再透過 `checkpoint.upload_adapter()` 走加密上傳，並在 kill/resume 測試中新增「下載回最終 adapter 且內容正確」的斷言防止回歸。
+
+**已知偏離，記錄於此而非悄悄發生**：
+1. `launch/` 實際上不是純 shell——Modal 的 SDK 是 Python-first（`@app.function(gpu=...)` decorator），CLI 無法純用 flag 定義自訂 GPU job（2026-08-27 對照 Modal 現行文件核實），Kaggle 的 `kernels push` 同樣需要一支程式檔 + `kernel-metadata.json`。新增 `launch/modal_app.py`、`launch/kaggle_kernel.py`、`launch/kaggle_kernel-metadata.json` 作為基礎設施接線（絕不 import `twin.train`，只透過 subprocess 呼叫 `train.py`），放在 `launch/` 底下但在 `src/twin/` 之外，結構上不受 import-linter `root_package="twin"` 掃描，不違反既有契約，但這是對本節開頭樹狀圖「只放 shell」字面意思的偏離。`launch/kaggle_kernel.py` 另有一個真正開放的問題（如何把 `twin` 原始碼本身搬上 Kaggle kernel，目前假設走 git clone + Kaggle Secret，未驗證）；`launch/lightning.sh` 的確切 CLI 動詞集也未對照現行文件核實，三者優先序皆為 Modal > Kaggle > Lightning（同 §7.3 算力表順序），照此排序處理未驗證風險。
+2. `requires-python` 由 `>=3.11` 提高為 `>=3.12`（連動 `[tool.mypy] python_version`、`[tool.ruff] target-version`）——`numpy>=2.3`（被 torch/transformers 遞移依賴）在 PyPI 上本身即宣告 `requires-python>=3.12`（已即時查證，非臆測），`>=3.11` 已不是誠實的宣告，在真正的 3.11 直譯器上 `uv sync` 會直接解析失敗。
+3. §7.3「MUST 優先使用 spot/preemptible」在三個平台上核實後的現況（2026-08-27 查證）：**Modal 不需額外設定**——其官方文件明講「All Modal Functions are subject to preemption by default」，且 `nonpreemptible` 參數明文不支援 GPU Function，所以 GPU 一律強制可搶佔，`launch/modal_app.py` 的裸 `@app.function(gpu="T4", ...)` 已經滿足這條 MUST，不是遺漏。**Kaggle 這條 MUST 不適用**——其免費層是每週時數配額（30h/週）model，不是 spot 定價/搶佔機制，平台上找不到對應開關。**Lightning AI 未核實**，與該平台 CLI 動詞集的不確定性一併留待實作時查證。
+
+**依據**：SPEC.md §3.1/C4、§4.10、§5.1、§5.2、§5.3/D16、§7.3–§7.6、§7.1/D12、§8、§11-A/D28/D29。
+**驗收（CI，非人工）**：`train.py --resume auto` 撐過訓練中途的 `kill -9`，loss 曲線連續（§7.4 明文列為 CI 項目，**已通過**）；產出一個有標籤的 LoRA artifact `T`（**機制已驗證，真實資料上的產出仍待辦**）。
 **類型**：程式。
+
+**仍待辦**：
+1. `examples/probe_lora_rank.py` 在實際目標硬體（T4 或同級）上跑過，把選定的 LoRA rank（TRL 現行參考設定 r=256 起，含 §11 項目 G 要求的降級留痕）記錄進真實的 `TrainingConfig`。
+2. 精簡軌跡集本身（真實行為資料，非玩具/合成）。
+3. Phase 0 待辦的 GCP/Modal/R2/Kaggle/Lightning 帳號就緒後，第一次真實訓練跑；抽測繁簡一致性。
 
 ### Phase 5 — Baseline + Judge harness（平行，等待期間完成）
 

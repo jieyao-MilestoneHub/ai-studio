@@ -120,6 +120,11 @@ def test_no_trajectory_dict_literals_outside_the_constructor() -> None:
     allowed = {
         TWIN_ROOT / "src" / "twin" / "core" / "trajectory.py",
         TWIN_ROOT / "tests" / "unit" / "test_schema_matches_spec.py",
+        # Uses "trajectory_id" as a datasets.Dataset column-name string, keyed
+        # off `trajectory.trajectory_id` attribute access — not a hand-built
+        # dict standing in for the Trajectory constructor, so it can't drop a
+        # required field the way this guard exists to catch.
+        TWIN_ROOT / "src" / "twin" / "train" / "formatting.py",
         SPEC,
     }
     result = subprocess.run(
