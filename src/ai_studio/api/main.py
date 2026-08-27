@@ -250,19 +250,58 @@ _STATE_ZH = {
 }
 
 
+_GENERATION_MODELS: dict[MediaKind, tuple[str, str]] = {
+    # The two ComfyUI-served generators name their weights by repo, not by a
+    # capabilities snapshot (their `model_id` is "<model>@<w>x<h>"), so the
+    # public repo is spelled out here. The weights `deploy/pod_setup.sh`
+    # actually downloads: Comfy-Org's repackaging of MiniMax H3, and the
+    # fp8 Flux.1-dev transformer from Comfy-Org/flux1-dev (ungated, same
+    # weights as black-forest-labs/FLUX.1-dev).
+    MediaKind.VIDEO: ("MiniMax H3 (MiniMax-H3-fl2va)", "https://huggingface.co/Comfy-Org/MiniMax-H3"),
+    MediaKind.IMAGE: ("Flux.1-dev", "https://huggingface.co/black-forest-labs/FLUX.1-dev"),
+}
+
+
+def model_for(kind: MediaKind) -> tuple[str, str]:
+    """The open model a job of this kind runs on, and where it lives.
+
+    Understanding and chat read the id off the provider's capabilities so
+    a model swap (2026-08-27: two of the three understanding models) shows
+    up here without a second edit; the two generators are a fixed table.
+    Raises on a kind nothing serves -- fail loudly, never a blank row.
+    """
+    if kind in _GENERATION_MODELS:
+        return _GENERATION_MODELS[kind]
+    if kind is MediaKind.CHAT:
+        from ai_studio.providers.chat import chat_capabilities
+
+        model_id = chat_capabilities().model_id
+    elif kind.is_understanding:
+        from ai_studio.providers.understanding import understanding_capabilities
+
+        model_id = understanding_capabilities(kind).model_id
+    else:
+        raise ValueError(f"no model table entry for {kind!r}")
+    return model_id, f"https://huggingface.co/{model_id}"
+
+
 def _render(job: Job, position: int | None, base_url: str) -> str:
     label, note = _STATE_ZH[job.state]
-    rows = [("狀態", label), ("你的描述", job.text)]
+    rows: list[tuple[str, str]] = [("狀態", html.escape(label)), ("你的描述", html.escape(job.text))]
     if position:
         rows.append(("佇列位次", f"第 {position} 位"))
     if job.gpu_tier:
-        rows.append(("使用的 GPU", job.gpu_tier))
+        rows.append(("使用的 GPU", html.escape(job.gpu_tier)))
+    model_name, model_url = model_for(job.media_kind)
+    rows.append((
+        "開源模型",
+        f'<a href="{html.escape(model_url)}" rel="noopener">{html.escape(model_name)}</a>',
+    ))
     if job.error:
-        rows.append(("錯誤", job.error[:300]))
+        rows.append(("錯誤", html.escape(job.error[:300])))
 
-    body = "".join(
-        f"<tr><th>{html.escape(k)}</th><td>{html.escape(str(v))}</td></tr>" for k, v in rows
-    )
+    # Values are already HTML (escaped text, or the one anchor above).
+    body = "".join(f"<tr><th>{html.escape(k)}</th><td>{v}</td></tr>" for k, v in rows)
 
     action = ""
     if job.state is JobState.DONE and job.output_path:

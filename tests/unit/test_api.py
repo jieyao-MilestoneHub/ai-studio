@@ -426,3 +426,24 @@ def test_a_join_in_another_group_warns_about_nothing(tmp_path: Path, caplog) -> 
     messages = [r.getMessage() for r in caplog.records]
     assert not any("JOINED" in m for m in messages)
     queue.close()
+
+
+def test_the_page_names_the_open_model_with_a_link(client) -> None:
+    """Asked 2026-08-27: every job page says which open model produced it and
+    links to its repo. Generators come from a fixed table, understanding and
+    chat from the provider's capabilities, so a model swap shows up here."""
+    from ai_studio.api.main import model_for
+    from ai_studio.core.enums import MediaKind
+
+    c, queue, _ = client
+    _post(c, [_event("/影片 一隻貓")])
+    job = queue.recent()[0]
+    body = c.get(f"/q/{job.token}").text
+    assert "開源模型" in body
+    assert 'href="https://huggingface.co/Comfy-Org/MiniMax-H3"' in body
+
+    for kind in MediaKind:
+        name, url = model_for(kind)
+        assert name and url.startswith("https://huggingface.co/")
+    assert model_for(MediaKind.CHAT)[1].endswith("/openai/gpt-oss-20b")
+    assert "Qwen2-Audio" in model_for(MediaKind.AUDIO_UNDERSTAND)[0]
