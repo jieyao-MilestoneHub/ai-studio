@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import json
 import logging
 import time
@@ -202,7 +203,15 @@ class Qwen2AudioBackend:
             conversation, add_generation_prompt=True, tokenize=False
         )
         sr = self._processor.feature_extractor.sampling_rate
-        audio, _ = librosa.load(str(media_path), sr=sr, mono=True)
+        # LINE audio is .m4a; librosa 1.0 has no audioread fallback, so
+        # soundfile fails with "Format not recognised" (📏 2026-08-27).
+        # Transcode with the pod's ffmpeg to a mono WAV at the model's rate.
+        wav = media_path.with_suffix(".16k.wav")
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", str(media_path), "-ac", "1", "-ar", str(sr), "-f", "wav", str(wav)],
+            check=True, capture_output=True,
+        )
+        audio, _ = librosa.load(str(wav), sr=sr, mono=True)
         inputs = self._processor(text=text, audio=[audio], return_tensors="pt", padding=True)
         inputs = inputs.to("cuda")
         out = self._model.generate(**inputs, max_new_tokens=256)
