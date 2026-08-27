@@ -103,6 +103,57 @@ async def test_submit_job_raises_when_no_job_id_is_returned(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_submit_chat_job_posts_modality_chat_with_no_file() -> None:
+    """No `files=` on this call, unlike `submit_job()` -- chat has nothing to
+    upload, so the body is plain form-urlencoded, not multipart."""
+    from urllib.parse import parse_qs
+
+    seen: dict = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/submit"
+        fields = parse_qs(request.content.decode("utf-8"))
+        seen["fields"] = fields
+        return httpx.Response(200, json={"job_id": "job-1"})
+
+    client = _client(handler)
+    job_id = await client.submit_chat_job("hello there")
+    assert job_id == "job-1"
+    assert seen["fields"]["modality"] == ["chat"]
+    assert seen["fields"]["prompt"] == ["hello there"]
+    assert "media" not in seen["fields"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_submit_chat_job_carries_history_as_a_distinct_field() -> None:
+    from urllib.parse import parse_qs
+
+    seen: dict = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["fields"] = parse_qs(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"job_id": "job-1"})
+
+    client = _client(handler)
+    await client.submit_chat_job("hello again", history='[["user", "prior turn"]]')
+    assert seen["fields"]["history"] == ['[["user", "prior turn"]]']
+    assert seen["fields"]["prompt"] == ["hello again"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_submit_chat_job_raises_on_a_rejected_request() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, text="unknown modality")
+
+    client = _client(handler)
+    with pytest.raises(ProviderSubmitError):
+        await client.submit_chat_job("hi")
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_poll_job_returns_the_raw_payload() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/poll/job-1"

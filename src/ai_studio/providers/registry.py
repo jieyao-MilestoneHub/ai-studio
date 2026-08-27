@@ -11,9 +11,14 @@ from collections.abc import Callable
 from typing import Any
 
 from ai_studio.core.errors import UnknownProviderError
-from ai_studio.providers.base import ClipProvider, ImageProvider, UnderstandingProvider
+from ai_studio.providers.base import (
+    ChatProvider,
+    ClipProvider,
+    ImageProvider,
+    UnderstandingProvider,
+)
 
-ProviderFactory = Callable[..., ClipProvider | ImageProvider | UnderstandingProvider]
+ProviderFactory = Callable[..., ClipProvider | ImageProvider | UnderstandingProvider | ChatProvider]
 
 _REGISTRY: dict[str, ProviderFactory] = {}
 
@@ -27,7 +32,9 @@ def available() -> list[str]:
     return sorted(_REGISTRY)
 
 
-def get_provider(name: str, **kwargs: Any) -> ClipProvider | ImageProvider | UnderstandingProvider:
+def get_provider(
+    name: str, **kwargs: Any
+) -> ClipProvider | ImageProvider | UnderstandingProvider | ChatProvider:
     _ensure_builtins()
     try:
         factory = _REGISTRY[name]
@@ -76,3 +83,7 @@ def _ensure_builtins() -> None:
         ("understand-video", MediaKind.VIDEO_UNDERSTAND),
     ):
         register(name, lambda modality=modality, **kw: UnderstandingProvider(modality=modality, **kw))
+
+    from ai_studio.providers.chat import ChatProvider as _ChatProvider
+
+    register("chat", _ChatProvider)

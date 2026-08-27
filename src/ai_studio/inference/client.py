@@ -101,6 +101,42 @@ class InferenceClient:
             raise ProviderSubmitError(f"inference server returned no job_id: {payload!r}")
         return str(job_id)
 
+    async def submit_chat_job(
+        self, message: str, *, history: str | None = None
+    ) -> str:
+        """Enqueue a chat turn. Returns a job id. Sibling to `submit_job()`,
+        not an overload of it: chat has no media to upload, and `history` is
+        a distinct field from `prompt` rather than folded into it -- the same
+        one-field-one-meaning discipline `pipeline.queue.complete_text()` (a
+        sibling to `complete()`, not an optional parameter on it) already
+        follows.
+        """
+        try:
+            response = await self._client.post(
+                "/submit",
+                data={
+                    "modality": "chat",
+                    "prompt": message,
+                    **({"history": history} if history else {}),
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise ProviderSubmitError(
+                f"could not reach the inference server at {self.base_url}: {exc}"
+            ) from exc
+
+        if response.status_code >= 400:
+            raise ProviderSubmitError(
+                f"inference server rejected the chat job ({response.status_code}): "
+                f"{response.text[:500]}"
+            )
+
+        payload = response.json()
+        job_id = payload.get("job_id")
+        if not job_id:
+            raise ProviderSubmitError(f"inference server returned no job_id: {payload!r}")
+        return str(job_id)
+
     # ------------------------------------------------------------------ poll
 
     async def poll_job(self, job_id: str) -> dict[str, Any]:
