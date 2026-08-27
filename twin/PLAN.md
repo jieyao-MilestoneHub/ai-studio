@@ -2,10 +2,10 @@
 
 | 項目 | 值 |
 |---|---|
-| 版本 | 0.3 |
-| 日期 | 2026-08-27（Phase 0、Phase 1 程式部分完成） |
+| 版本 | 0.4 |
+| 日期 | 2026-08-27（Phase 0、Phase 1 完成；L2/L3/L4/harness interface-first 補建完成，見 §3.8） |
 | 依據 | SPEC.md v0.4、EVAL.md v0.2、INTERVIEW.md v0.2（見附錄） |
-| 狀態 | Phase 0（護欄/套件骨架）、Phase 1（Fragment schema／split／teacher.py／最小 ingest）程式部分皆已落地；兩者各自的人工步驟（GCP/雲端帳號、使用者真實資料）仍待辦，見各自章節。Phase 2 起仍為草稿。路線圖依 SPEC/EVAL 的既有裁決推導，未包含任何本文件自行代決的規範性內容 |
+| 狀態 | Phase 0（護欄/套件骨架）、Phase 1（Fragment schema／split／teacher.py／最小 ingest）程式部分皆已落地；兩者各自的人工步驟（GCP/雲端帳號、使用者真實資料）仍待辦，見各自章節。§3.8 記錄了一輪跨 phase 的 interface-first 補建（L2/L3/L4/harness 的介面與 core 的支撐型別），刻意不算某個特定 phase 完成，細節仍待鎖定區塊時補上。Phase 2 起仍為草稿。路線圖依 SPEC/EVAL 的既有裁決推導，未包含任何本文件自行代決的規範性內容 |
 
 ---
 
@@ -381,6 +381,32 @@ import-linter 結構上查不到的兩件事，改由既有工具把關：(a) �
 **`.gitignore`**：`twin/.gitignore`（git 的巢狀 `.gitignore` 機制，範圍限定在 `twin/` 之下），列出 `data/`、`adapters/`、`transcripts/`、`eval/` 加上 twin 自己的 build 產物樣式 — 完全包在「獨立套件」這個邊界內，搭配一支從 ai-studio 現有、已驗證過的 `tests/unit/test_gitignore.py` 直接移植（parse-and-assert-patterns-present 的寫法）的 `twin/tests/unit/test_gitignore.py`。
 
 **Pre-commit hook**：這是「獨立套件」這個原則唯一要讓步的地方 — git hook 是整個 repo 共用一份，`.git/hooks/pre-commit` 只有一個，`pre-commit install` 會往上找到 repo 根目錄的 `.pre-commit-config.yaml`，不會找子目錄的設定。已確認 ai-studio 目前完全沒有 pre-commit 基礎設施（repo 中不存在任何 `.pre-commit-config.yaml`；它自己的等價護欄只有 `.gitignore` + 一支存在性測試），所以 twin 會是這個 monorepo 第一個引入 pre-commit 的地方。它必須放在 repo 根目錄（`/home/docker_admin/develop/ai-studio/.pre-commit-config.yaml`），寫成一個 local hook，`files` 限定為 `^twin/(data|adapters|transcripts|eval)/`，只在 staged 路徑落在這四個 twin 子目錄下時才觸發 — 對 ai-studio 貢獻者零影響，存在的目的就是接住 `git add -f` 硬繞過 `.gitignore` 的情況。因為這份 hook 設定本來就不在 `twin/` 自己的測試範圍內，它的存在與規則涵蓋範圍應該由 root 的 `tests/unit/` 斷言（在既有的 `test_gitignore.py` 旁邊新增一支），因為護欄 2 的驗證本來就是 repo 層級的事，跟檔案本身該放哪裡是一致的。
+
+### 3.8 跨 phase 的 interface-first 補建（2026-08-27）
+
+Phase 1 完成後，實作方向改變：不再逐 phase 蓋完整垂直切片，改為先把 L2/L3/L4/harness 的 interface 一次建好，細節留到鎖定特定區塊時再補。**每個 interface 都必須能對應到 SPEC.md/EVAL.md 的具體條號，或一個此刻就存在的跨層依賴**，不可只因為 §3.1 的樹狀圖列了檔名就建。
+
+觸發原因兩個：（1）本人尚未確定 Teacher 要不要真的用 Gemini（SPEC.md §5.2/D9 已裁決 v1 綁 Gemini，但「本人是否願意把資料送給它」是分開的、尚未解決的疑慮）；（2）同樣的可替換性也要用在 Agent 實際依賴哪個 LLM 做推論決策、以及 Agent 的工具設計上（本人直接確認，且 SPEC.md C2/C4 本來就要求如此）。
+
+**已建（real，非 stub）**：
+- `core/trajectory.py`（§4.10 Trajectory schema，frozen，含 §4.11/D20 的 evidence=absent→trivial 驗證）＋ `core/enums.py` 新增 `NegativeClass`/`GroundTruthSource`/`ExposureEvidence`/`GateLevel`
+- `core/hashing.py`（§7.5 的 dataset_hash/config_hash/adapter_hash）
+- `core/adapter.py`（`ModelSpec`/`AdapterManifest` — train 寫、agent 讀的依賴反轉產物，PLAN §3.3 點名但原先沒寫出形狀）
+- `core/gate_metrics.py`（`GateMetrics` + `JUDGE_AGREEMENT_FLOOR`）— **本輪發現的一個 PLAN 原樹狀圖沒預料到的分層衝突**：`agent/gate.py` 需要這輪的評測數字才能判斷 L0/L1/L2 是否該變動，但完整報告在 `harness/report.py`，`agent` 直接 import `harness` 會違反既有的「Eval harness stays a leaf」契約。解法是在 `core` 放一個小的、frozen 的投影型別，`harness.report` 同時產出完整報告與這個投影，`agent.gate` 只依賴 `core.gate_metrics`，與 `core.adapter.AdapterManifest` 的依賴反轉手法完全一致。`JUDGE_AGREEMENT_FLOOR`（EVAL §6.3，0.80，MUST NOT 下修）也放在這裡，因為 `agent.gate`（送出閘門）與 `harness.gate_check`（堪用閘門）都需要同一個數字，而兩者不能互相 import。
+- `core/capabilities.py`（`SurfaceCapabilities`）— **一個對 Plan 子代理原始建議的修正**：不提前放一個 `LINE_CAPABILITIES` 常數猜測 `exposure_signal_available=False`。§11 項目 H 說 LINE 曝光訊號可得性是「需技術驗證」，不是「已裁決為否」；提前寫死 False 等於搶先回答了一個明確還沒驗證的技術問題。型別本輪建，LINE 專屬的實例留到 Phase 8/11 真正驗證後才寫。
+- `memory/retrieve.py`（naive 版 `recall()`，§3.1/C4）
+- `train/data.py`（§4.8/D21 的 `split!=train` 硬過濾，PLAN §3.5 原本就指名的測試現在補上）＋ `train/masking.py`（§5.3/D16 的工具名稱置換）
+- `agent/tools/{base,recall,reply}.py`（`Tool` protocol — 本人直接問到的「工具設計要可替換」）、`agent/gate.py`（送出閘門，EVAL §7.2 全數字面數字）、`agent/reflow.py`（§6.5 否決回流硬負例）、`agent/context.py`、`agent/surface/base.py`（`Surface` protocol）、`agent/tick.py`（`TickResult`/**`Decider` protocol — 本人問到的「Agent 依賴哪個 LLM 要可抽換」，答案就是這個 protocol：不管背後是本地 HF+PEFT、vLLM endpoint 還是別的，tick loop 只認 `decide()`**）
+- `harness/{schema,manifest,shard,aggregate,gate_check,report}.py`（EVAL §11 報告格式逐欄位、§7.1 T1/T2 全表、§1.4 跨 suite 總分斷言 — eval-harness skill 明講這些是純腳本邏輯，沒有懸而未決的設計）
+
+**`teacher.py` → `teacher/` 套件**：拆成 `teacher/__init__.py`（只 re-export `Teacher`/`TeacherError`/`TeacherRateExhausted`/`TeacherCallLedger`，刻意不含 `GeminiTeacher`）、`teacher/base.py`（介面本體）、`teacher/gemini.py`（`GeminiTeacher`，原樣搬移）。不刪除 `GeminiTeacher`——SPEC.md §5.2/D9 已經裁決 v1 綁 Gemini，這是已關閉的規格決定，跟本人「要不要真的對真實資料跑它」是兩件事。做法是讓隔離變成 import graph 的性質而非註解：要用 `GeminiTeacher` 必須寫出 `from twin.teacher.gemini import GeminiTeacher`，不再能從 `twin.teacher` 直接拿到。新增回歸測試斷言 `"GeminiTeacher" not in dir(twin.teacher)`。
+
+**刻意不建（沒有此刻的消費者，或屬於「全有全無」的例外）**：`memory/{cluster,period,salience,conflicts,store}.py`（§4.5/§4.6 的分群門檻與權重本身未裁決，且本輪沒有任何程式碼引用 `Episode`/`Period`）；`train/{model,checkpoint,run,reproducibility}.py` 與根目錄 `train.py`（§7.4 的驗收標準是二元的——真的撐過 `kill -9` 或不存在，沒有介於兩者之間的 interface 可寫，這是「interface-first」原則本身承認的例外，留給 Phase 4 整段一起做）；`agent/surface/line.py`（等 Phase 11 與項目 H 的驗證）；`harness/suites/{s1,s2,s3,s4}.py` 的樣本建構本體（thin，`NotImplementedError`，各自等自己的 phase）。
+
+**審查**：`spec-auditor`、`data-hygiene`（本輪動到 `core/trajectory.py` 與 `train/data.py`，兩個 agent 皆適用），皆判定 PASS，各自留下一項處理如下：
+
+- `data-hygiene` 發現 `core/trajectory.py` 的 validator 只查了「`evidence=absent` 的 `no_action` 必須是 `trivial`」這個方向，沒查反方向：§2.3 把 hard／trivial 負例都**定義**為「曝光→不動作」軌跡，代表 `negative_class ∈ {hard, trivial}` 結構上就該要求存在一個 `NoActionStep`。目前無任何呼叫路徑會踩到這個漏洞（`agent/reflow.py` 是唯一產生 `hard` 的地方，且必定帶一個 `NoActionStep`），但這是後續任何人工標註修正／回填腳本可能無聲踩到的地雷。**已修正**：validator 新增這個方向的檢查，新增 4 個測試覆蓋。`data-hygiene` 另記錄一項留待日後：`agent/reflow.py` 的 `reflow_veto()` 目前寫死 `exposure.evidence=READ_RECEIPT`、沒有參數可覆寫，若日後有別的呼叫路徑（例如逾時自動視為否決、或從紀錄回填歷史）誤用同一個函式，會無聲捏造一筆不存在的曝光證據——`reflow_veto` 目前零呼叫者（尚未接進 `agent/gate.py`／`agent/tick.py`），視為介面先行階段的已知風險留待接線時處理，不在本輪修正範圍。
+- `spec-auditor` 指出一項需要人裁決的分類問題：`memory/retrieve.py` 本輪標為「real」（程式碼完整、非 stub），但它做的是全域關鍵字子字串比對，不是 §4.5 規定的「MUST 為 coarse-to-fine：先定位時期，再下拉碎片」——且它已經被 `agent/tools/recall.py` 接上，是 tick loop 未來會真的呼叫的路徑。**裁決**：維持現狀，不在本輪補建 coarse-to-fine（那正是 Phase 9 的工作，Episode/Period 分群門檻本身尚未裁決，提前做等於搶先決定一個懸而未決的設計）。`retrieve()` 對「real」的定義僅指「這份程式碼完整、可執行、不是 NotImplementedError」，不代表它宣稱滿足 §4.5 的 MUST——docstring 已明講 Phase 9 會取代這個後端。記錄於此，作為明確的已知、暫時接受的落差，而非被忽略的缺口：**任何以 `agent.tools.RecallTool` 產出的檢索結果餵給 S1 harness 之前，MUST 先確認 Phase 9 的 coarse-to-fine 檢索已經取代這個 naive 後端**，否則 EVAL §3.5 內容正確性的量測會失真。
 
 ---
 

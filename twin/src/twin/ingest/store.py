@@ -1,6 +1,10 @@
-"""Fragment persistence. SPEC.md §7.2: all data-artifact paths MUST be URIs
-handled through fsspec, MUST NOT be bare local paths — even though today this
-only ever resolves to `file://`, until Phase 8 makes R2 real."""
+"""Fragment and Trajectory persistence. SPEC.md §7.2: all data-artifact paths
+MUST be URIs handled through fsspec, MUST NOT be bare local paths — even
+though today this only ever resolves to `file://`, until Phase 8 makes R2
+real. Trajectory storage lives here too, not in `twin.train`: serialization is
+an L1 concern regardless of which layer produced the record (ingest sources,
+and later `agent.reflow`'s veto-to-hard-negative flow, both write trajectories
+through the normal ingest path — SPEC.md §6.5, data-contract skill rule 5)."""
 
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ from collections.abc import Iterable, Iterator
 import fsspec
 
 from twin.core.fragment import Fragment
+from twin.core.trajectory import Trajectory
 
 
 def write_fragments_jsonl(fragments: Iterable[Fragment], uri: str) -> int:
@@ -32,3 +37,22 @@ def read_fragments_jsonl(uri: str) -> Iterator[Fragment]:
             stripped = line.strip()
             if stripped:
                 yield Fragment.model_validate_json(stripped)
+
+
+def write_trajectories_jsonl(trajectories: Iterable[Trajectory], uri: str) -> int:
+    """Same full-overwrite semantics as `write_fragments_jsonl`, same reason."""
+    count = 0
+    with fsspec.open(uri, "w", encoding="utf-8") as f:
+        for trajectory in trajectories:
+            f.write(trajectory.model_dump_json())
+            f.write("\n")
+            count += 1
+    return count
+
+
+def read_trajectories_jsonl(uri: str) -> Iterator[Trajectory]:
+    with fsspec.open(uri, "r", encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped:
+                yield Trajectory.model_validate_json(stripped)

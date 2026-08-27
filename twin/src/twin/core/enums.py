@@ -1,4 +1,5 @@
-"""Closed vocabularies for the Fragment schema. SPEC.md §4.1, §4.4, §2.5."""
+"""Closed vocabularies for the Fragment and Trajectory schemas, and for the two
+gate mechanisms downstream of them. SPEC.md §4.1, §4.4, §2.5, §4.10-4.11, §6.5."""
 
 from __future__ import annotations
 
@@ -47,3 +48,44 @@ class Precision(StrEnum):
     DAY = "day"
     HOUR = "hour"
     MINUTE = "minute"
+
+
+class NegativeClass(StrEnum):
+    """SPEC.md §4.10/§4.11. `hard` MUST carry real exposure evidence; a
+    `no_action` with `exposure.evidence == absent` MUST be `trivial`, never
+    `hard` — this is the project's named failure mode #1 if gotten wrong."""
+
+    NONE = "none"
+    HARD = "hard"
+    TRIVIAL = "trivial"
+
+
+class GroundTruthSource(StrEnum):
+    """SPEC.md §4.10/D25. `teacher_synthesized` MUST NOT reach any EVAL.md
+    suite — training may use it, evaluation MUST NOT (harness enforces this,
+    not this enum; see harness.schema.reject_synthesized_for_eval)."""
+
+    OBSERVED = "observed"
+    PRINCIPAL_ANNOTATED = "principal_annotated"
+    TEACHER_SYNTHESIZED = "teacher_synthesized"
+
+
+class ExposureEvidence(StrEnum):
+    """SPEC.md §4.3, §4.10. `absent` is the value that forces
+    `negative_class=trivial` (§4.11) — without it, "chose not to act" and
+    "never saw it" are indistinguishable."""
+
+    READ_RECEIPT = "read_receipt"
+    HISTORY = "history"
+    INFERRED = "inferred"
+    ABSENT = "absent"
+
+
+class GateLevel(StrEnum):
+    """SPEC.md §6.5, D29-D31. Shared by harness.report.EvalReport.gate_level
+    (the fitness gate's record of where a twin stands) and agent.gate's own
+    send-gate state — same vocabulary, two different consumers."""
+
+    L0 = "L0"
+    L1 = "L1"
+    L2 = "L2"

@@ -13,6 +13,14 @@ import subprocess
 from pathlib import Path
 
 from twin.core.fragment import Entities, EventTime, Fragment, ThirdPartySpan
+from twin.core.trajectory import (
+    ActionStep,
+    Exposure,
+    NoActionStep,
+    ReflectionStep,
+    ToolCallStep,
+    Trajectory,
+)
 
 TWIN_ROOT = Path(__file__).resolve().parents[2]
 SPEC = TWIN_ROOT / "reference" / "SPEC.md"
@@ -80,6 +88,49 @@ def test_entities_fields_match_spec() -> None:
 def test_third_party_span_fields_match_spec() -> None:
     spec_fields = set(_parsed_fragment_schema()["third_party_spans"][0].keys())
     assert spec_fields == set(ThirdPartySpan.model_fields.keys())
+
+
+def _parsed_trajectory_schema() -> dict:
+    return json.loads(_strip_jsonc_line_comments(_jsonc_block_under("4.10 軌跡 Schema（規範）")))
+
+
+def test_trajectory_top_level_fields_match_spec() -> None:
+    spec_fields = set(_parsed_trajectory_schema().keys())
+    assert spec_fields == set(Trajectory.model_fields.keys())
+
+
+def test_exposure_fields_match_spec() -> None:
+    spec_fields = set(_parsed_trajectory_schema()["exposure"].keys())
+    assert spec_fields == set(Exposure.model_fields.keys())
+
+
+def test_step_types_match_spec() -> None:
+    """SPEC.md §4.10's `steps` array shows one example object per step type —
+    compare each against its own model rather than treating `steps` as one
+    flat nested container (data-contract skill rule 1, applied to a
+    discriminated union)."""
+    by_type = {step["type"]: set(step.keys()) for step in _parsed_trajectory_schema()["steps"]}
+    assert by_type["tool_call"] == set(ToolCallStep.model_fields.keys())
+    assert by_type["reflection"] == set(ReflectionStep.model_fields.keys())
+    assert by_type["action"] == set(ActionStep.model_fields.keys())
+    assert by_type["no_action"] == set(NoActionStep.model_fields.keys())
+
+
+def test_no_trajectory_dict_literals_outside_the_constructor() -> None:
+    allowed = {
+        TWIN_ROOT / "src" / "twin" / "core" / "trajectory.py",
+        TWIN_ROOT / "tests" / "unit" / "test_schema_matches_spec.py",
+        SPEC,
+    }
+    result = subprocess.run(
+        ["grep", "-rl", "--include=*.py", '"trajectory_id"', str(TWIN_ROOT / "src"), str(TWIN_ROOT / "tests")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    hits = {Path(line) for line in result.stdout.splitlines() if line}
+    unexpected = hits - allowed
+    assert not unexpected, f"unexpected 'trajectory_id' string literal(s) outside the constructor: {unexpected}"
 
 
 def test_no_fragment_dict_literals_outside_the_constructor() -> None:
