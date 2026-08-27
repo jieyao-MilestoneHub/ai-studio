@@ -121,6 +121,7 @@ def create_app(
             # a guard that does not exist. See tests/unit/test_drain_wiring.py
             # for the last time that distinction cost this project something.
             max_jobs_per_user_per_day=settings.max_jobs_per_user_per_day,
+            max_chat_messages_per_user_per_day=settings.max_chat_messages_per_user_per_day,
             max_audio_understand_s=settings.max_audio_understand_s,
             max_video_understand_s=settings.max_video_understand_s,
             content=content,

@@ -73,6 +73,13 @@ triggers accept one."""
 DEFAULT_DESCRIBE_VIDEO_TRIGGER = "/說影"
 """Describe a video clip. Backed by Tarsier2."""
 
+DEFAULT_CHAT_TRIGGER = "/himonkey"
+"""Plain-text LLM reply, backed by gpt-oss-20b on the shared pod. Same
+one-spelling, no-aliases, silent-ignore-otherwise rule as every other
+trigger. Unlike the four generation triggers it claims no cached photo, and
+unlike the three describe triggers it *requires* trailing text -- there is
+no attached media to fall back on."""
+
 IMAGE_PAIRING_TTL_S = 300.0
 """How long a photo/audio/video clip waits for the trigger that claims it.
 
@@ -136,9 +143,11 @@ class WebhookHandler:
         describe_image_trigger: str = DEFAULT_DESCRIBE_IMAGE_TRIGGER,
         describe_audio_trigger: str = DEFAULT_DESCRIBE_AUDIO_TRIGGER,
         describe_video_trigger: str = DEFAULT_DESCRIBE_VIDEO_TRIGGER,
+        chat_trigger: str = DEFAULT_CHAT_TRIGGER,
         max_audio_understand_s: float = MAX_AUDIO_UNDERSTAND_S,
         max_video_understand_s: float = MAX_VIDEO_UNDERSTAND_S,
         max_jobs_per_user_per_day: int = 0,
+        max_chat_messages_per_user_per_day: int = 0,
         clock: Callable[[], datetime] | None = None,
         content: ContentClient | None = None,
         incoming_dir: Path | str = Path("incoming"),
@@ -157,9 +166,11 @@ class WebhookHandler:
         self.describe_image_trigger = describe_image_trigger
         self.describe_audio_trigger = describe_audio_trigger
         self.describe_video_trigger = describe_video_trigger
+        self.chat_trigger = chat_trigger
         self.max_audio_understand_s = max_audio_understand_s
         self.max_video_understand_s = max_video_understand_s
         self.max_jobs_per_user_per_day = max_jobs_per_user_per_day
+        self.max_chat_messages_per_user_per_day = max_chat_messages_per_user_per_day
         # Injected so a test can stand at 03:00 without the machine having to.
         # `bots` is L6 and `runtime` is L5, so reaching down for the business
         # calendar is allowed; reaching back up never is.
@@ -279,10 +290,15 @@ class WebhookHandler:
 
         # Before the insert, deliberately. Accepting and then refusing would
         # still have spent an LLM conversion on a request that never runs.
-        if self._over_daily_cap(user_id):
+        if self._over_daily_cap(user_id, media_kind):
+            limit = (
+                self.max_chat_messages_per_user_per_day
+                if media_kind is MediaKind.CHAT
+                else self.max_jobs_per_user_per_day
+            )
             await self._safe_reply(
                 reply_token,
-                f"你今天已經送出 {self.max_jobs_per_user_per_day} 個請求,"
+                f"你今天已經送出 {limit} 個請求,"
                 "達到每日上限。明天再試。",
             )
             return Outcome("rate_limited", detail=str(user_id))
@@ -517,20 +533,40 @@ class WebhookHandler:
         created and ComfyUI restarted from the network volume first, which
         adds a couple of minutes. Both figures are 📏 from 2026-08-26 on an
         RTX 4090 and rounded up, so the bot under-promises.
+
+        Chat gets its own honest wait rather than reusing the generation
+        line: a warm gpt-oss-20b reply is fast, but nothing here has
+        measured a cold load yet, and pretending chat is always instant
+        would be the same silent optimism this method exists to avoid.
         """
-        eta = "圖約 30 秒、影片約 2 分鐘" if self.is_warm() else "暖機中:圖約 3 分鐘、影片約 5 分鐘"
+        if job.media_kind is MediaKind.CHAT:
+            eta = "已經在線上,幾秒內回覆" if self.is_warm() else "暖機中,第一句回覆可能要等幾分鐘"
+        else:
+            eta = "圖約 30 秒、影片約 2 分鐘" if self.is_warm() else "暖機中:圖約 3 分鐘、影片約 5 分鐘"
         return f"收到,{eta},想查進度可以看{self._link(job)}"
 
-    def _over_daily_cap(self, user_id: str | None) -> bool:
+    def _over_daily_cap(self, user_id: str | None, media_kind: MediaKind) -> bool:
         """Has this user used up today's allowance?
 
-        Skipped entirely when the cap is 0 (off) or the id is unknown — LINE
-        omits `source.userId` for a user who has not accepted the Official
-        Account terms, and there is no per-user budget to enforce against a
-        user we cannot name. The group and user allowlists are what stand
-        between that case and an open bar.
+        Chat has its own separate counter
+        (`max_chat_messages_per_user_per_day`) rather than sharing
+        `max_jobs_per_user_per_day` with video/image/understanding — a
+        normal conversation's cadence would otherwise exhaust a user's
+        entire daily video/image allowance too (`accepted_today()` excludes
+        chat rows for the same reason). Skipped entirely when the relevant
+        cap is 0 (off) or the id is unknown — LINE omits `source.userId` for
+        a user who has not accepted the Official Account terms, and there is
+        no per-user budget to enforce against a user we cannot name. The
+        group and user allowlists are what stand between that case and an
+        open bar.
         """
-        if not self.max_jobs_per_user_per_day or not user_id:
+        if not user_id:
+            return False
+        if media_kind is MediaKind.CHAT:
+            if not self.max_chat_messages_per_user_per_day:
+                return False
+            return self.queue.accepted_chat_today(user_id) >= self.max_chat_messages_per_user_per_day
+        if not self.max_jobs_per_user_per_day:
             return False
         return self.queue.accepted_today(user_id) >= self.max_jobs_per_user_per_day
 
@@ -577,7 +613,8 @@ class WebhookHandler:
                 f"或先傳照片再「{self.i2v_trigger} …」讓照片動起來、"
                 f"「{self.i2i_trigger} …」重畫照片。也可以先傳照片/語音/影片,"
                 f"再說「{self.describe_image_trigger}」/「{self.describe_audio_trigger}」/"
-                f"「{self.describe_video_trigger}」聽聽 AI 怎麼形容。",
+                f"「{self.describe_video_trigger}」聽聽 AI 怎麼形容。"
+                f"想聊天就用「{self.chat_trigger} …」。",
             )
             return Outcome("status")
 
@@ -624,6 +661,7 @@ class WebhookHandler:
             (self.describe_image_trigger, MediaKind.IMAGE_UNDERSTAND, "image"),
             (self.describe_audio_trigger, MediaKind.AUDIO_UNDERSTAND, "audio"),
             (self.describe_video_trigger, MediaKind.VIDEO_UNDERSTAND, "video"),
+            (self.chat_trigger, MediaKind.CHAT, None),
         ):
             if text.startswith(prefix):
                 rest = text[len(prefix) :]
@@ -655,6 +693,7 @@ class WebhookHandler:
         MediaKind.IMAGE_UNDERSTAND: "🔎🖼",
         MediaKind.AUDIO_UNDERSTAND: "🔎🎧",
         MediaKind.VIDEO_UNDERSTAND: "🔎🎬",
+        MediaKind.CHAT: "💬",
     }
     """`_status()`'s per-kind glyph. VIDEO falls back to `.get(..., '🎬')`."""
 
@@ -663,6 +702,8 @@ class WebhookHandler:
             assert wants_media is not None  # every understanding kind wants media
             trigger = self._media_trigger(media_kind, wants_media)
             return f"用法:先{self._MEDIA_VERB[wants_media]},再輸入 {trigger}(不需要額外文字)"
+        if media_kind is MediaKind.CHAT:
+            return f"用法:{self.chat_trigger} <想說的話>"
         if wants_media:
             return f"用法:先傳一張照片,再說 {self._media_trigger(media_kind, wants_media)} <想看的畫面>"
         trigger = self.trigger if media_kind is MediaKind.VIDEO else self.image_trigger

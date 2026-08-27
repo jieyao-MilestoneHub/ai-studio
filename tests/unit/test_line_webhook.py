@@ -231,6 +231,52 @@ async def test_the_three_triggers_do_not_overlap(wired) -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_chat_trigger_enqueues_a_chat_job_and_claims_no_media(wired) -> None:
+    handler, _queue, replier = wired
+    body = _body([_text_event("/himonkey 你好嗎")])
+
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+
+    assert outcome.action == "accepted"
+    assert outcome.job is not None
+    assert outcome.job.media_kind is MediaKind.CHAT
+    assert outcome.job.text == "你好嗎"
+    assert outcome.job.first_frame_path is None
+    assert "想查進度可以看" in replier.sent[0][1][0]
+
+
+@pytest.mark.asyncio
+async def test_a_bare_chat_trigger_gets_usage_help_and_is_not_queued(wired) -> None:
+    """Unlike the three describe triggers, /himonkey requires trailing
+    text -- there is no attached media to fall back on."""
+    handler, queue, replier = wired
+    body = _body([_text_event("/himonkey")])
+
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+    assert outcome.action == "ignored"
+    assert queue.counts() == {}
+    assert "用法" in replier.sent[0][1][0]
+    assert "/himonkey" in replier.sent[0][1][0]
+
+
+@pytest.mark.asyncio
+async def test_the_chat_trigger_does_not_shadow_or_get_shadowed_by_the_others(wired) -> None:
+    """/himonkey shares no prefix with any of the seven other triggers, but
+    the dispatch tuple is order-sensitive -- pin that adding it did not
+    change any existing trigger's outcome."""
+    handler, _, _ = wired
+    for text, expected_kind in (
+        ("/影片 貓", MediaKind.VIDEO),
+        ("/圖片 貓", MediaKind.IMAGE),
+        ("/himonkey 嗨", MediaKind.CHAT),
+    ):
+        body = _body([_text_event(text, event_id=f"evt-no-shadow-{expected_kind.value}")])
+        (outcome,) = await handler.handle(body, sign(body, SECRET))
+        assert outcome.action == "accepted"
+        assert outcome.job.media_kind is expected_kind
+
+
+@pytest.mark.asyncio
 async def test_a_bare_image_trigger_gets_usage_help_and_is_not_queued(wired) -> None:
     handler, queue, replier = wired
     body = _body([_text_event("/圖片")])
@@ -564,7 +610,7 @@ OPEN_INSTANT = datetime(2026, 8, 25, 12, 0, tzinfo=hours.TZ)
 CLOSED_INSTANT = datetime(2026, 8, 25, 3, 0, tzinfo=hours.TZ)
 
 
-def _at(tmp_path: Path, when: datetime, *, name: str = "hours", cap: int = 0):
+def _at(tmp_path: Path, when: datetime, *, name: str = "hours", cap: int = 0, chat_cap: int = 0):
     queue = JobQueue(tmp_path / f"{name}.sqlite3")
     replier = NullReplyClient()
     handler = WebhookHandler(
@@ -574,6 +620,7 @@ def _at(tmp_path: Path, when: datetime, *, name: str = "hours", cap: int = 0):
         allowed_group_id=GROUP,
         base_url="https://vg.example.com/",
         max_jobs_per_user_per_day=cap,
+        max_chat_messages_per_user_per_day=chat_cap,
         clock=lambda: when,
     )
     return handler, queue, replier
@@ -667,6 +714,39 @@ async def test_the_cap_is_off_by_default(tmp_path: Path) -> None:
     for n in range(12):
         outcomes = await _send(handler, _text_event("/影片 貓", event_id=f"many-{n}"))
         assert outcomes[0].action == "accepted"
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_has_its_own_separate_daily_cap(tmp_path: Path) -> None:
+    """A `/himonkey` conversation must not exhaust a user's video/image
+    allowance, and vice versa -- the two caps are independent counters."""
+    handler, queue, replier = _at(tmp_path, OPEN_INSTANT, cap=1, chat_cap=2)
+
+    for n in range(2):
+        outcomes = await _send(handler, _text_event(f"/himonkey 嗨 {n}", event_id=f"chat-ok-{n}"))
+        assert outcomes[0].action == "accepted"
+
+    over = await _send(handler, _text_event("/himonkey 嗨 3", event_id="chat-over"))
+    assert over[0].action == "rate_limited"
+    assert "每日上限" in replier.sent[-1][1][0]
+
+    # The video cap (1) is untouched by the two chat messages above.
+    video = await _send(handler, _text_event("/影片 貓", event_id="video-ok"))
+    assert video[0].action == "accepted"
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_messages_do_not_count_against_the_video_image_cap(tmp_path: Path) -> None:
+    handler, queue, _ = _at(tmp_path, OPEN_INSTANT, cap=1, chat_cap=0)
+
+    for n in range(5):
+        outcomes = await _send(handler, _text_event(f"/himonkey 嗨 {n}", event_id=f"c-{n}"))
+        assert outcomes[0].action == "accepted"
+
+    video = await _send(handler, _text_event("/影片 貓", event_id="video-still-ok"))
+    assert video[0].action == "accepted"
     queue.close()
 
 

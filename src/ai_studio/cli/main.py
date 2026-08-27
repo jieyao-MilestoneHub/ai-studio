@@ -647,6 +647,9 @@ def session_reap(
         help="Grace after an understanding job (default: "
         "runtime.session.UNDERSTANDING_IDLE_MINUTES).",
     ),
+    chat_idle_minutes: int = typer.Option(
+        None, help="Grace after a /himonkey reply (default: runtime.session.CHAT_IDLE_MINUTES)."
+    ),
 ) -> None:
     """Close the pod once it has gone quiet. Schedule this every minute.
 
@@ -665,6 +668,7 @@ def session_reap(
             understanding_idle_minutes=(
                 understanding_idle_minutes or sess.UNDERSTANDING_IDLE_MINUTES
             ),
+            chat_idle_minutes=chat_idle_minutes or sess.CHAT_IDLE_MINUTES,
             hold=hold,
         )
     )
@@ -729,14 +733,15 @@ def session_drain(
         base_url=session.comfy_url,
         hourly_usd=session.cost_per_hr,
     )
-    # Understanding jobs share this pod's one FIFO queue -- a manual drain
-    # that omitted them would KeyError the moment one was claimed.
+    # Understanding and chat jobs share this pod's one FIFO queue -- a manual
+    # drain that omitted them would KeyError the moment one was claimed.
     understand_backends = {
         kind: get_provider(name, base_url=session.inference_url, hourly_usd=session.cost_per_hr)
         for kind, name in (
             (MediaKind.IMAGE_UNDERSTAND, "understand-image"),
             (MediaKind.AUDIO_UNDERSTAND, "understand-audio"),
             (MediaKind.VIDEO_UNDERSTAND, "understand-video"),
+            (MediaKind.CHAT, "chat"),
         )
     }
     queue = JobQueue()
@@ -884,6 +889,9 @@ class _RuntimeHost:
             ),
             MediaKind.VIDEO_UNDERSTAND: get_provider(
                 "understand-video", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
+            ),
+            MediaKind.CHAT: get_provider(
+                "chat", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
             ),
         }
         self._providers = {live.pod_id: built}
