@@ -128,11 +128,16 @@ say "window timers"
 for phase in reap close gc; do
   case "$phase" in
     reap)  cmd="session reap";  when="*:0/1" ;;
-    close) cmd="session close"; when="20:05" ;;
+    # The explicit "UTC" suffix is load-bearing: systemd reads a bare
+    # OnCalendar in the box's *local* zone, and this box runs Asia/Taipei.
+    # Without it "20:05" fired at 20:05 Taipei -- prime evening, not 04:05 --
+    # and terminated a pod with a render 46 minutes in (observed live
+    # 2026-08-27, pod i5s1j69xkcihnn). Same for gc.
+    close) cmd="session close"; when="20:05 UTC" ;;
     # Daily disk sweep: prune delivered media and received photos past the
     # retention window (AI_STUDIO_FILES_RETENTION_DAYS). 18:30 UTC = 02:30
     # Asia/Taipei, a quiet hour.
-    gc)    cmd="gc";            when="18:30" ;;
+    gc)    cmd="gc";            when="18:30 UTC" ;;
   esac
   cat > /etc/systemd/system/ai-studio-${phase}.service <<UNIT
 [Unit]

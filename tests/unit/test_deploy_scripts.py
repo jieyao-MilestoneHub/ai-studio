@@ -467,3 +467,13 @@ def test_a_missed_close_does_not_fire_late() -> None:
     """`Persistent=true` would run a queued job at boot. Closing is idempotent,
     so this is noise rather than spend -- but it was set deliberately."""
     assert "Persistent=false" in VPS_SETUP.read_text(encoding="utf-8")
+
+
+def test_daily_timers_are_pinned_to_utc() -> None:
+    """systemd reads a bare OnCalendar in the box's local zone. The Jetson
+    runs Asia/Taipei, so "20:05" meant as 04:05 Taipei fired at 20:05 Taipei
+    and terminated a live render (2026-08-27). Only the every-minute reaper
+    is zone-free."""
+    body = (REPO / "deploy" / "jetson_setup.sh").read_text(encoding="utf-8")
+    assert 'when="20:05 UTC"' in body
+    assert 'when="18:30 UTC"' in body
