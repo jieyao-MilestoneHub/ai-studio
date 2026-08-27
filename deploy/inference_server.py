@@ -337,13 +337,16 @@ class GptOssChatBackend:
                 messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": prompt or ""})
 
-        input_ids = self._tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt"
+        # 📏 2026-08-27, transformers 5.16: apply_chat_template(return_tensors=
+        # "pt") hands back a BatchEncoding (a dict), not a tensor -- passed
+        # positionally to generate() it died with KeyError: 'shape'. Ask for
+        # the dict explicitly and unpack it.
+        inputs = self._tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, return_tensors="pt", return_dict=True
         ).to("cuda")
-        output_ids = self._model.generate(input_ids, max_new_tokens=self.MAX_NEW_TOKENS)
-        decoded = self._tokenizer.decode(
-            output_ids[0][input_ids.shape[-1] :], skip_special_tokens=True
-        )
+        output_ids = self._model.generate(**inputs, max_new_tokens=self.MAX_NEW_TOKENS)
+        prompt_len = inputs["input_ids"].shape[-1]
+        decoded = self._tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
         return _final_channel(decoded)
 
 
