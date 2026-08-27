@@ -297,3 +297,65 @@ def test_final_channel_never_leaks_a_truncated_analysis() -> None:
     truncated = "<|channel|>analysis<|message|>The user writes in Chinese and I should"
     out = srv._final_channel(truncated)
     assert "The user writes" not in out and out
+
+
+@pytest.mark.asyncio
+async def test_eviction_sweeps_vram_before_the_next_load(monkeypatch) -> None:
+    """📏 job 86 (2026-08-27): the evicted model's memory was not yet
+    collected when the next load ran, and it OOMed. The sweep must run
+    between unload() and load(), and again on the /unload route."""
+    order: list[str] = []
+    monkeypatch.setattr(srv, "_release_vram", lambda: order.append("release"))
+
+    class _Tracing(_FakeBackend):
+        def load(self) -> None:
+            order.append(f"load:{self.modality}")
+            super().load()
+
+        def unload(self) -> None:
+            order.append(f"unload:{self.modality}")
+            super().unload()
+
+    monkeypatch.setitem(srv._BACKENDS, "a", lambda: _Tracing("a"))
+    monkeypatch.setitem(srv._BACKENDS, "b", lambda: _Tracing("b"))
+    srv._slot.backend = None
+    await srv._ensure_loaded("a")
+    await srv._ensure_loaded("b")
+    assert order == ["load:a", "unload:a", "release", "load:b"]
+
+
+@pytest.mark.asyncio
+async def test_an_oom_load_is_retried_once_after_a_sweep(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(srv, "_release_vram", lambda: calls.append("release"))
+    attempts = {"n": 0}
+
+    class _FlakyOOM(_FakeBackend):
+        def load(self) -> None:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise RuntimeError("CUDA out of memory. Tried to allocate 512.00 MiB")
+            super().load()
+
+    monkeypatch.setitem(srv._BACKENDS, "flaky", lambda: _FlakyOOM("flaky"))
+    srv._slot.backend = None
+    backend = await srv._ensure_loaded("flaky")
+    assert backend.modality == "flaky" and attempts["n"] == 2
+    assert calls == ["release"]
+
+
+@pytest.mark.asyncio
+async def test_a_non_oom_load_failure_is_not_retried(monkeypatch) -> None:
+    monkeypatch.setattr(srv, "_release_vram", lambda: None)
+    attempts = {"n": 0}
+
+    class _Broken(_FakeBackend):
+        def load(self) -> None:
+            attempts["n"] += 1
+            raise ValueError("Unrecognized configuration class")
+
+    monkeypatch.setitem(srv._BACKENDS, "broken2", lambda: _Broken("broken2"))
+    srv._slot.backend = None
+    with pytest.raises(ValueError):
+        await srv._ensure_loaded("broken2")
+    assert attempts["n"] == 1

@@ -485,11 +485,21 @@ def _release_vram() -> None:
     module docstring.
     """
     try:
+        import gc
+
         import torch
 
+        # gc first: `empty_cache()` only returns blocks no tensor references,
+        # and a just-dropped HF model is held alive by reference cycles until
+        # the collector runs. 📏 2026-08-27 (job 86): "evicting chat to load
+        # image" set gpt-oss's refs to None, moondream3 then OOMed twice at
+        # 22.7GiB in this process, and loaded on the third try once the
+        # cycles had been collected in between.
+        gc.collect()
+        torch.cuda.synchronize()
         torch.cuda.empty_cache()
     except Exception:  # pragma: no cover - defensive; must never mask the real error
-        _log.warning("could not release VRAM after a failed load", exc_info=True)
+        _log.warning("could not release VRAM", exc_info=True)
 
 
 async def _ensure_loaded(modality: str) -> ModelBackend:
@@ -510,27 +520,39 @@ async def _ensure_loaded(modality: str) -> ModelBackend:
             _log.info("evicting %s to load %s", _slot.backend.modality, modality)
             await asyncio.to_thread(_slot.backend.unload)
             _slot.backend = None
+            # The evicted model must actually be gone before the next one
+            # claims the card -- see _release_vram.
+            await asyncio.to_thread(_release_vram)
         backend_cls = _BACKENDS[modality]
         backend = backend_cls()
         _log.info("loading %s (%s)", backend.model_id, modality)
         started = time.monotonic()
-        try:
-            # Off the event loop, like infer(): a cold load is 📏 ~60s for
-            # moondream3 and minutes for Qwen3-Omni-Captioner (quantised on
-            # load), and run inline it froze every route -- /poll returned
-            # nothing at all for the whole load, so the client's 30s poll
-            # timeout gave up on a job that was in fact fine (observed live
-            # 2026-08-27, first request against real weights). The slot lock
-            # is an asyncio.Lock, so holding it across the await is what
-            # serialises loads without stalling /healthz and /poll.
-            await asyncio.to_thread(backend.load)
-        except Exception:
-            _log.exception(
-                "failed to load %s (%s) -- releasing any partial VRAM claim",
-                backend.model_id, modality,
-            )
-            _release_vram()
-            raise
+        # Off the event loop, like infer(): a cold load is 📏 ~60s for
+        # moondream3 and minutes for Qwen3-Omni-Captioner (quantised on
+        # load), and run inline it froze every route -- /poll returned
+        # nothing at all for the whole load, so the client's 30s poll
+        # timeout gave up on a job that was in fact fine (observed live
+        # 2026-08-27, first request against real weights). The slot lock
+        # is an asyncio.Lock, so holding it across the await is what
+        # serialises loads without stalling /healthz and /poll.
+        #
+        # One retry, after a sweep: a load that OOMs because the previous
+        # tenant's memory had not been collected yet succeeds on the next
+        # attempt (📏 job 86 above), and paying that inside the server beats
+        # failing the user's request and making them ask again.
+        for attempt in (1, 2):
+            try:
+                await asyncio.to_thread(backend.load)
+                break
+            except Exception as exc:
+                _log.exception(
+                    "failed to load %s (%s), attempt %d -- releasing any partial VRAM claim",
+                    backend.model_id, modality, attempt,
+                )
+                backend = backend_cls()
+                await asyncio.to_thread(_release_vram)
+                if attempt == 2 or "out of memory" not in str(exc).lower():
+                    raise
         _log.info("loaded %s in %.0fs", backend.model_id, time.monotonic() - started)
         _slot.backend = backend
         return backend
@@ -653,6 +675,7 @@ async def unload() -> dict[str, Any]:
             _log.info("unloading %s (GPU hand-off to ComfyUI)", _slot.backend.modality)
             await asyncio.to_thread(_slot.backend.unload)
             _slot.backend = None
+            await asyncio.to_thread(_release_vram)
     return {"ok": True}
 
 
