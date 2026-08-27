@@ -966,3 +966,79 @@ async def test_affinity_prefers_the_resident_kind_but_is_bounded(queue, tmp_path
     _parsed(queue, "another image", kind=MediaKind.IMAGE)
     await worker.tick(queue, host, files_dir=_files(tmp_path), report=report, state=state)
     assert host.video.submitted, "the affinity run is bounded; FIFO resumes"
+
+
+# --------------------------------------------------------------------- /短劇
+
+
+def test_a_drama_always_needs_the_screenwriter(queue) -> None:
+    """Raw mode is for one-line clips. A drama has nothing to be raw from."""
+    from ai_studio.pipeline.convert_worker import needs_llm
+
+    job, _ = queue.enqueue("evt-drama-needs", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+    assert needs_llm(job, "raw") is True
+    assert needs_llm(job, "structured") is True
+
+
+@pytest.mark.asyncio
+async def test_a_drama_whose_screenplay_fails_is_failed_and_the_group_is_told(queue, tmp_path: Path) -> None:
+    """No template fallback: with a screenwriter that keeps returning garbage
+    the job is FAILED at conversion and delivered as such -- not left queued
+    forever, and not rendered as six clips of nothing."""
+    from ai_studio.llm.endpoint import ScriptedLlmClient
+
+    job, _ = queue.enqueue("evt-drama-fail", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+    host = FakeHost(llm=ScriptedLlmClient("not json", "still not json"))
+
+    action, _report = await _tick(queue, host, tmp_path)
+
+    failed = queue.by_id(job.id)
+    assert failed.state is JobState.FAILED and "編劇失敗" in (failed.error or "")
+    assert host.delivered == [(job.id, None)], "the failure reached the group"
+    assert action in ("prepared", "raced")
+
+
+@pytest.mark.asyncio
+async def test_a_drama_with_no_screenwriter_on_the_pod_is_failed_not_stuck(queue, tmp_path: Path) -> None:
+    job, _ = queue.enqueue("evt-drama-nollm", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+    host = FakeHost(llm=None)
+
+    await _tick(queue, host, tmp_path)
+
+    assert queue.by_id(job.id).state is JobState.FAILED
+    assert host.delivered == [(job.id, None)]
+
+
+@pytest.mark.asyncio
+async def test_a_parsed_drama_is_dispatched_to_render_drama(queue, tmp_path: Path, monkeypatch) -> None:
+    """The dispatch is explicit. Before this branch existed an unknown kind
+    fell through to `render_understanding` -- silently, with the wrong
+    provider."""
+    from ai_studio.pipeline import worker as worker_mod
+
+    seen: dict[str, Any] = {}
+
+    async def fake_render_drama(job: Any, providers: Any, **kw: Any) -> Path:
+        seen["job"] = job.id
+        seen["providers"] = set(providers)
+        seen["kw"] = kw
+        kw["on_activity"]()
+        out = kw["files_dir"] / f"{job.token}.mp4"
+        out.write_bytes(b"mp4")
+        return out
+
+    monkeypatch.setattr(worker_mod, "render_drama", fake_render_drama)
+    job, _ = queue.enqueue("evt-drama-run", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+    queue.set_parsed(job.id, {"_built_by": "llm", "_rendered": "t", "screenplay": {"stub": True}, "shots": []})
+    host = FakeHost()
+
+    action, _ = await _tick(queue, host, tmp_path)
+
+    assert action == "completed"
+    assert seen["job"] == job.id
+    assert {MediaKind.IMAGE, MediaKind.VIDEO} <= seen["providers"]
+    assert seen["kw"]["runs_dir"] is not None
+    assert host.touched_kinds.count("drama") >= 2, "per-artifact touch plus the completion touch"
+    done = queue.by_id(job.id)
+    assert done.state is JobState.DONE and done.output_path.endswith(".mp4")
+    assert host.delivered[-1][0] == job.id

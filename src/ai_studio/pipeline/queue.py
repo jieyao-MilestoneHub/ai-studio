@@ -668,6 +668,17 @@ class JobQueue:
 
     # ---------------------------------------------------------------- caps
 
+    def accepted_kind_today(self, media_kind: MediaKind, *, since: float | None = None) -> int:
+        """How many requests of one kind the *whole group* has had accepted
+        since local midnight. Backs `AI_STUDIO_MAX_DRAMAS_PER_DAY`: a drama is
+        15-30 GPU-minutes, so the cap is on the group's day, not one user's.
+        Counts every state, failures included, like `accepted_today`."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE media_kind=? AND created_at >= ?",
+            (media_kind.value, _day_start_ts() if since is None else since),
+        ).fetchone()
+        return int(row["n"])
+
     def accepted_today(self, user_id: str, *, since: float | None = None) -> int:
         """How many non-chat requests this user has had accepted since local
         midnight.
