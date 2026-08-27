@@ -422,3 +422,96 @@ def _far_future() -> float:
     import time as _time
 
     return _time.time() + 86_400
+
+
+# ------------------------------------------------------------- understanding
+
+
+def test_input_media_path_round_trips_through_the_queue(q: JobQueue) -> None:
+    job, created = q.enqueue(
+        "evt-u1", "Cgroup", "", media_kind=MediaKind.IMAGE_UNDERSTAND,
+        input_media_path="/incoming/photo.jpg",
+    )
+    assert created
+    assert job.input_media_path == "/incoming/photo.jpg"
+    assert job.first_frame_path is None
+    assert q.by_id(job.id).input_media_path == "/incoming/photo.jpg"
+
+
+def test_input_media_path_defaults_to_none(q: JobQueue) -> None:
+    job = _add(q)
+    assert job.input_media_path is None
+
+
+def test_complete_text_finishes_the_job_with_no_output_path(q: JobQueue) -> None:
+    job, _ = q.enqueue(
+        "evt-u2", "Cgroup", "", media_kind=MediaKind.AUDIO_UNDERSTAND,
+        input_media_path="/incoming/clip.m4a",
+    )
+    q.set_parsed(job.id, {"_built_by": "understanding"})
+    q.claim_next()
+
+    done = q.complete_text(job.id, "有人在說話,背景有鳥叫聲。")
+    assert done is not None
+    assert done.state is JobState.DONE
+    assert done.result_text == "有人在說話,背景有鳥叫聲。"
+    assert done.output_path is None
+
+
+def test_a_database_created_before_understanding_shipped_migrates_cleanly(
+    tmp_path: Path,
+) -> None:
+    """Same discipline as the media_kind migration test: an old database must
+    gain `input_media_path`/`result_text` rather than fail to open."""
+    path = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE jobs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            token       TEXT    NOT NULL UNIQUE,
+            event_id    TEXT    NOT NULL UNIQUE,
+            group_id    TEXT    NOT NULL,
+            user_id     TEXT,
+            text        TEXT    NOT NULL,
+            state       TEXT    NOT NULL DEFAULT 'queued',
+            media_kind  TEXT    NOT NULL DEFAULT 'video',
+            first_frame_path TEXT,
+            quote_token TEXT,
+            requested_seconds REAL,
+            prompt_json TEXT,
+            output_path TEXT,
+            error       TEXT,
+            gpu_tier    TEXT,
+            created_at  REAL    NOT NULL,
+            parsed_at   REAL,
+            started_at  REAL,
+            finished_at REAL,
+            delivered_at REAL,
+            attempts    INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO jobs (token, event_id, group_id, text, created_at) "
+        "VALUES ('tok', 'evt', 'Cgroup', 'hi', 0)"
+    )
+    conn.commit()
+    conn.close()
+
+    with JobQueue(path) as q:
+        columns = {row[1] for row in q._conn.execute("PRAGMA table_info(jobs)")}
+        assert "input_media_path" in columns
+        assert "result_text" in columns
+
+        job = q.by_token("tok")
+        assert job is not None
+        assert job.input_media_path is None
+        assert job.result_text is None
+
+        job, created = q.enqueue(
+            "evt-new", "Cgroup", "", media_kind=MediaKind.VIDEO_UNDERSTAND,
+            input_media_path="/incoming/clip.mp4",
+        )
+        assert created
+        assert job.input_media_path == "/incoming/clip.mp4"

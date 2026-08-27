@@ -31,6 +31,12 @@ from ai_studio.core.image_provider_spec import (
     ImageRequest,
 )
 from ai_studio.core.provider_spec import ClipAsset, ClipJob, ClipRequest, ProviderCapabilities
+from ai_studio.core.understanding_spec import (
+    UnderstandingAsset,
+    UnderstandingCapabilities,
+    UnderstandingJob,
+    UnderstandingRequest,
+)
 
 
 @runtime_checkable
@@ -87,5 +93,31 @@ class ImageProvider(Protocol):
     async def fetch(self, job: ImageJob, dest: Path) -> ImageAsset: ...
 
     async def cancel(self, job: ImageJob) -> None: ...
+
+    async def aclose(self) -> None: ...
+
+
+@runtime_checkable
+class UnderstandingProvider(Protocol):
+    """A backend that turns an `UnderstandingRequest` into a text description.
+
+    Same submit/poll/fetch/cancel shape as `ClipProvider`/`ImageProvider` for
+    the same reason: a cold model load for a >16GB understanding model could
+    plausibly exceed the ~100s proxy window even though a warm caption call
+    is fast. `fetch()` does no network I/O of its own here -- the result is
+    text already captured in `job.raw` at poll time, not a file to download.
+    """
+
+    name: str
+
+    def capabilities(self) -> UnderstandingCapabilities: ...
+
+    async def submit(self, request: UnderstandingRequest) -> UnderstandingJob: ...
+
+    async def poll(self, job: UnderstandingJob) -> UnderstandingJob: ...
+
+    async def fetch(self, job: UnderstandingJob) -> UnderstandingAsset: ...
+
+    async def cancel(self, job: UnderstandingJob) -> None: ...
 
     async def aclose(self) -> None: ...

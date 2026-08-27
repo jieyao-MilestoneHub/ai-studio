@@ -188,5 +188,10 @@ class ComfyUIProvider:
         """ComfyUI can only interrupt the running prompt, not a queued one."""
         await cancel_job(self.client)
 
+    async def evict(self) -> None:
+        """Release this workflow's resident model so an understanding job can
+        use the same 24GB card. See `comfy.client.ComfyClient.free_memory`."""
+        await self.client.free_memory()
+
     async def aclose(self) -> None:
         await self.client.aclose()

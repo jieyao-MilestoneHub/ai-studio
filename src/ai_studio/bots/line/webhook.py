@@ -22,7 +22,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from ai_studio.bots.line.content import ContentClient, LineContentError
 from ai_studio.bots.line.verify import verify
@@ -52,19 +52,45 @@ DEFAULT_I2I_TRIGGER = "/圖圖"
 """Image-to-image: that same cached photo is re-rendered by Flux under the
 prompt.
 
-`/圖影` and `/圖圖` are the ONLY triggers that claim a cached photo. `/影片`
-after a photo is still text-to-video and `/圖片` is still text-to-image; the
-photo stays cached for the photo-trigger that follows. A photo must never be
-silently consumed by a request that did not ask for it, and a request that
-did ask must never silently run without one — it gets a reply saying what to
-do instead."""
+`/圖影` and `/圖圖` are the ONLY generation triggers that claim a cached
+photo. `/影片` after a photo is still text-to-video and `/圖片` is still
+text-to-image; the photo stays cached for the photo-trigger that follows. A
+photo must never be silently consumed by a request that did not ask for it,
+and a request that did ask must never silently run without one — it gets a
+reply saying what to do instead."""
+
+DEFAULT_DESCRIBE_IMAGE_TRIGGER = "/說圖"
+"""Describe a photo: understanding, the reverse of generation. Claims a
+cached photo the same way /圖影 and /圖圖 do, but takes no trailing text --
+none of the three describe triggers do, for consistency across all three
+regardless of which underlying model could technically take a prompt."""
+
+DEFAULT_DESCRIBE_AUDIO_TRIGGER = "/說音"
+"""Describe/transcribe an audio clip. Backed by Qwen3-Omni-Captioner, which
+rejects a text prompt outright -- one more reason none of the three describe
+triggers accept one."""
+
+DEFAULT_DESCRIBE_VIDEO_TRIGGER = "/說影"
+"""Describe a video clip. Backed by Tarsier2."""
 
 IMAGE_PAIRING_TTL_S = 300.0
-"""How long a photo waits for the /圖影 that turns it into a first frame.
+"""How long a photo/audio/video clip waits for the trigger that claims it.
 
-Five minutes: long enough for someone to send a photo, think for a moment,
-and type a description, short enough that a photo from an unrelated part of
-the conversation an hour ago cannot surface as a first frame nobody meant."""
+Five minutes: long enough for someone to send it, think for a moment, and
+type a description (or, for the three describe triggers, just the trigger
+word), short enough that media from an unrelated part of the conversation an
+hour ago cannot surface as input nobody meant. Shared by all three pending
+caches -- image, audio, video -- on purpose; nothing so far needs them to
+diverge."""
+
+MAX_AUDIO_UNDERSTAND_S = 30.0
+"""Default ceiling for /說音: Qwen3-Omni-Captioner's own stated limit.
+Overridable via the constructor so `config.settings` can drive it."""
+
+MAX_VIDEO_UNDERSTAND_S = 120.0
+"""[speculative] default ceiling for /說影 -- no source has measured what
+Tarsier2 actually tolerates or costs per second of dense video understanding
+on this hardware. Generous rather than tight until benchmarked."""
 
 _LENGTH_RE = re.compile(r"\s*(\d{1,2})\s*(?:s|秒)", re.IGNORECASE)
 """Matches a `15s` / `15秒` length flush against a video trigger."""
@@ -107,6 +133,11 @@ class WebhookHandler:
         image_trigger: str = DEFAULT_IMAGE_TRIGGER,
         i2v_trigger: str = DEFAULT_I2V_TRIGGER,
         i2i_trigger: str = DEFAULT_I2I_TRIGGER,
+        describe_image_trigger: str = DEFAULT_DESCRIBE_IMAGE_TRIGGER,
+        describe_audio_trigger: str = DEFAULT_DESCRIBE_AUDIO_TRIGGER,
+        describe_video_trigger: str = DEFAULT_DESCRIBE_VIDEO_TRIGGER,
+        max_audio_understand_s: float = MAX_AUDIO_UNDERSTAND_S,
+        max_video_understand_s: float = MAX_VIDEO_UNDERSTAND_S,
         max_jobs_per_user_per_day: int = 0,
         clock: Callable[[], datetime] | None = None,
         content: ContentClient | None = None,
@@ -123,6 +154,11 @@ class WebhookHandler:
         self.image_trigger = image_trigger
         self.i2v_trigger = i2v_trigger
         self.i2i_trigger = i2i_trigger
+        self.describe_image_trigger = describe_image_trigger
+        self.describe_audio_trigger = describe_audio_trigger
+        self.describe_video_trigger = describe_video_trigger
+        self.max_audio_understand_s = max_audio_understand_s
+        self.max_video_understand_s = max_video_understand_s
         self.max_jobs_per_user_per_day = max_jobs_per_user_per_day
         # Injected so a test can stand at 03:00 without the machine having to.
         # `bots` is L6 and `runtime` is L5, so reaching down for the business
@@ -141,8 +177,12 @@ class WebhookHandler:
         # (group_id, user_id) -> (saved path, received-at). In-process and
         # short-lived on purpose: this is a "send a photo, then say /圖影"
         # pairing window, not durable state -- a restart within the window
-        # just means resending the photo, which costs nothing.
+        # just means resending the photo, which costs nothing. Same shape,
+        # same reasoning, for an audio clip waiting on /說音 and a video clip
+        # waiting on /說影.
         self._pending_images: dict[tuple[str, str], tuple[str, float]] = {}
+        self._pending_audio: dict[tuple[str, str], tuple[str, float]] = {}
+        self._pending_video: dict[tuple[str, str], tuple[str, float]] = {}
 
     # --------------------------------------------------------------- entry
 
@@ -182,10 +222,15 @@ class WebhookHandler:
             return Outcome("ignored", detail=f"event type {event.get('type')}")
 
         message = event.get("message") or {}
-        if message.get("type") == "image":
+        msg_type = message.get("type")
+        if msg_type == "image":
             return await self._remember_image(event, message)
-        if message.get("type") != "text":
-            return Outcome("ignored", detail=f"message type {message.get('type')}")
+        if msg_type == "audio":
+            return await self._remember_audio(event, message)
+        if msg_type == "video":
+            return await self._remember_video(event, message)
+        if msg_type != "text":
+            return Outcome("ignored", detail=f"message type {msg_type}")
 
         source = event.get("source") or {}
         group_id = source.get("groupId")
@@ -210,9 +255,16 @@ class WebhookHandler:
         stripped = self._strip_trigger(text)
         if stripped is None:
             return Outcome("ignored", detail="no trigger word")
-        prompt, media_kind, wants_photo, requested_seconds = stripped
-        if not prompt:
-            await self._safe_reply(reply_token, self._usage(media_kind, wants_photo))
+        prompt, media_kind, wants_media, requested_seconds = stripped
+
+        if media_kind.is_understanding:
+            # None of the three describe triggers take trailing text -- the
+            # mirror image of the four generation triggers, which require it.
+            if prompt:
+                await self._safe_reply(reply_token, self._usage(media_kind, wants_media))
+                return Outcome("ignored", detail="describe trigger takes no text")
+        elif not prompt:
+            await self._safe_reply(reply_token, self._usage(media_kind, wants_media))
             return Outcome("ignored", detail="empty prompt")
 
         user_id = source.get("userId")
@@ -235,22 +287,22 @@ class WebhookHandler:
             )
             return Outcome("rate_limited", detail=str(user_id))
 
-        # Only the photo-triggers touch the photo cache. Popping it for any
-        # request would let /影片 or /圖片 silently eat a photo meant for the
-        # /圖影 or /圖圖 after them. And a photo-trigger with nothing cached is
-        # told so rather than quietly rendered from text: the user asked for
-        # their picture, and a picture of something else is not that.
+        # Only a trigger that asked for cached media touches a cache, and only
+        # the matching one: /影片 or /圖片 must never silently eat a photo
+        # meant for /圖影 or /圖圖, and /說音 must never claim a photo or video
+        # clip meant for /說圖 or /說影. A trigger that did ask for media with
+        # nothing cached is told so rather than silently running without it.
         first_frame_path: str | None = None
-        if wants_photo:
-            first_frame_path = self._take_pending_image(group_id or "", user_id)
-            if first_frame_path is None:
-                trigger = self._photo_trigger(media_kind)
-                await self._safe_reply(
-                    reply_token,
-                    f"找不到你的照片。先傳一張照片到群組,再說「{trigger} <想看的畫面>」"
-                    f"(照片 {int(IMAGE_PAIRING_TTL_S // 60)} 分鐘內有效)。",
-                )
-                return Outcome("ignored", detail="no pending photo")
+        input_media_path: str | None = None
+        if wants_media is not None:
+            path = self._take_pending(wants_media, group_id or "", user_id)
+            if path is None:
+                await self._safe_reply(reply_token, self._no_pending_media(media_kind, wants_media))
+                return Outcome("ignored", detail=f"no pending {wants_media}")
+            if media_kind.is_understanding:
+                input_media_path = path
+            else:
+                first_frame_path = path
 
         return await self._accept(
             event,
@@ -261,6 +313,7 @@ class WebhookHandler:
             media_kind=media_kind,
             first_frame_path=first_frame_path,
             requested_seconds=requested_seconds,
+            input_media_path=input_media_path,
         )
 
     def _membership(self, event: dict[str, Any]) -> Outcome:
@@ -313,17 +366,107 @@ class WebhookHandler:
         self._pending_images[(group_id, user_id)] = (str(dest), self.clock().timestamp())
         return Outcome("image", detail=str(dest))
 
+    async def _remember_audio(self, event: dict[str, Any], message: dict[str, Any]) -> Outcome:
+        """Download and cache an audio clip, waiting to see if /說音 claims it.
+
+        LINE's own `audio` message object carries `duration` (milliseconds)
+        in the webhook payload itself, so an over-long clip is rejected
+        *before any bandwidth is spent fetching it* -- not merely before any
+        GPU is spent on it. Silently, matching `_remember_image`'s rule: an
+        audio message shared in ordinary group conversation must not get a
+        bot reply just for existing.
+        """
+        source = event.get("source") or {}
+        group_id = source.get("groupId")
+        user_id = source.get("userId")
+        if self.content is None or not group_id or not user_id:
+            return Outcome("ignored", detail="audio, no content client or no user")
+        if self.allowed_group_id and group_id != self.allowed_group_id:
+            return Outcome("ignored", detail=f"audio in {group_id}")
+
+        duration_ms = message.get("duration")
+        if isinstance(duration_ms, int | float) and duration_ms > self.max_audio_understand_s * 1000:
+            return Outcome(
+                "ignored",
+                detail=f"audio too long for {self.describe_audio_trigger}: {duration_ms / 1000:.0f}s",
+            )
+
+        message_id = str(message.get("id") or "")
+        try:
+            data = await self.content.fetch(message_id)
+        except LineContentError as exc:
+            _log.warning("could not fetch audio %s: %s", message_id, exc)
+            return Outcome("ignored", detail=f"audio fetch failed: {exc}")
+
+        self.incoming_dir.mkdir(parents=True, exist_ok=True)
+        dest = self.incoming_dir / f"{secrets.token_urlsafe(8)}.m4a"
+        dest.write_bytes(data)
+        self._pending_audio[(group_id, user_id)] = (str(dest), self.clock().timestamp())
+        return Outcome("audio", detail=str(dest))
+
+    async def _remember_video(self, event: dict[str, Any], message: dict[str, Any]) -> Outcome:
+        """Download and cache a video clip, waiting to see if /說影 claims it.
+        See `_remember_audio` for why this is silent either way, and for why
+        the length check runs before the fetch."""
+        source = event.get("source") or {}
+        group_id = source.get("groupId")
+        user_id = source.get("userId")
+        if self.content is None or not group_id or not user_id:
+            return Outcome("ignored", detail="video, no content client or no user")
+        if self.allowed_group_id and group_id != self.allowed_group_id:
+            return Outcome("ignored", detail=f"video in {group_id}")
+
+        duration_ms = message.get("duration")
+        if isinstance(duration_ms, int | float) and duration_ms > self.max_video_understand_s * 1000:
+            return Outcome(
+                "ignored",
+                detail=f"video too long for {self.describe_video_trigger}: {duration_ms / 1000:.0f}s",
+            )
+
+        message_id = str(message.get("id") or "")
+        try:
+            data = await self.content.fetch(message_id)
+        except LineContentError as exc:
+            _log.warning("could not fetch video %s: %s", message_id, exc)
+            return Outcome("ignored", detail=f"video fetch failed: {exc}")
+
+        self.incoming_dir.mkdir(parents=True, exist_ok=True)
+        dest = self.incoming_dir / f"{secrets.token_urlsafe(8)}.mp4"
+        dest.write_bytes(data)
+        self._pending_video[(group_id, user_id)] = (str(dest), self.clock().timestamp())
+        return Outcome("video", detail=str(dest))
+
     def _take_pending_image(self, group_id: str, user_id: str | None) -> str | None:
         """Pop a still-fresh cached photo for this sender, if there is one.
 
-        Popped rather than peeked: a photo is a first frame for exactly one
-        request, not a standing instruction applied to everything the sender
-        says next.
+        Popped rather than peeked: a photo is a first frame (or, for /說圖,
+        the thing to describe) for exactly one request, not a standing
+        instruction applied to everything the sender says next.
         """
+        return self._pop_pending(self._pending_images, group_id, user_id)
+
+    def _take_pending_audio(self, group_id: str, user_id: str | None) -> str | None:
+        """Pop a still-fresh cached audio clip. See `_take_pending_image`."""
+        return self._pop_pending(self._pending_audio, group_id, user_id)
+
+    def _take_pending_video(self, group_id: str, user_id: str | None) -> str | None:
+        """Pop a still-fresh cached video clip. See `_take_pending_image`."""
+        return self._pop_pending(self._pending_video, group_id, user_id)
+
+    def _take_pending(self, kind: str, group_id: str, user_id: str | None) -> str | None:
+        """Dispatch to the cache matching `wants_media` ("image"/"audio"/"video")."""
+        if kind == "image":
+            return self._take_pending_image(group_id, user_id)
+        if kind == "audio":
+            return self._take_pending_audio(group_id, user_id)
+        return self._take_pending_video(group_id, user_id)
+
+    def _pop_pending(
+        self, cache: dict[tuple[str, str], tuple[str, float]], group_id: str, user_id: str | None
+    ) -> str | None:
         if user_id is None:
             return None
-        key = (group_id, user_id)
-        cached = self._pending_images.pop(key, None)
+        cached = cache.pop((group_id, user_id), None)
         if cached is None:
             return None
         path, received_at = cached
@@ -344,6 +487,7 @@ class WebhookHandler:
         media_kind: MediaKind = MediaKind.VIDEO,
         first_frame_path: str | None = None,
         requested_seconds: float | None = None,
+        input_media_path: str | None = None,
     ) -> Outcome:
         # webhookEventId is LINE's own idempotency key. Using it means a
         # redelivery cannot enqueue — and pay for — the same clip twice.
@@ -355,7 +499,7 @@ class WebhookHandler:
         job, created = self.queue.enqueue(
             event_id, group_id, prompt, user_id=user_id, media_kind=media_kind,
             first_frame_path=first_frame_path, quote_token=quote_token,
-            requested_seconds=requested_seconds,
+            requested_seconds=requested_seconds, input_media_path=input_media_path,
         )
 
         if not created:
@@ -431,13 +575,15 @@ class WebhookHandler:
                 f"目前沒有排隊中的工作。用「{self.trigger} …」生成影片,"
                 f"「{self.image_trigger} …」生成圖片,"
                 f"或先傳照片再「{self.i2v_trigger} …」讓照片動起來、"
-                f"「{self.i2i_trigger} …」重畫照片。",
+                f"「{self.i2i_trigger} …」重畫照片。也可以先傳照片/語音/影片,"
+                f"再說「{self.describe_image_trigger}」/「{self.describe_audio_trigger}」/"
+                f"「{self.describe_video_trigger}」聽聽 AI 怎麼形容。",
             )
             return Outcome("status")
 
         lines = [f"排隊中 {len(pending)} 件"]
         lines += [
-            f"  · {'🖼' if j.media_kind is MediaKind.IMAGE else '🎬'} "
+            f"  · {self._STATUS_GLYPH.get(j.media_kind, '🎬')} "
             f"{j.text[:18]} — {self._state_zh(j)}"
             for j in pending[:5]
         ]
@@ -447,11 +593,16 @@ class WebhookHandler:
 
     # -------------------------------------------------------------- helpers
 
-    def _strip_trigger(self, text: str) -> tuple[str, MediaKind, bool, float | None] | None:
-        """The prompt after the trigger, which kind it asked for, whether it
-        wants the cached photo as a first frame, and any requested length in
+    def _strip_trigger(self, text: str) -> tuple[str, MediaKind, str | None, float | None] | None:
+        """The prompt after the trigger, which kind it asked for, which
+        pending-media cache (if any) it claims, and any requested length in
         seconds — or None if it is not a request at all. Exactly one spelling
         per trigger, no aliases.
+
+        The third element is `"image"`/`"audio"`/`"video"` naming which cache
+        `_take_pending` must pop, or `None` for a trigger that touches no
+        cache at all. A bare bool stopped being enough once there was more
+        than one kind of pending media to consume.
 
         A length rides on the trigger itself: `/影片15s` or `/圖影15秒`. It is
         read only off video triggers (an image has no length), and only when
@@ -465,11 +616,14 @@ class WebhookHandler:
         # Normalise a leading fullwidth solidus to ASCII before matching.
         if text[:1] == "\uff0f":
             text = "/" + text[1:]
-        for prefix, kind, wants_photo in (
-            (self.i2v_trigger, MediaKind.VIDEO, True),
-            (self.i2i_trigger, MediaKind.IMAGE, True),
-            (self.trigger, MediaKind.VIDEO, False),
-            (self.image_trigger, MediaKind.IMAGE, False),
+        for prefix, kind, wants_media in (
+            (self.i2v_trigger, MediaKind.VIDEO, "image"),
+            (self.i2i_trigger, MediaKind.IMAGE, "image"),
+            (self.trigger, MediaKind.VIDEO, None),
+            (self.image_trigger, MediaKind.IMAGE, None),
+            (self.describe_image_trigger, MediaKind.IMAGE_UNDERSTAND, "image"),
+            (self.describe_audio_trigger, MediaKind.AUDIO_UNDERSTAND, "audio"),
+            (self.describe_video_trigger, MediaKind.VIDEO_UNDERSTAND, "video"),
         ):
             if text.startswith(prefix):
                 rest = text[len(prefix) :]
@@ -479,17 +633,50 @@ class WebhookHandler:
                     if match:
                         seconds = float(match.group(1))
                         rest = rest[match.end() :]
-                return rest.strip(), kind, wants_photo, seconds
+                return rest.strip(), kind, wants_media, seconds
         return None
 
-    def _photo_trigger(self, media_kind: MediaKind) -> str:
+    def _media_trigger(self, media_kind: MediaKind, wants_media: str) -> str:
+        """Which trigger word claims this pending media -- for refusal/usage text."""
+        if media_kind is MediaKind.IMAGE_UNDERSTAND:
+            return self.describe_image_trigger
+        if media_kind is MediaKind.AUDIO_UNDERSTAND:
+            return self.describe_audio_trigger
+        if media_kind is MediaKind.VIDEO_UNDERSTAND:
+            return self.describe_video_trigger
         return self.i2v_trigger if media_kind is MediaKind.VIDEO else self.i2i_trigger
 
-    def _usage(self, media_kind: MediaKind, wants_photo: bool) -> str:
-        if wants_photo:
-            return f"用法:先傳一張照片,再說 {self._photo_trigger(media_kind)} <想看的畫面>"
+    _MEDIA_NOUN: ClassVar[dict[str, str]] = {"image": "照片", "audio": "語音", "video": "影片"}
+    _MEDIA_VERB: ClassVar[dict[str, str]] = {
+        "image": "傳一張照片", "audio": "傳一段語音訊息", "video": "傳一段影片",
+    }
+    _STATUS_GLYPH: ClassVar[dict[MediaKind, str]] = {
+        MediaKind.IMAGE: "🖼",
+        MediaKind.IMAGE_UNDERSTAND: "🔎🖼",
+        MediaKind.AUDIO_UNDERSTAND: "🔎🎧",
+        MediaKind.VIDEO_UNDERSTAND: "🔎🎬",
+    }
+    """`_status()`'s per-kind glyph. VIDEO falls back to `.get(..., '🎬')`."""
+
+    def _usage(self, media_kind: MediaKind, wants_media: str | None) -> str:
+        if media_kind.is_understanding:
+            assert wants_media is not None  # every understanding kind wants media
+            trigger = self._media_trigger(media_kind, wants_media)
+            return f"用法:先{self._MEDIA_VERB[wants_media]},再輸入 {trigger}(不需要額外文字)"
+        if wants_media:
+            return f"用法:先傳一張照片,再說 {self._media_trigger(media_kind, wants_media)} <想看的畫面>"
         trigger = self.trigger if media_kind is MediaKind.VIDEO else self.image_trigger
         return f"用法:{trigger} <想看的畫面>"
+
+    def _no_pending_media(self, media_kind: MediaKind, wants_media: str) -> str:
+        trigger = self._media_trigger(media_kind, wants_media)
+        noun = self._MEDIA_NOUN[wants_media]
+        verb = self._MEDIA_VERB[wants_media]
+        tail = "" if media_kind.is_understanding else " <想看的畫面>"
+        return (
+            f"找不到你的{noun}。先{verb}到群組,再說「{trigger}{tail}」"
+            f"({int(IMAGE_PAIRING_TTL_S // 60)} 分鐘內有效)。"
+        )
 
     def _is_status_query(self, text: str) -> bool:
         return any(text.startswith(w) for w in STATUS_WORDS)

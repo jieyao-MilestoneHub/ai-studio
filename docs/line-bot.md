@@ -58,6 +58,59 @@ commercial rather than personal/internal, that needs a separate commercial
 licence from Black Forest Labs, or a switch to schnell. See
 [model-flux.md](model-flux.md).
 
+## Three more triggers: understanding
+
+The reverse direction of the four above — media in, a text description out,
+no file produced:
+
+| trigger | describes | model |
+|---|---|---|
+| a photo, then `/說圖` | that photo | moondream3-preview (fallback: Florence-2-large) |
+| an audio clip, then `/說音` | that clip | Qwen3-Omni-Captioner |
+| a video clip, then `/說影` | that clip | Tarsier2 |
+
+**None of the three take trailing text.** `/說圖 這是誰` is refused with a
+usage line and never enqueued — the mirror image of the four generation
+triggers, which require non-empty text. This holds uniformly across all
+three even though moondream3-preview and Tarsier2 could technically accept a
+steering prompt, because Qwen3-Omni-Captioner cannot (it rejects a text
+prompt outright), and having the same trigger *shape* behave differently
+per command is exactly the kind of per-command surprise this bot avoids
+elsewhere ("one spelling per trigger, no aliases").
+
+**The photo/audio/video cache works exactly like `/圖影`'s**: whatever was
+last sent by that sender within `IMAGE_PAIRING_TTL_S` (five minutes) is
+claimed and popped by the matching describe-trigger, and only that
+trigger — `/說音` can never claim a photo meant for `/說圖`, and vice versa.
+A describe-trigger with nothing cached is refused, naming itself.
+
+**Audio has a duration ceiling, checked before any download.** LINE's own
+`audio` message object carries `duration` (milliseconds) in the webhook
+payload itself, so a clip over `AI_STUDIO_MAX_AUDIO_UNDERSTAND_S` (default
+30s, matching Qwen3-Omni-Captioner's own stated limit) is dropped before
+`ContentClient.fetch()` is even called — zero bandwidth spent, not merely
+zero GPU. Video has the same shape (`AI_STUDIO_MAX_VIDEO_UNDERSTAND_S`,
+default 120s) but the number is `[speculative]`: nothing has measured what
+Tarsier2 actually costs per second of dense video understanding yet.
+
+**Delivery is a single text message**, not a media object — there is
+nothing to attach a caption to. `bots.line.push.understood_messages()` is
+the sibling of `delivered_messages()`/`failed_messages()` for this case.
+
+**Concurrency with generation is still one.** These jobs share the
+*same* SQLite queue and the *same* pod as `/影片`/`/圖片`/`/圖影`/`/圖圖` — a
+second, separate process on the pod (`deploy/inference_server.py`, port
+8189) serves them, since none of the three models are ComfyUI nodes, but
+only one of {ComfyUI's resident checkpoint, an understanding model} is ever
+loaded on the one 24GB card at a time. `pipeline.drain.make_room_for`
+evicts whichever side the next claimed job does not need, right before that
+job submits — see [architecture.md](architecture.md).
+
+⚠️ **None of the three understanding models' licences have been checked
+against this project's use** the way MiniMax H3's and Flux's have. See
+`docs/model-moondream3.md`, `docs/model-qwen3-omni-captioner.md`,
+`docs/model-tarsier2.md` for what is (and is not yet) verified.
+
 ## Why it is shaped this way
 
 Three LINE rules decide the whole architecture.

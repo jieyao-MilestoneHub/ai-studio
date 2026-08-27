@@ -23,6 +23,7 @@ from ai_studio.bots.line.push import (
     failed_messages,
     image_message,
     text_message,
+    understood_messages,
     video_message,
 )
 
@@ -119,6 +120,21 @@ def test_no_quote_token_means_a_plain_message_not_an_error() -> None:
     message = text_message("你的影片好了", quote_token=None)
 
     assert message == {"type": "text", "text": "你的影片好了"}
+
+
+def test_an_understanding_delivery_is_a_single_text_message() -> None:
+    """/說圖 /說音 /說影 produce text, not a file -- there is no media object
+    and nothing to attach a caption to, unlike `delivered_messages`."""
+    (message,) = understood_messages(
+        result_text="一隻橘貓坐在窗邊,望向外面下雨的街道。",
+        status_url=f"{BASE}/q/abc",
+        quote_token=QUOTE,
+    )
+
+    assert message["type"] == "text"
+    assert message["quoteToken"] == QUOTE
+    assert "一隻橘貓坐在窗邊" in message["text"]
+    assert f"{BASE}/q/abc" in message["text"]
 
 
 def test_a_failed_request_still_replies_to_the_person_waiting_on_it() -> None:

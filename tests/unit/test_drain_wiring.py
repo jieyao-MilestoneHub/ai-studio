@@ -114,9 +114,9 @@ def test_session_drain_constructs_both_the_video_and_image_provider(
 
     result = runner.invoke(app, ["session", "drain"])
     assert result.exit_code == 0, result.output
-    assert set(requested) == {"comfyui", "flux"}, (
-        "session drain must build a provider for every media_kind the queue can hold"
-    )
+    assert set(requested) == {
+        "comfyui", "flux", "understand-image", "understand-audio", "understand-video",
+    }, "session drain must build a provider for every media_kind the queue can hold"
 
 
 def test_the_vps_runbook_documents_manual_drain_recovery() -> None:

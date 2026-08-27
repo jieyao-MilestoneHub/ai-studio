@@ -39,9 +39,11 @@ from ai_studio.core.errors import AIStudioError, ProviderError
 from ai_studio.pipeline.drain import (
     MAX_ATTEMPTS,
     MAX_CONSECUTIVE_FAILURES,
+    make_room_for,
     may_claim,
     render_clip,
     render_image,
+    render_understanding,
 )
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
 
@@ -214,14 +216,17 @@ async def _run_one(
     started = time.monotonic()
 
     try:
+        await make_room_for(job.media_kind, providers)
         if job.media_kind is MediaKind.IMAGE:
-            asset = await render_image(
+            result: Any = await render_image(
+                job, provider, caps, files_dir, deadline, poll_interval_s
+            )
+        elif job.media_kind is MediaKind.VIDEO:
+            result = await render_clip(
                 job, provider, caps, files_dir, deadline, poll_interval_s
             )
         else:
-            asset = await render_clip(
-                job, provider, caps, files_dir, deadline, poll_interval_s
-            )
+            result = await render_understanding(job, provider, deadline, poll_interval_s)
     except ProviderError as exc:
         if job.attempts >= MAX_ATTEMPTS:
             queue.fail(job.id, f"provider failed {job.attempts}x: {exc}")
@@ -246,13 +251,20 @@ async def _run_one(
         report.last_action = "failed"
         return "failed"
 
-    queue.complete(job.id, str(asset))
+    # Understanding jobs produce text, not a file: `asset` stays None so
+    # `_deliver` pushes `job.result_text` instead of a media message.
+    asset: Path | None = None
+    if job.media_kind.is_understanding:
+        queue.complete_text(job.id, result)
+    else:
+        asset = result
+        queue.complete(job.id, str(asset))
     report.completed += 1
     report.seconds.append(time.monotonic() - started)
     # Without this a long render looks like idleness and the reaper closes the
     # window out from under the next job.
     host.touch_activity(job.media_kind.value)
-    _log.info("job %d done in %.0fs -> %s", job.id, report.seconds[-1], asset)
+    _log.info("job %d done in %.0fs -> %s", job.id, report.seconds[-1], result)
     await _deliver(queue, host, job.id, asset, report)
     report.last_action = "completed"
     return "completed"

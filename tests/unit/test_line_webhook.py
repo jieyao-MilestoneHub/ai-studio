@@ -736,7 +736,7 @@ async def test_the_cjk_seconds_suffix_also_works(wired) -> None:
     body = _body([_text_event("/圖影10秒 讓照片動起來", event_id="evt-10")])
     # no photo cached, so it is refused -- but the parse still had to succeed
     (outcome,) = await handler.handle(body, sign(body, SECRET))
-    assert outcome.detail == "no pending photo"
+    assert outcome.detail == "no pending image"
 
 
 @pytest.mark.asyncio

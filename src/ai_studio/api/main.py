@@ -121,6 +121,8 @@ def create_app(
             # a guard that does not exist. See tests/unit/test_drain_wiring.py
             # for the last time that distinction cost this project something.
             max_jobs_per_user_per_day=settings.max_jobs_per_user_per_day,
+            max_audio_understand_s=settings.max_audio_understand_s,
+            max_video_understand_s=settings.max_video_understand_s,
             content=content,
             incoming_dir=Path("incoming"),
             is_warm=_pod_is_warm,
@@ -272,6 +274,10 @@ def _render(job: Job, position: int | None, base_url: str) -> str:
                 f'<p class="cta"><a href="{html.escape(url)}" download>下載影片 (mp4)</a></p>'
                 f'<video controls preload="metadata" src="{html.escape(url)}"></video>'
             )
+    elif job.state is JobState.DONE and job.result_text:
+        # An understanding job has no output file at all -- the result is
+        # text, rendered directly rather than assumed to be a media link.
+        action = f'<p class="result">{html.escape(job.result_text)}</p>'
     elif note:
         action = f'<p class="note">{html.escape(note)}</p>'
 

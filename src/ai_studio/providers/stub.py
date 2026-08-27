@@ -14,13 +14,21 @@ different shots are visually distinct.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
 from ai_studio import media
 from ai_studio.config.settings import get_settings
-from ai_studio.core.enums import GenMode, JobState
+from ai_studio.core.enums import GenMode, JobState, MediaKind
+from ai_studio.core.errors import ProviderJobFailed
 from ai_studio.core.provider_spec import ClipAsset, ClipJob, ClipRequest, ProviderCapabilities
+from ai_studio.core.understanding_spec import (
+    UnderstandingAsset,
+    UnderstandingCapabilities,
+    UnderstandingJob,
+    UnderstandingRequest,
+)
 from ai_studio.storage.base import sha256_file
 
 # Mirrors MiniMax H3 so that format policy, planner and gates see the same
@@ -67,8 +75,6 @@ class StubProvider:
         would against a real backend — so switching providers changes nothing
         about the calling code.
         """
-        import time
-
         job_id = f"stub-{request.shot_id}"
         path = self.work_dir / f"{job_id}.mp4"
         now = time.time()
@@ -131,6 +137,9 @@ class StubProvider:
     async def cancel(self, job: ClipJob) -> None:
         return None
 
+    async def evict(self) -> None:
+        return None
+
     async def aclose(self) -> None:
         return None
 
@@ -160,3 +169,84 @@ class StubProvider:
             str(dest),
         ]
         media.run(argv, timeout_s=180.0)
+
+
+STUB_UNDERSTANDING_CAPABILITIES: dict[MediaKind, UnderstandingCapabilities] = {
+    kind: UnderstandingCapabilities(
+        provider="stub",
+        model_id=f"stub-{kind.value}",
+        modality=kind,
+        accepts_prompt=kind is not MediaKind.AUDIO_UNDERSTAND,
+        max_input_seconds=30.0 if kind is MediaKind.AUDIO_UNDERSTAND else None,
+        cost_per_call_usd=0.0,
+        expected_latency_s=1.0,
+        max_concurrent_jobs=4,
+    )
+    for kind in (MediaKind.IMAGE_UNDERSTAND, MediaKind.AUDIO_UNDERSTAND, MediaKind.VIDEO_UNDERSTAND)
+}
+
+
+class StubUnderstandingProvider:
+    """Offline synthetic understanding provider. No network, no GPU, no cost.
+
+    Fabricates a deterministic, obviously-synthetic description from the
+    input file's own name and size, mirroring `StubProvider`'s own reasoning:
+    the protocol is still honoured -- callers poll and fetch exactly as they
+    would against a real backend -- so switching providers changes nothing
+    about the calling code.
+    """
+
+    name = "stub"
+
+    def __init__(self, *, modality: MediaKind, **_: Any) -> None:
+        self.modality = modality
+        self._caps = STUB_UNDERSTANDING_CAPABILITIES[modality]
+        self._results: dict[str, str] = {}
+
+    def capabilities(self) -> UnderstandingCapabilities:
+        return self._caps
+
+    # ---------------------------------------------------------------- submit
+
+    async def submit(self, request: UnderstandingRequest) -> UnderstandingJob:
+        self._caps.check_prompt(request.prompt)
+        now = time.time()
+        job_id = f"stub-{request.shot_id}"
+        source = Path(request.input_media_path)
+        size = source.stat().st_size if source.is_file() else 0
+        self._results[job_id] = (
+            f"[stub] {self.modality.value} description of {source.name} ({size} bytes)"
+        )
+        return UnderstandingJob(
+            provider=self.name,
+            job_id=job_id,
+            shot_id=request.shot_id,
+            state=JobState.COMPLETED,
+            submitted_at=now,
+            updated_at=now,
+        )
+
+    async def poll(self, job: UnderstandingJob) -> UnderstandingJob:
+        return job
+
+    async def fetch(self, job: UnderstandingJob) -> UnderstandingAsset:
+        result_text = self._results.get(job.job_id)
+        if result_text is None:
+            raise ProviderJobFailed(f"no stub result for job {job.job_id}")
+        return UnderstandingAsset(
+            shot_id=job.shot_id,
+            provider=self.name,
+            job_id=job.job_id,
+            modality=self.modality,
+            result_text=result_text,
+            cost_usd=0.0,
+        )
+
+    async def cancel(self, job: UnderstandingJob) -> None:
+        return None
+
+    async def evict(self) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        return None

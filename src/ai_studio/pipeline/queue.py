@@ -70,8 +70,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     first_frame_path TEXT,
     quote_token TEXT,
     requested_seconds REAL,
+    input_media_path TEXT,
     prompt_json TEXT,
     output_path TEXT,
+    result_text TEXT,
     error       TEXT,
     gpu_tier    TEXT,
     created_at  REAL    NOT NULL,
@@ -133,8 +135,18 @@ class Job:
     """LINE's quote token for the request message, so delivery can be a reply
     to it -- the same quoted-message UI a person gets by replying -- instead
     of a broadcast into the group. Expires on LINE's side; None if absent."""
+    input_media_path: str | None
+    """The local photo/audio/video an understanding job describes.
+
+    A separate column from `first_frame_path` on purpose: that field already
+    means two different things for two generation kinds (H3's real first
+    frame, Flux's I2I source photo) -- a third meaning for a *consumed*
+    rather than *produced* path would make it actively misleading."""
     prompt_json: str | None
     output_path: str | None
+    result_text: str | None
+    """The produced description, for an understanding job. `output_path`
+    stays None for these -- there is no file, only text."""
     error: str | None
     gpu_tier: str | None
     created_at: float
@@ -172,8 +184,10 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         first_frame_path=row["first_frame_path"],
         quote_token=row["quote_token"],
         requested_seconds=row["requested_seconds"],
+        input_media_path=row["input_media_path"],
         prompt_json=row["prompt_json"],
         output_path=row["output_path"],
+        result_text=row["result_text"],
         error=row["error"],
         gpu_tier=row["gpu_tier"],
         created_at=row["created_at"],
@@ -216,6 +230,10 @@ class JobQueue:
             conn.execute("ALTER TABLE jobs ADD COLUMN quote_token TEXT")
         if "requested_seconds" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN requested_seconds REAL")
+        if "input_media_path" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN input_media_path TEXT")
+        if "result_text" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN result_text TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         """One connection per thread, all pointing at the same file.
@@ -274,6 +292,7 @@ class JobQueue:
         first_frame_path: str | None = None,
         quote_token: str | None = None,
         requested_seconds: float | None = None,
+        input_media_path: str | None = None,
     ) -> tuple[Job, bool]:
         """Insert a request. Returns `(job, created)`.
 
@@ -285,7 +304,9 @@ class JobQueue:
         `first_frame_path` carries a locally-saved image through to whenever
         this job actually renders -- which may be hours later, in the next
         business window -- so it has to be a path on disk, not the request's
-        in-memory bytes.
+        in-memory bytes. `input_media_path` is the same idea for an
+        understanding job's photo/audio/video to describe -- a separate
+        column because it means something different (consumed, not produced).
         """
         token = secrets.token_urlsafe(8)
         now = time.time()
@@ -293,12 +314,13 @@ class JobQueue:
             cur = self._conn.execute(
                 "INSERT INTO jobs"
                 " (token, event_id, group_id, user_id, text, state, media_kind,"
-                "  first_frame_path, quote_token, requested_seconds, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+                "  first_frame_path, quote_token, requested_seconds, input_media_path,"
+                "  created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
                 (
                     token, event_id, group_id, user_id, text,
                     JobState.QUEUED.value, media_kind.value, first_frame_path,
-                    quote_token, requested_seconds, now,
+                    quote_token, requested_seconds, input_media_path, now,
                 ),
             )
             row = cur.fetchone()
@@ -339,6 +361,22 @@ class JobQueue:
         cur = self._conn.execute(
             "UPDATE jobs SET state=?, output_path=?, finished_at=? WHERE id=? RETURNING *",
             (JobState.DONE.value, output_path, time.time(), job_id),
+        )
+        row = cur.fetchone()
+        return _row_to_job(row) if row else None
+
+    def complete_text(self, job_id: int, result_text: str) -> Job | None:
+        """Finish an understanding job: text produced, no output file.
+
+        A sibling to `complete()` rather than a second optional parameter on
+        it: `complete()`'s single required `output_path` is called from
+        exactly two places today, and a parameter that means "ignore the
+        other one" is the kind of implicit-degrade pattern this codebase
+        avoids (see `core/errors.py`).
+        """
+        cur = self._conn.execute(
+            "UPDATE jobs SET state=?, result_text=?, finished_at=? WHERE id=? RETURNING *",
+            (JobState.DONE.value, result_text, time.time(), job_id),
         )
         row = cur.fetchone()
         return _row_to_job(row) if row else None

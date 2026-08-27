@@ -211,6 +211,16 @@ def delivered_messages(
     return [media, caption]
 
 
+def understood_messages(
+    *, result_text: str, status_url: str, quote_token: str | None
+) -> list[dict[str, Any]]:
+    """What an understanding job (/說圖 /說音 /說影) delivers: the description
+    itself, as a single text message. There is no media object -- an
+    understanding job produces text, not a file, so there is nothing to
+    attach a caption to."""
+    return [text_message(f"{result_text}\n{status_url}", quote_token=quote_token)]
+
+
 def failed_messages(
     *, reason: str, status_url: str, prompt: str, quote_token: str | None
 ) -> list[dict[str, Any]]:

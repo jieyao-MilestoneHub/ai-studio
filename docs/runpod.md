@@ -129,6 +129,21 @@ and 4090 stock is already thin. RunPod's own golden path documents a live case
 where a datacenter pin left workers throttled and a job queued for over four
 minutes.
 
+⚠️ **This conclusion does not survive the three understanding models
+(`/說圖` `/說音` `/說影`).** moondream3 + Qwen3-Omni-Captioner (downloaded
+full-precision, quantized on load — see
+[model-qwen3-omni-captioner.md](model-qwen3-omni-captioner.md)) + Tarsier2
+add roughly **~73 GB more** per `deploy/pod_setup.sh`'s own disk-headroom
+math, bringing a from-scratch download to **~142 GB** rather than the
+~72.7–78.7 GB the arithmetic above was built on. At that size the
+break-even math above (redownload wins by ~60×) needs to be redone, not
+assumed to still hold — a persistent network volume becomes the
+better-justified default once these three models are in the mix, which is
+why [schedule.md](schedule.md)'s "GPU hand-off" and "disk line on the bill"
+sections now recommend one for any deployment using these commands. Treat
+this section's "no network volume" conclusion as applying only to the
+H3+Flux-only configuration it was measured against.
+
 **Finished renders are a different question.** LINE requires the mp4 on a public
 HTTPS host that supports HTTP range requests, ≤200 MB, plus a ≤1 MB poster at
 matching aspect. That means object storage (R2 or equivalent) regardless. Model

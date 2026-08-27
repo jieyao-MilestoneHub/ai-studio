@@ -18,6 +18,11 @@ from ai_studio.core.enums import JobState as ClipState
 from ai_studio.core.errors import AIStudioError, CostCeilingExceeded, ProviderError
 from ai_studio.core.image_provider_spec import ImageAsset, ImageProviderCapabilities
 from ai_studio.core.provider_spec import ClipAsset, ClipJob, ProviderCapabilities
+from ai_studio.core.understanding_spec import (
+    UnderstandingAsset,
+    UnderstandingCapabilities,
+    UnderstandingJob,
+)
 from ai_studio.pipeline import worker
 from ai_studio.pipeline.drain import STOP_CLAIMING_BEFORE_S
 from ai_studio.pipeline.queue import JobQueue, JobState
@@ -41,6 +46,12 @@ IMAGE_CAPS = ImageProviderCapabilities(
     native_height=1024,
     modes=frozenset({GenMode.T2I}),
     output_format="png",
+)
+
+UNDERSTANDING_CAPS = UnderstandingCapabilities(
+    provider="fake-understanding",
+    model_id="fake-moondream",
+    modality=MediaKind.IMAGE_UNDERSTAND,
 )
 
 PROMPT = {"_rendered": "integrated_multimodal_description: [Shot 1] a cat", "_built_by": "llm"}
@@ -95,6 +106,50 @@ class FakeImageProvider(FakeProvider):
         )
 
 
+class FakeUnderstandingProvider:
+    """Completes instantly with a canned description, or fails on demand.
+
+    Deliberately has no `evict()` -- `make_room_for` must tolerate a provider
+    that does not implement the GPU hand-off (the offline path has nothing
+    to evict) rather than requiring every provider to define it.
+    """
+
+    def __init__(
+        self, *, fail_with: Exception | None = None, result_text: str = "a photo of a cat"
+    ) -> None:
+        self.fail_with = fail_with
+        self.result_text = result_text
+        self.submitted: list[str] = []
+
+    def capabilities(self) -> UnderstandingCapabilities:
+        return UNDERSTANDING_CAPS
+
+    async def submit(self, request: Any) -> UnderstandingJob:
+        self.submitted.append(request.shot_id)
+        if self.fail_with is not None:
+            raise self.fail_with
+        return UnderstandingJob(
+            provider="fake-understanding", job_id=f"j-{request.shot_id}",
+            shot_id=request.shot_id, state=ClipState.COMPLETED,
+            submitted_at=0.0, updated_at=0.0,
+        )
+
+    async def poll(self, job: UnderstandingJob) -> UnderstandingJob:
+        return job
+
+    async def fetch(self, job: UnderstandingJob) -> UnderstandingAsset:
+        return UnderstandingAsset(
+            shot_id=job.shot_id, provider="fake-understanding", job_id=job.job_id,
+            modality=MediaKind.IMAGE_UNDERSTAND, result_text=self.result_text,
+        )
+
+    async def cancel(self, job: UnderstandingJob) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
 class FakeSession:
     pod_id = "pod-1"
     tier_label = "L40S/SECURE"
@@ -114,6 +169,7 @@ class FakeHost:
         
         video: FakeProvider | None = None,
         image: FakeProvider | None = None,
+        understand: FakeUnderstandingProvider | None = None,
         ensure_raises: Exception | None = None,
         deliver_raises: Exception | None = None,
         minutes_left: float = 120.0,
@@ -122,6 +178,7 @@ class FakeHost:
         self.minutes_left = minutes_left
         self.video = video or FakeProvider()
         self.image = image or FakeImageProvider()
+        self.understand = understand or FakeUnderstandingProvider()
         self.opens = 0
         self.waits = 0
         self.touches = 0
@@ -147,7 +204,13 @@ class FakeHost:
         return 0.0
 
     def providers_for(self, session: Any) -> dict[MediaKind, Any]:
-        return {MediaKind.VIDEO: self.video, MediaKind.IMAGE: self.image}
+        return {
+            MediaKind.VIDEO: self.video,
+            MediaKind.IMAGE: self.image,
+            MediaKind.IMAGE_UNDERSTAND: self.understand,
+            MediaKind.AUDIO_UNDERSTAND: self.understand,
+            MediaKind.VIDEO_UNDERSTAND: self.understand,
+        }
 
     def touch_activity(self, media_kind: str) -> None:
         self.touches += 1
@@ -167,8 +230,17 @@ def queue(tmp_path: Path):
     q.close()
 
 
-def _parsed(q: JobQueue, text: str = "a cat", *, kind: MediaKind = MediaKind.VIDEO) -> Any:
-    job, _ = q.enqueue(f"evt-{text}-{kind.value}", "Cgroup", text, user_id="U1", media_kind=kind)
+def _parsed(
+    q: JobQueue,
+    text: str = "a cat",
+    *,
+    kind: MediaKind = MediaKind.VIDEO,
+    input_media_path: str | None = None,
+) -> Any:
+    job, _ = q.enqueue(
+        f"evt-{text}-{kind.value}", "Cgroup", text, user_id="U1", media_kind=kind,
+        input_media_path=input_media_path,
+    )
     q.set_parsed(job.id, PROMPT)
     return q.by_token(job.token)
 
@@ -303,6 +375,50 @@ async def test_an_image_request_goes_to_the_image_backend(queue, tmp_path: Path)
     assert action == "completed"
     assert host.image.submitted and not host.video.submitted
     assert queue.by_token(job.token).output_path.endswith(".png")
+
+
+@pytest.mark.asyncio
+async def test_an_understanding_request_completes_with_text_not_a_file(
+    queue, tmp_path: Path
+) -> None:
+    """A third+ `media_kind` must route to the text-completion path -- the
+    hazard a binary `if image else video` if/else would miss silently,
+    misrouting an understanding job into `render_clip`/H3 conversion."""
+    job = _parsed(
+        queue, "", kind=MediaKind.IMAGE_UNDERSTAND, input_media_path="/incoming/x.jpg"
+    )
+    host = FakeHost()
+
+    action, _ = await _tick(queue, host, tmp_path)
+
+    assert action == "completed"
+    assert host.understand.submitted
+    assert not host.video.submitted and not host.image.submitted
+    done = queue.by_token(job.token)
+    assert done.result_text == "a photo of a cat"
+    assert done.output_path is None
+    assert host.delivered == [(done.id, None)], (
+        "no file was produced, so delivery must receive asset=None and rely "
+        "on job.result_text"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_understanding_failure_is_requeued_like_any_other(
+    queue, tmp_path: Path
+) -> None:
+    job = _parsed(
+        queue, "", kind=MediaKind.AUDIO_UNDERSTAND, input_media_path="/incoming/x.m4a"
+    )
+    host = FakeHost(
+        understand=FakeUnderstandingProvider(fail_with=ProviderError("cold load timed out"))
+    )
+
+    action, report = await _tick(queue, host, tmp_path)
+
+    assert action == "requeued"
+    assert report.requeued == 1
+    assert queue.by_token(job.token).state is JobState.PARSED
 
 
 # ------------------------------------------------------------------ failure

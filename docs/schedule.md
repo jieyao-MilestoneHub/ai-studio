@@ -168,17 +168,47 @@ process alive.
 **The reaper is now per-render-kind, and it never closes a pod with work
 waiting.** `session reap` runs every minute; it closes a quiet pod after
 `IMAGE_IDLE_MINUTES` (5) if the last render was an image, `VIDEO_IDLE_MINUTES`
-(10) if it was a clip. The two numbers differ because the two reloads do:
-📏 Flux comes back into VRAM in ~15 s, H3's 32B text encoder in 60–90 s, so a
-video pod is worth holding longer. Both are `[speculative]` starting points,
-tuned by how often the reaper log shows a pod closed and reopened within a few
-minutes. And a pod with anything queued is *held*, whatever the clock says:
-closing a pod a job is about to land on costs a cold open **and** the wait,
-the one move with no upside. This replaces the fixed 30-minute window, which
-in turn replaced a one-evening 10 that closed the first pod of the night
-before its first job — with the weights on a network volume a reopen is a
-~1-minute ComfyUI restart, not the 📏 15-minute, $0.18 download it was, so the
-grace can be short again.
+(10) if it was a clip, or `UNDERSTANDING_IDLE_MINUTES` (5) if the last thing
+this pod did was a `/說圖`/`/說音`/`/說影` job. The three numbers differ
+because the reloads do: 📏 Flux comes back into VRAM in ~15 s, H3's 32B text
+encoder in 60–90 s, so a video pod is worth holding longer.
+`UNDERSTANDING_IDLE_MINUTES` is `[speculative]` in a stronger sense than the
+other two — nothing has measured a lazy-load cost for any of the three
+understanding models yet, and they are not even the same size as each other,
+so one shared number is a starting point, not three considered answers.
+Tuned by how often the reaper log shows a pod closed and reopened within a
+few minutes. And a pod with anything queued is *held*, whatever the clock
+says: closing a pod a job is about to land on costs a cold open **and** the
+wait, the one move with no upside. This replaces the fixed 30-minute window,
+which in turn replaced a one-evening 10 that closed the first pod of the
+night before its first job — with the weights on a network volume a reopen
+is a ~1-minute ComfyUI restart, not the 📏 15-minute, $0.18 download it was,
+so the grace can be short again.
+
+### The GPU hand-off between ComfyUI and the understanding server
+
+Idle grace is about *closing* the pod; this is about what happens *while it
+stays open* and the queue alternates between a generation job and an
+understanding one. Both share the one 24GB card, and neither H3, Flux, nor
+any of the three understanding models comfortably coexists with another
+model resident at the same time — so exactly one of {ComfyUI's checkpoint,
+an understanding model} may be loaded at once, never both.
+
+The hand-off is **pull-based**, not each side pinging the other:
+`pipeline.drain.make_room_for()` runs in the one place that already knows
+which job is about to run (`drain_window`'s and `worker._run_one`'s
+dispatch point) and evicts *the other side's* model before every submit —
+`ComfyClient.free_memory()` (`POST /free` on ComfyUI, port 8188) before a
+generation job, `InferenceClient.unload()` (`POST /unload` on
+`deploy/inference_server.py`, port 8189) before an understanding one.
+Centralizing this where the dispatch decision is already made means neither
+provider needs to know the other's endpoint exists.
+
+This is a real cost this project has not measured: every kind-switch in the
+queue now pays a model-load, not just the first job of the window. A queue
+that alternates `/影片`, `/說圖`, `/影片`, `/說圖` pays four loads where a
+queue of four `/影片`s pays one. Watch the reaper/worker log for how often
+this actually happens in practice before assuming it is negligible.
 
 ### The network volume, and why the cold open stopped mattering
 
@@ -288,6 +318,16 @@ money is a pod nobody is tracking.
 Rates above include **$0.014/hr** for our 80GB volume plus 20GB container disk.
 That is measured twice, not estimated: a pod listed at $0.44/hr reported
 `currentSpendPerHr: 0.454`, and one listed at $0.74 reported `0.754`. 📏
+
+⚠️ **This figure predates the three understanding models.** With moondream3
++ Qwen3-Omni-Captioner (downloaded at full precision, quantized on load) +
+Tarsier2 added, the volume needs closer to 165GB total (H3 + Flux + the
+three understanding models, per `deploy/pod_setup.sh`'s own disk-headroom
+check) rather than 80GB, and container disk should be sized generously
+(≥100GB, per the user's own recommendation) even when using a network
+volume for the weights themselves. Re-measure the disk-hours line once a
+real pod has run with this feature; do not carry the $0.014/hr figure
+forward unexamined.
 
 Reconcile a session against the **balance delta** (`runpodctl user`), not the
 billing API — the latter lagged badly in testing and once reported pod ids that
