@@ -156,7 +156,33 @@ class Settings(BaseSettings):
         alias="AI_STUDIO_MAX_JOBS_PER_USER_PER_DAY",
         description="How many requests one LINE user may have accepted in an "
         "Asia/Taipei day. 0 disables the cap. Checked before the request is "
-        "enqueued, so a refusal does not also spend an LLM conversion.",
+        "enqueued, so a refusal does not also spend an LLM conversion. "
+        "/himonkey chat messages are excluded -- see "
+        "max_chat_messages_per_user_per_day.",
+    )
+    max_chat_messages_per_user_per_day: int = Field(
+        default=50,
+        ge=0,
+        alias="AI_STUDIO_MAX_CHAT_MESSAGES_PER_USER_PER_DAY",
+        description="How many /himonkey messages one LINE user may have "
+        "accepted in an Asia/Taipei day. 0 disables the cap. Separate from "
+        "max_jobs_per_user_per_day on purpose: a normal chat conversation's "
+        "cadence would otherwise exhaust a user's entire daily video/image "
+        "allowance too.",
+    )
+    max_chat_month_usd: float = Field(
+        default=15.0,
+        ge=0,
+        alias="AI_STUDIO_MAX_CHAT_MONTH_USD",
+        description="A sub-ceiling on /himonkey's share of max_month_usd, "
+        "enforced by runtime.budget.MonthlyBudgetGuard alongside the "
+        "all-kinds monthly cap. Exists so chat's traffic cadence (many "
+        "short, frequent sessions) cannot silently consume the budget "
+        "video/image also depend on -- once hit, new chat jobs stop being "
+        "claimed for the rest of the month while video/image keep running. "
+        "A starting guess (roughly a third of the default $45 effective GPU "
+        "budget), meant to be retuned from real usage, not a considered "
+        "number.",
     )
 
     ffmpeg_bin: str = Field(default="ffmpeg", alias="AI_STUDIO_FFMPEG_BIN")

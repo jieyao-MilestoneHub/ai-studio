@@ -598,6 +598,7 @@ def close_session(*, name: str = "ai-studio-window") -> list[str]:
 IMAGE_IDLE_MINUTES = 5
 VIDEO_IDLE_MINUTES = 10
 UNDERSTANDING_IDLE_MINUTES = 5
+CHAT_IDLE_MINUTES = 15
 """How long a quiet pod is kept after its last render, by what it rendered.
 
 Numbers differ because the reloads cost differently: Flux comes back into
@@ -610,6 +611,17 @@ request within the grace, times the reload it would save, beats the idle
 minutes -- and in a group chat the next message usually comes within five
 minutes or not for hours. The reaper log says how often a pod was closed and
 reopened within a few minutes, which is the number that tunes these.
+
+`CHAT_IDLE_MINUTES` is deliberately the longest grace, and for a different
+reason than the others: a `/himonkey` conversation's cadence is many short
+exchanges with ordinary pauses in between, and every reopen has a real fixed
+floor (`runtime.budget.MIN_SESSION_MINUTES` worth of billing) *and* consumes
+one of the day's `max_pod_opens_per_day` opens -- a ceiling that, once hit,
+blocks new video and image sessions too. A grace long enough to survive a
+conversation's ordinary pauses is both cheaper and safer for the rest of the
+service than one short enough to reopen repeatedly. `[speculative]`, same as
+`UNDERSTANDING_IDLE_MINUTES` -- retune from the reaper log once real chat
+traffic exists, not from this guess.
 """
 
 
@@ -618,6 +630,7 @@ def close_if_idle(
     image_idle_minutes: int = IMAGE_IDLE_MINUTES,
     video_idle_minutes: int = VIDEO_IDLE_MINUTES,
     understanding_idle_minutes: int = UNDERSTANDING_IDLE_MINUTES,
+    chat_idle_minutes: int = CHAT_IDLE_MINUTES,
     hold: bool = False,
     name: str = "ai-studio-window",
 ) -> str:
@@ -642,6 +655,7 @@ def close_if_idle(
         "image_understand": understanding_idle_minutes,
         "audio_understand": understanding_idle_minutes,
         "video_understand": understanding_idle_minutes,
+        "chat": chat_idle_minutes,
     }
     grace = overrides.get(str(state.get("last_media_kind") or ""), video_idle_minutes)
     if hold:
