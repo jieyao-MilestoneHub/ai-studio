@@ -188,7 +188,8 @@ dl_repo() {  # repo [exclude-glob ...] -- the whole repo, into the HF cache (HF_
   #
   # Exclude globs are supported but unused: the repos are kept complete
   # (spare checkpoint formats included, ~57GB) by decision on 2026-08-27,
-  # and the volume was sized to 250GB for it.
+  # and the volume was sized to 300GB for it (250GB hit `Disk quota
+  # exceeded` 📏 at 229GB of du, with ~28GB still to come plus xet scratch).
   printf '%s\n' "$*" >> /workspace/dl-logs/repos.list
   log "  queued $(basename "$1") (full repo, into HF_HOME cache, sequential${2:+, excluding: ${*:2}})"
 }

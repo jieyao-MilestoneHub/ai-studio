@@ -139,8 +139,10 @@ complete — the loaders only open one checkpoint format each, but the
 spare ones are kept by decision), and `/himonkey`'s gpt-oss-20b
 **41.3 GB** 📏 more, bringing a from-scratch download to **~238 GB**
 rather than the ~72.7–78.7 GB the arithmetic above was built on — which
-is why the `ai-studio-weights` volume was grown from 100 to 250 GB
-($17.50/month) on 2026-08-27. At that size the
+is why the `ai-studio-weights` volume was grown from 100 to 300 GB
+($21/month) on 2026-08-27: 250 GB hit `Disk quota exceeded` 📏 at 229 GB
+of `du` with gpt-oss-20b's `original/` and `metal/` still to come, and the
+xet downloader needs reconstruction scratch on top of the final size. At that size the
 break-even math above (redownload wins by ~60×) needs to be redone, not
 assumed to still hold — a persistent network volume becomes the
 better-justified default once these three models are in the mix, which is
