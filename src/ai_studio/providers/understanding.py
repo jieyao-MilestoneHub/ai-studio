@@ -22,7 +22,7 @@ from typing import Any
 
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import JobState, MediaKind
-from ai_studio.core.errors import ProviderJobFailed, ProviderSubmitError
+from ai_studio.core.errors import ProviderError, ProviderJobFailed, ProviderSubmitError
 from ai_studio.core.understanding_spec import (
     UnderstandingAsset,
     UnderstandingCapabilities,
@@ -135,7 +135,7 @@ class UnderstandingProvider:
     async def poll(self, job: UnderstandingJob) -> UnderstandingJob:
         now = time.time()
         payload = await self.client.poll_job(job.job_id)
-        state = str(payload.get("state") or "running")
+        state = str(payload.get("state") or "")
         if state == "completed":
             return job.with_state(
                 JobState.COMPLETED,
@@ -148,7 +148,13 @@ class UnderstandingProvider:
             )
         if state == "queued":
             return job.with_state(JobState.QUEUED, now=now)
-        return job.with_state(JobState.RUNNING, now=now)
+        if state == "running":
+            return job.with_state(JobState.RUNNING, now=now)
+        # Fail loudly: a state this client does not know is a wire-protocol
+        # drift against deploy/inference_server.py, not a job that is still
+        # running. Treating it as "running" would hang the job until the
+        # window deadline and hide the actual mismatch.
+        raise ProviderError(f"job {job.job_id}: unknown state {state!r} from the inference server")
 
     # ----------------------------------------------------------------- fetch
 

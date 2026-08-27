@@ -9,7 +9,7 @@ import pytest
 
 from ai_studio.core.chat_spec import ChatRequest
 from ai_studio.core.enums import JobState
-from ai_studio.core.errors import ProviderJobFailed
+from ai_studio.core.errors import ProviderError, ProviderJobFailed
 from ai_studio.inference.client import InferenceClient
 from ai_studio.providers.chat import ChatProvider, chat_capabilities
 
@@ -89,6 +89,24 @@ async def test_a_failed_backend_job_polls_to_failed() -> None:
     job = await provider.poll(job)
     assert job.state is JobState.FAILED
     assert job.error == "generation timed out"
+    await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_poll_state_raises_instead_of_hanging() -> None:
+    """A state string this client does not know is a wire-protocol drift
+    against deploy/inference_server.py; treating it as "running" would keep
+    the job alive until the window deadline and hide the mismatch."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/submit":
+            return httpx.Response(200, json={"job_id": "job-1"})
+        return httpx.Response(200, json={"state": "paused"})
+
+    provider = _provider(handler)
+    job = await provider.submit(ChatRequest(shot_id="job1", text="hello"))
+    with pytest.raises(ProviderError, match="unknown state 'paused'"):
+        await provider.poll(job)
     await provider.aclose()
 
 

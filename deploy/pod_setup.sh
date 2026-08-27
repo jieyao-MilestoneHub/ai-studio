@@ -141,10 +141,10 @@ python3 -c 'import hf_transfer' 2>/dev/null ||
 export HF_XET_HIGH_PERFORMANCE=1 HF_HUB_ENABLE_HF_TRANSFER=1 HF_HOME=/workspace/.hf
 command -v hf >/dev/null || pip install -q --break-system-packages -U huggingface_hub
 
-# ~142GB of weights against whatever /workspace actually has (52GB H3 + 17GB
+# ~158GB of weights against whatever /workspace actually has (52GB H3 + 17GB
 # Flux + ~73GB for the three understanding models, moondream3 + the
-# full-precision Qwen3-Omni-Captioner + Tarsier2 -- see the `dl_repo` calls
-# below). Caught here, loudly, before it is caught 30 minutes later as two
+# full-precision Qwen3-Omni-Captioner + Tarsier2, + ~16GB for gpt-oss-20b's
+# native-MXFP4 repo -- see the `dl_repo` calls below). Caught here, loudly, before it is caught 30 minutes later as two
 # silently-missing safetensors files: a download that dies mid-transfer
 # because the disk filled exits same as a download that finished, and
 # `pgrep` alone cannot tell those apart. Observed live: this volume can come
@@ -155,9 +155,9 @@ command -v hf >/dev/null || pip install -q --break-system-packages -U huggingfac
 # free, and must not refuse to finish what it started.
 AVAIL_KB="$(df -k /workspace | awk 'NR==2{print $4}')"
 HAVE_KB="$(du -sk "$M" 2>/dev/null | cut -f1)"
-NEED_KB=$((142 * 1024 * 1024 - ${HAVE_KB:-0}))
+NEED_KB=$((158 * 1024 * 1024 - ${HAVE_KB:-0}))
 [ "$AVAIL_KB" -ge "$NEED_KB" ] || die \
-  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~$((NEED_KB / 1048576))GB more headroom (~52GB H3 + ~17GB Flux + ~73GB understanding models, $((${HAVE_KB:-0} / 1048576))GB already present)"
+  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~$((NEED_KB / 1048576))GB more headroom (~52GB H3 + ~17GB Flux + ~73GB understanding models + ~16GB gpt-oss-20b, $((${HAVE_KB:-0} / 1048576))GB already present)"
 
 DL_PIDS=()
 dl() {  # repo file destdir
@@ -211,6 +211,14 @@ dl Comfy-Org/z_image split_files/vae/ae.safetensors "$M/vae"
 dl_repo moondream/moondream3-preview
 dl_repo Qwen/Qwen3-Omni-30B-A3B-Captioner
 dl_repo omni-research/Tarsier2-7b-0115
+# /himonkey's gpt-oss-20b, the fourth backend of inference_server.py. Its
+# repo is the native-MXFP4 checkpoint (~16GB `[reported]`), loaded as-is by
+# `GptOssChatBackend.load()` from HF_HOME. Staged here for the same reason
+# the three above are: a `from_pretrained` that has to pull 16GB from the
+# Hub inside the first /himonkey request's background thread would surface
+# as a 10-minute silent stall (or an ENOSPC nobody sees) rather than as a
+# failed setup step -- exactly what the headroom check above exists for.
+dl_repo openai/gpt-oss-20b
 
 # ── 4. wait for the weights, then restart ComfyUI ─────────────────────────
 while pgrep -f 'hf download' >/dev/null; do

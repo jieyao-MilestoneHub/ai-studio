@@ -21,12 +21,13 @@ derived from
 (MIT). A FastAPI service + LINE bot lets a group chat trigger any of them
 (`/影片` for video, `/圖片` for image, photo then `/圖影` / `/圖圖` for
 image-to-video / image-to-image, photo/audio/video then `/說圖` / `/說音` /
-`/說影` to describe it; one spelling each, no aliases) — see
+`/說影` to describe it, `/himonkey` for plain-text chat via **gpt-oss-20b**;
+one spelling each, no aliases) — see
 `docs/line-bot.md`.
 
 Currently built: core model, format policy, H3 prompt builder, Flux prompt
 builder, ComfyUI client, the pod-side understanding-model server and its
-client, stub providers, pod lifecycle, CLI, FastAPI + LINE bot (six triggers,
+client, stub providers, pod lifecycle, CLI, FastAPI + LINE bot (eight triggers,
 queue, status pages, monthly budget guard). **Not built:** the editing
 grammar implementation, gate rules, planner, render. The grammar is
 specified in `docs/editing-grammar.md` and waiting. The three understanding

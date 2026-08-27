@@ -31,7 +31,7 @@ MoE expert weights — not something this project chooses or configures):
 | GPU | shared with H3/Flux/moondream3/Qwen3-Omni-Captioner/Tarsier2 — RTX 4090 24GB minimum | one pod, one card; see the GPU hand-off in [schedule.md](schedule.md) |
 | VRAM headroom | `[speculative]` ~8GB against a 24GB ceiling when nothing else is resident | irrelevant to whether it can ever coexist with H3: H3 alone measures 22.1-22.8GB peak on the real RTX 4090 (`pipeline/convert_worker.py`), so gpt-oss-20b can **never** be simultaneously resident with H3 regardless of its own footprint — it evicts/is-evicted exactly like the three understanding models already do |
 | CUDA | same pod, same template as H3 | `deploy/inference_server.py` runs inside ComfyUI's own `.venv-cu128` |
-| Disk | full repo, into the standard HF cache | see `deploy/pod_setup.sh`'s disk-headroom check |
+| Disk | full repo (~16GB `[reported]`), into the standard HF cache, pre-staged by `deploy/pod_setup.sh`'s `dl_repo openai/gpt-oss-20b` | counted in that script's ~158GB disk-headroom check, so a short volume fails at setup rather than inside the first `/himonkey` request |
 | Context window | 128k `[reported]` | far more than one `/himonkey` turn plus its rolling history (`JobQueue.recent_chat_turns()`, capped at the last 10 turns) will ever use; token budget is not the constraint on history length, billed GPU-seconds and reply latency are |
 
 ## The two unresolved things, and how they get checked

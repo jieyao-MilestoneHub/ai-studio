@@ -40,6 +40,26 @@ def test_unquoted_ignores_printf_escapes() -> None:
     assert chr(92) + "n" in _unquoted(r"python3 -c 'x' 2>/dev/null \n  || true")
 
 
+def test_pod_setup_stages_every_inference_server_backend() -> None:
+    """Every model `deploy/inference_server.py` can load must be downloaded by
+    pod_setup.sh, and the headroom check must have grown to hold it.
+
+    gpt-oss-20b shipped without a `dl_repo` line: `from_pretrained` would
+    have pulled ~16GB from the Hub inside the first /himonkey request's
+    background thread -- a 10-minute silent stall, or an ENOSPC nobody sees,
+    instead of a failed setup step.
+    """
+    setup = (REPO / "deploy" / "pod_setup.sh").read_text(encoding="utf-8")
+    for repo in (
+        "moondream/moondream3-preview",
+        "Qwen/Qwen3-Omni-30B-A3B-Captioner",
+        "omni-research/Tarsier2-7b-0115",
+        "openai/gpt-oss-20b",
+    ):
+        assert f"dl_repo {repo}" in setup, f"pod_setup.sh does not stage {repo}"
+    assert "NEED_KB=$((158 * 1024 * 1024" in setup, "headroom check not sized for all four backends"
+
+
 def test_there_are_deploy_scripts_to_check() -> None:
     """Guard against this whole file silently passing on an empty list."""
     assert SCRIPTS, "expected deploy/*.sh to exist"

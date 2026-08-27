@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from ai_studio.core.enums import JobState, MediaKind
-from ai_studio.core.errors import ProviderJobFailed
+from ai_studio.core.errors import ProviderError, ProviderJobFailed
 from ai_studio.core.understanding_spec import UnderstandingJob, UnderstandingRequest
 from ai_studio.inference.client import InferenceClient
 from ai_studio.providers.stub import StubUnderstandingProvider
@@ -173,6 +173,26 @@ async def test_stub_also_rejects_a_prompt_for_audio(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError):
         await provider.submit(request)
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_poll_state_raises_instead_of_hanging(tmp_path: Path) -> None:
+    source = tmp_path / "clip.m4a"
+    source.write_bytes(b"x")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/submit":
+            return httpx.Response(200, json={"job_id": "job-1"})
+        return httpx.Response(200, json={"state": "paused"})
+
+    provider = _provider(MediaKind.AUDIO_UNDERSTAND, handler)
+    request = UnderstandingRequest(
+        shot_id="job1", modality=MediaKind.AUDIO_UNDERSTAND, input_media_path=str(source)
+    )
+    job = await provider.submit(request)
+    with pytest.raises(ProviderError, match="unknown state 'paused'"):
+        await provider.poll(job)
+    await provider.aclose()
 
 
 @pytest.mark.asyncio

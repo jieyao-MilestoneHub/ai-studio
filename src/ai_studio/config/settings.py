@@ -175,8 +175,11 @@ class Settings(BaseSettings):
         ge=0,
         alias="AI_STUDIO_MAX_CHAT_MONTH_USD",
         description="A sub-ceiling on /himonkey's share of max_month_usd, "
-        "enforced by runtime.budget.MonthlyBudgetGuard alongside the "
-        "all-kinds monthly cap. Exists so chat's traffic cadence (many "
+        "enforced by pipeline.drain.render_chat against "
+        "pipeline.queue.chat_spent_this_month_usd() before it submits -- "
+        "a separate mechanism from runtime.budget.MonthlyBudgetGuard, "
+        "which only sees whole sessions and knows nothing about chat; the "
+        "all-kinds monthly cap still applies on top. Exists so chat's traffic cadence (many "
         "short, frequent sessions) cannot silently consume the budget "
         "video/image also depend on -- once hit, new chat jobs stop being "
         "claimed for the rest of the month while video/image keep running. "

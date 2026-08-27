@@ -111,6 +111,37 @@ against this project's use** the way MiniMax H3's and Flux's have. See
 `docs/model-moondream3.md`, `docs/model-qwen3-omni-captioner.md`,
 `docs/model-tarsier2.md` for what is (and is not yet) verified.
 
+## An eighth trigger: chat
+
+| trigger | produces | model |
+|---|---|---|
+| `/himonkey <想說的話>` | a plain-text reply | gpt-oss-20b, via `deploy/inference_server.py` |
+
+`/himonkey` with no text is refused with a usage line, like the four
+generation triggers. There is no media to pair, so nothing is cached or
+claimed. The reply carries the sender's last 10 turns as context
+(`JobQueue.recent_chat_turns()`) — a rolling window, not a transcript.
+
+**It has its own caps, not the render ones.** Chat messages do not count
+against `AI_STUDIO_MAX_JOBS_PER_USER_PER_DAY`; they have
+`AI_STUDIO_MAX_CHAT_MESSAGES_PER_USER_PER_DAY` (default 50) instead, because a
+normal conversation's cadence would otherwise exhaust a user's whole
+video/image allowance. Spend is fenced by `AI_STUDIO_MAX_CHAT_MONTH_USD`
+(default $15) — checked in `pipeline.drain.render_chat` before any submit,
+on top of the all-kinds monthly cap, so chat traffic cannot quietly eat the
+budget video and image depend on. Both defaults are starting guesses, not
+considered numbers; see issue #27.
+
+**Same pod, same one-model-at-a-time rule** as the understanding triggers:
+gpt-oss-20b is the fourth backend behind the inference server's one model
+slot, evicted by the next generation job and evicting ComfyUI's checkpoint
+in turn. A pod whose last job was chat is held `CHAT_IDLE_MINUTES` (15)
+before the reaper closes it — see [schedule.md](schedule.md).
+
+⚠️ gpt-oss-20b's licence is Apache 2.0 with no geographic restriction
+(`docs/model-gpt-oss-20b.md`) — the one model here whose licence *is*
+settled — but nothing about it has run on real hardware yet.
+
 ## Why it is shaped this way
 
 Three LINE rules decide the whole architecture.
