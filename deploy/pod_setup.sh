@@ -109,7 +109,16 @@ log "installing the understanding-model stack (transformers/accelerate/bitsandby
 # trust_remote_code modeling code needs -- check `pip check` output on the
 # first real deployment, before trusting this venv serves both processes.
 ./.venv-cu128/bin/pip install -q --upgrade transformers accelerate bitsandbytes \
-  soundfile pillow fastapi 'uvicorn[standard]' 2>&1 | grep -viE 'warning|notice' | tail -3
+  soundfile pillow fastapi 'uvicorn[standard]' python-multipart 2>&1 \
+  | grep -viE 'warning|notice' | tail -3
+# python-multipart: FastAPI's File()/Form()/UploadFile support is an optional
+# feature dependency, not pulled in by fastapi or uvicorn[standard] on their
+# own -- without it, inference_server.py's `@app.post("/submit")` route (File/
+# Form parameters) raises at import time, before the process ever binds a
+# port. Confirmed by reproducing the identical `RuntimeError: Form data
+# requires "python-multipart" to be installed` locally; this line was missing
+# it before /himonkey's chat modality made the /submit route's Form/File
+# fields something a test actually tried to import and exercise.
 
 log "installing the turbo node pack"
 cd custom_nodes || die "no custom_nodes"

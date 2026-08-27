@@ -43,6 +43,13 @@ dev = [
     # Self-referencing the extra rather than repeating the pins keeps the two in
     # step; `line` stays optional for runtime installs that skip the web stack.
     "ai-studio[line]",
+    # `deploy/inference_server.py`'s /submit route uses File()/Form()/UploadFile,
+    # which FastAPI only supports with python-multipart installed -- without it,
+    # even importing the module (to unit-test its slot-safety logic) raises at
+    # the `@app.post("/submit")` decorator, before any test runs. Not otherwise
+    # a dependency of this package; the pod installs its own copy separately
+    # (see deploy/pod_setup.sh) since inference_server.py is standalone.
+    "python-multipart>=0.0.9",
 ]
 
 [build-system]
