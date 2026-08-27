@@ -273,11 +273,6 @@ dl_repo omni-research/Tarsier2-7b-0115
 # as a 10-minute silent stall (or an ENOSPC nobody sees) rather than as a
 # failed setup step -- exactly what the headroom check above exists for.
 dl_repo openai/gpt-oss-20b
-# The MXFP4 Triton kernels `kernels` fetches from the Hub at load time. The
-# server runs HF-offline, so without this the first /himonkey fails with
-# "Version 1 of 'kernels-community/gpt-oss-triton-kernels' is not available
-# in the local cache" (observed live 2026-08-27). Small, same cache.
-dl_repo kernels-community/gpt-oss-triton-kernels
 dl_repos_start
 
 # ── 4. wait for the weights, then restart ComfyUI ─────────────────────────
@@ -412,16 +407,31 @@ sys.exit(1 if missing else 0)
 # Started fresh every pod open (not gated by FAST_PATH): the process itself
 # does not persist across a pod restart even when its pip packages and
 # downloaded weights do.
+# The MXFP4 Triton kernels that `kernels` fetches for gpt-oss-20b at load
+# time. The server runs HF-offline, and `kernels` resolves its own version
+# tags against the Hub -- a plain `hf download` of the repo is not enough
+# ("Version 1 of 'kernels-community/gpt-oss-triton-kernels' is not
+# available in the local cache", observed live 2026-08-27 even with the
+# snapshot present). Let it fetch once, online, into the same HF_HOME.
+log "caching gpt-oss MXFP4 kernels"
+HF_HOME=/workspace/.hf "$PY" -c '
+from kernels import get_kernel
+get_kernel("kernels-community/gpt-oss-triton-kernels", version=1)' 2>&1 | tail -1 \
+  || die "could not cache kernels-community/gpt-oss-triton-kernels"
+
 log "starting the understanding-model server on :8189"
 pkill -f 'inference_server.py'; sleep 1
-# HF_HUB_OFFLINE=1: every weight this server can load is staged above, so it
-# must never touch the Hub. Observed live 2026-08-27, twice, when it was
-# restarted by hand without this script's environment: without HF_HOME it
+# The server inherits HF_HOME (weights) and HF_TOKEN (the gated Tarsier2
+# repo) from this script's environment. Both are load-bearing -- observed
+# live 2026-08-27 when it was restarted by hand without them: no HF_HOME
 # re-downloaded 60GB of Qwen3-Omni into the 20GB container disk ("No space
-# left on device"); without HF_TOKEN a load of the gated Tarsier2 died
-# probing chat_template.jinja on the Hub. Offline, neither can happen, and
-# a missing file is a loud local error instead.
-HF_HUB_OFFLINE=1 HF_HOME=/workspace/.hf \
+# left on device"); no HF_TOKEN died probing Tarsier2's chat_template.jinja.
+# NOT HF_HUB_OFFLINE=1, though it was tried: `kernels` 0.16 refuses to
+# resolve gpt-oss's MXFP4 kernel version offline even when it is cached
+# ("Version 1 of 'kernels-community/gpt-oss-triton-kernels' is not
+# available in the local cache and Hugging Face Hub is in offline mode").
+# If you restart this server by hand, restart it with the same three.
+HF_HOME=/workspace/.hf \
   nohup "$PY" /workspace/inference_server.py > /workspace/inference.log 2>&1 &
 
 for i in $(seq 1 30); do

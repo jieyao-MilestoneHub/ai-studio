@@ -55,10 +55,11 @@ def test_pod_setup_stages_every_inference_server_backend() -> None:
         "Qwen/Qwen3-Omni-30B-A3B-Captioner",
         "omni-research/Tarsier2-7b-0115",
         "openai/gpt-oss-20b",
-        "kernels-community/gpt-oss-triton-kernels",
     ):
         assert f"dl_repo {repo}" in setup, f"pod_setup.sh does not stage {repo}"
     assert "NEED_KB=$((238 * 1024 * 1024" in setup, "headroom check not sized for all four backends"
+    # The MXFP4 kernels are resolved by `kernels` itself, not hf download.
+    assert 'get_kernel("kernels-community/gpt-oss-triton-kernels", version=1)' in setup
 
 
 def test_pod_setup_downloads_whole_repos_sequentially_without_xet_high_performance() -> None:
