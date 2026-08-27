@@ -162,7 +162,7 @@ class ConversionError(Exception):
 # --------------------------------------------------------------------- parsing
 
 
-def _extract_json(raw: str) -> dict[str, Any]:
+def extract_json(raw: str) -> dict[str, Any]:
     """Pull the JSON object out of a model reply.
 
     Models add code fences and commentary however firmly you ask them not to,
@@ -182,7 +182,7 @@ def _extract_json(raw: str) -> dict[str, Any]:
     return payload
 
 
-def _camera(spec: Any) -> str | None:
+def camera_from_spec(spec: Any) -> str | None:
     """Render a camera block into prose, or None if it is unusable.
 
     An unknown motion word is dropped rather than raising: losing the camera
@@ -244,7 +244,7 @@ def build_prompt(
                 cut_at_s=None if index == 1 else float(cut) if cut is not None else None,
                 style=str(spec.get("style") or "Live-action, cinematic") if index == 1 else None,
                 description=description,
-                camera=_camera(spec.get("camera")),
+                camera=camera_from_spec(spec.get("camera")),
                 dialogue=_dialogue(spec.get("dialogue")),
             )
         )
@@ -329,7 +329,7 @@ async def convert(
     for attempt in range(attempts):
         try:
             reply = await client.complete(SYSTEM_PROMPT, user)
-            prompt = build_prompt(_extract_json(reply), duration_s, mode=mode)
+            prompt = build_prompt(extract_json(reply), duration_s, mode=mode)
             return prompt, "llm" if attempt == 0 else "llm-retry"
         except (ConversionError, ValidationError) as exc:
             last_error = str(exc)

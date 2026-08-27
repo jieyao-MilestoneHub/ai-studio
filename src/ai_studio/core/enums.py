@@ -94,14 +94,30 @@ class MediaKind(str, Enum):
     need it join with an explicit `or job_kind is MediaKind.CHAT` rather than
     being folded into this property."""
 
+    DRAMA = "drama"
+    """/短劇: a ~60 s six-shot story with one recurring character. Not a
+    single provider call: `pipeline.drama.render_drama` drives the IMAGE
+    provider (character sheet, keyframes) and then the VIDEO provider (six
+    image-to-video clips) and concatenates. It sits on ComfyUI's side of the
+    GPU hand-off for the whole run -- see `is_generation`."""
+
     @property
     def is_understanding(self) -> bool:
         return self in _UNDERSTANDING_KINDS
+
+    @property
+    def is_generation(self) -> bool:
+        """ComfyUI-served kinds: they share one checkpoint slot with each
+        other and are evicted as a block by `pipeline.drain.make_room_for`
+        when an understanding/chat job needs the card. DRAMA is here because
+        every GPU second it spends is a Flux or an H3 job."""
+        return self in _GENERATION_KINDS
 
 
 _UNDERSTANDING_KINDS = frozenset(
     {MediaKind.IMAGE_UNDERSTAND, MediaKind.AUDIO_UNDERSTAND, MediaKind.VIDEO_UNDERSTAND}
 )
+_GENERATION_KINDS = frozenset({MediaKind.VIDEO, MediaKind.IMAGE, MediaKind.DRAMA})
 
 
 class JobState(str, Enum):

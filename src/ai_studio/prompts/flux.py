@@ -37,7 +37,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from ai_studio.prompts.convert import ConversionError, LlmClient, _extract_json
+from ai_studio.prompts.convert import ConversionError, LlmClient, extract_json
 
 DEFAULT_MAX_CHARS = 2000
 """Ceiling on the string `render()` produces — **characters, not tokens.**
@@ -189,7 +189,7 @@ async def convert(
     for attempt in range(attempts):
         try:
             reply = await client.complete(SYSTEM_PROMPT, user, max_tokens=400)
-            payload: dict[str, Any] = _extract_json(reply)
+            payload: dict[str, Any] = extract_json(reply)
             translated = _Translated(**payload)
             return (
                 build_prompt(translated.prompt, max_chars=max_chars),
