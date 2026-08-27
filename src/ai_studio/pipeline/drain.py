@@ -36,7 +36,7 @@ from typing import Any, Protocol
 from ai_studio.config.settings import get_settings
 from ai_studio.core.chat_spec import ChatRequest
 from ai_studio.core.enums import GenMode, MediaKind
-from ai_studio.core.errors import AIStudioError, ProviderError
+from ai_studio.core.errors import AIStudioError, DramaResume, ProviderError
 from ai_studio.core.image_provider_spec import ImageRequest
 from ai_studio.core.provider_spec import ClipRequest
 from ai_studio.core.understanding_spec import UnderstandingRequest
@@ -228,6 +228,12 @@ async def drain_window(
                 result = await render_understanding(job, provider, window_end, poll_interval_s)
             else:
                 raise AIStudioError(f"no renderer for media kind {job.media_kind!r}")
+        except DramaResume as exc:
+            # A designed stop at the lease boundary, not a failure: requeue
+            # with the attempt handed back (see worker._run_one).
+            queue.fail(job.id, f"resume: {exc}", requeue=True, uncounted=True)
+            report.requeued += 1
+            break  # the window is ending; nothing else will fit either
         except ProviderError as exc:
             # The backend's problem, so keep the request — but only while it has
             # attempts left, or requeue becomes an infinite loop.

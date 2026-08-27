@@ -36,7 +36,7 @@ from typing import Any, Protocol
 
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import MediaKind
-from ai_studio.core.errors import AIStudioError, ProviderError
+from ai_studio.core.errors import AIStudioError, DramaResume, ProviderError
 from ai_studio.pipeline.convert_worker import convert_job, needs_llm
 from ai_studio.pipeline.drain import (
     MAX_ATTEMPTS,
@@ -369,6 +369,16 @@ async def _run_one(
             result = await render_understanding(job, provider, deadline, poll_interval_s)
         else:
             raise AIStudioError(f"no renderer for media kind {job.media_kind!r}")
+    except DramaResume as exc:
+        # Not a failure: the drama stopped itself at the lease boundary with
+        # its state file intact. Requeue and hand the attempt back -- three
+        # honest short windows must not read as three provider failures and
+        # orphan the clips already paid for.
+        queue.fail(job.id, f"resume: {exc}", requeue=True, uncounted=True)
+        report.requeued += 1
+        _log.info("job %d paused for the next window: %s", job.id, exc)
+        report.last_action = "resumed-later"
+        return "resumed-later"
     except ProviderError as exc:
         if job.attempts >= MAX_ATTEMPTS:
             queue.fail(job.id, f"provider failed {job.attempts}x: {exc}")

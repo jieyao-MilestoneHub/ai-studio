@@ -44,7 +44,7 @@ from ai_studio import media
 from ai_studio.config.settings import get_settings
 from ai_studio.core.drama_spec import ArtifactRecord, DramaState, Screenplay
 from ai_studio.core.enums import GenMode, MediaKind
-from ai_studio.core.errors import AIStudioError, CostCeilingExceeded, ProviderError
+from ai_studio.core.errors import AIStudioError, CostCeilingExceeded, DramaResume, ProviderError
 from ai_studio.core.image_provider_spec import ImageRequest
 from ai_studio.core.provider_spec import ClipRequest
 from ai_studio.pipeline.convert_worker import DEFAULT_DURATION_S, snap_frames
@@ -277,7 +277,7 @@ async def _await_terminal(provider: Any, job: Any, deadline: datetime, poll_s: f
     while not job.is_terminal:
         if datetime.now(timezone.utc) >= deadline:
             await provider.cancel(job)
-            raise ProviderError(f"window closed while a drama {what} was rendering")
+            raise DramaResume(f"window closed while a drama {what} was rendering; resuming next window")
         await asyncio.sleep(poll_s)
         job = await provider.poll(job)
     if not job.state.is_success:
@@ -289,11 +289,12 @@ async def _await_terminal(provider: Any, job: Any, deadline: datetime, poll_s: f
 
 
 def _require_time(deadline: datetime, kind: str) -> None:
-    """Refuse to *start* a GPU job the lease would cut short. `ProviderError`
-    so the job is requeued -- with its state file intact -- not failed."""
+    """Refuse to *start* a GPU job the lease would cut short. `DramaResume`
+    so the job is requeued -- with its state file intact and its attempt
+    handed back -- not failed."""
     remaining = (deadline - datetime.now(timezone.utc)).total_seconds()
     if remaining < STAGE_RESERVE_S[kind]:
-        raise ProviderError(
+        raise DramaResume(
             f"lease ends in {remaining:.0f}s, under the {STAGE_RESERVE_S[kind]:.0f}s a "
             f"drama {kind} needs; resuming next window"
         )

@@ -1042,3 +1042,55 @@ async def test_a_parsed_drama_is_dispatched_to_render_drama(queue, tmp_path: Pat
     done = queue.by_id(job.id)
     assert done.state is JobState.DONE and done.output_path.endswith(".mp4")
     assert host.delivered[-1][0] == job.id
+
+
+@pytest.mark.asyncio
+async def test_a_drama_that_pauses_at_the_lease_boundary_never_burns_an_attempt(
+    queue, tmp_path: Path, monkeypatch
+) -> None:
+    """The cost-guard finding on PR #31: a drama's *designed* resume raised
+    a plain ProviderError, so three honest short windows counted as three
+    provider failures and the job was failed for good -- with its paid
+    stills and clips orphaned on disk and a daily drama slot burned. A
+    DramaResume must requeue with the attempt handed back, every time."""
+    from ai_studio.core.errors import DramaResume
+    from ai_studio.pipeline import worker as worker_mod
+    from ai_studio.pipeline.drain import MAX_ATTEMPTS
+
+    async def paused(job: Any, providers: Any, **kw: Any) -> Path:
+        raise DramaResume("lease ends in 100s, under the 360s a drama video needs")
+
+    monkeypatch.setattr(worker_mod, "render_drama", paused)
+    job, _ = queue.enqueue("evt-drama-pause", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+    queue.set_parsed(job.id, {"_built_by": "llm", "_rendered": "t", "screenplay": {"stub": True}, "shots": []})
+    host = FakeHost()
+
+    for _ in range(2 * MAX_ATTEMPTS):
+        action, report = await _tick(queue, host, tmp_path)
+        assert action == "resumed-later"
+        assert report.requeued == 1 and report.failed == 0
+
+    row = queue.by_id(job.id)
+    assert row.state is JobState.PARSED, "still claimable next window"
+    assert row.attempts == 0, "a designed stop hands its attempt back"
+    assert host.delivered == [], "the group is not told about a pause"
+
+
+@pytest.mark.asyncio
+async def test_a_dramas_real_provider_failure_still_counts_toward_max_attempts(
+    queue, tmp_path: Path, monkeypatch
+) -> None:
+    from ai_studio.pipeline import worker as worker_mod
+    from ai_studio.pipeline.drain import MAX_ATTEMPTS
+
+    async def broken(job: Any, providers: Any, **kw: Any) -> Path:
+        raise ProviderError("ComfyUI returned 500")
+
+    monkeypatch.setattr(worker_mod, "render_drama", broken)
+    job, _ = queue.enqueue("evt-drama-broken", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+    queue.set_parsed(job.id, {"_built_by": "llm", "_rendered": "t", "screenplay": {"stub": True}, "shots": []})
+    host = FakeHost()
+
+    actions = [(await _tick(queue, host, tmp_path))[0] for _ in range(MAX_ATTEMPTS)]
+    assert actions == ["requeued"] * (MAX_ATTEMPTS - 1) + ["failed"]
+    assert queue.by_id(job.id).state is JobState.FAILED

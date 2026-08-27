@@ -446,7 +446,9 @@ class JobQueue:
         row = cur.fetchone()
         return _row_to_job(row) if row else None
 
-    def fail(self, job_id: int, error: str, *, requeue: bool = False) -> Job | None:
+    def fail(
+        self, job_id: int, error: str, *, requeue: bool = False, uncounted: bool = False
+    ) -> Job | None:
         """Mark a job failed, or put it back for another attempt.
 
         `requeue` returns it to `parsed` — used when the failure was the
@@ -454,8 +456,11 @@ class JobQueue:
         so the request survives to the next window instead of being lost.
         """
         state = JobState.PARSED if requeue else JobState.FAILED
+        # `uncounted`: a designed stop (a drama at the lease boundary) gives
+        # its attempt back, so MAX_ATTEMPTS only ever counts real failures.
+        attempts_sql = ", attempts=MAX(attempts-1, 0)" if (requeue and uncounted) else ""
         cur = self._conn.execute(
-            "UPDATE jobs SET state=?, error=?, finished_at=? WHERE id=? RETURNING *",
+            f"UPDATE jobs SET state=?, error=?, finished_at=?{attempts_sql} WHERE id=? RETURNING *",
             (state.value, error[:2000], None if requeue else time.time(), job_id),
         )
         row = cur.fetchone()
