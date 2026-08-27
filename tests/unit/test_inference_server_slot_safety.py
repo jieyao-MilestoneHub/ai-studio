@@ -278,3 +278,14 @@ async def test_a_slow_load_does_not_freeze_the_event_loop(monkeypatch) -> None:
         beat.cancel()
     # A frozen loop would have let the heartbeat run ~0 times during the load.
     assert ticks >= 5, f"event loop starved during load ({ticks} ticks)"
+
+
+def test_final_channel_cuts_at_return_and_survives_stripped_special_tokens() -> None:
+    """📏 Shapes from the first real gpt-oss-20b generation (2026-08-27)."""
+    raw = (
+        "<|channel|>analysis<|message|>User wants one sentence.<|end|>"
+        "<|start|>assistant<|channel|>final<|message|>我是 AI 語言助手。<|return|>"
+    )
+    assert srv._final_channel(raw) == "我是 AI 語言助手。"
+    stripped = "analysisUser wants one sentence.assistantfinal我是 AI 語言助手。"
+    assert srv._final_channel(stripped) == "我是 AI 語言助手。"

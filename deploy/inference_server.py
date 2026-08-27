@@ -346,24 +346,35 @@ class GptOssChatBackend:
         ).to("cuda")
         output_ids = self._model.generate(**inputs, max_new_tokens=self.MAX_NEW_TOKENS)
         prompt_len = inputs["input_ids"].shape[-1]
-        decoded = self._tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
+        # Keep the special tokens: harmony's channel markers ARE special
+        # tokens, and with skip_special_tokens=True the decode came back as
+        # "analysis<thinking>assistantfinal<reply>" -- the leak _final_channel
+        # exists to prevent (📏 first real generation, 2026-08-27).
+        decoded = self._tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=False)
         return _final_channel(decoded)
 
 
 def _final_channel(text: str) -> str:
     """Pull only harmony's "final" channel out of a raw gpt-oss-20b decode.
 
-    `[speculative]`: the exact channel-tag syntax has not been verified
-    against a real generation on this hardware yet -- a best-effort reading
-    of the published format, to be corrected against real output before the
-    first deployment. Falls back to the whole decoded text if no channel
-    marker is found rather than returning nothing -- a reply that leaked a
-    thinking trace is a worse failure than skipped channel-splitting, but
-    returning nothing at all is worse still.
+    📏 Verified against a real generation on the RTX 4090 (2026-08-27): the
+    raw decode is `<|channel|>analysis<|message|>…<|end|><|start|>assistant
+    <|channel|>final<|message|>…<|return|>` -- the final channel closes with
+    `<|return|>` (end of turn), not `<|end|>`, so both are cut on. With the
+    special tokens stripped the same text reads "analysis…assistantfinal…",
+    which the second branch handles so a tokenizer change cannot leak the
+    thinking trace. Falls back to the whole text only when neither shape is
+    present -- returning nothing at all would be worse still.
     """
     marker = "<|channel|>final<|message|>"
     if marker in text:
-        return text.split(marker, 1)[1].split("<|end|>", 1)[0].strip()
+        tail = text.split(marker, 1)[1]
+        for stop in ("<|return|>", "<|end|>", "<|call|>"):
+            tail = tail.split(stop, 1)[0]
+        return tail.strip()
+    stripped = "assistantfinal"
+    if stripped in text:
+        return text.rsplit(stripped, 1)[1].strip()
     return text.strip()
 
 
