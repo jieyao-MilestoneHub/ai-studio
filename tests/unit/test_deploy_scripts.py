@@ -40,6 +40,40 @@ def test_unquoted_ignores_printf_escapes() -> None:
     assert chr(92) + "n" in _unquoted(r"python3 -c 'x' 2>/dev/null \n  || true")
 
 
+def test_pod_setup_stages_every_inference_server_backend() -> None:
+    """Every model `deploy/inference_server.py` can load must be downloaded by
+    pod_setup.sh, and the headroom check must have grown to hold it.
+
+    gpt-oss-20b shipped without a `dl_repo` line: `from_pretrained` would
+    have pulled ~16GB from the Hub inside the first /himonkey request's
+    background thread -- a 10-minute silent stall, or an ENOSPC nobody sees,
+    instead of a failed setup step.
+    """
+    setup = (REPO / "deploy" / "pod_setup.sh").read_text(encoding="utf-8")
+    for repo in (
+        "moondream/moondream3-preview",
+        "Qwen/Qwen2-Audio-7B-Instruct",
+        "Qwen/Qwen2.5-VL-7B-Instruct",
+        "openai/gpt-oss-20b",
+    ):
+        assert f"dl_repo {repo}" in setup, f"pod_setup.sh does not stage {repo}"
+    assert "NEED_KB=$((192 * 1024 * 1024" in setup, "headroom check not sized for all four backends"
+    # The MXFP4 kernels are resolved by `kernels` itself, not hf download.
+    assert 'get_kernel("kernels-community/gpt-oss-triton-kernels", version=1)' in setup
+
+
+def test_pod_setup_downloads_whole_repos_sequentially_without_xet_high_performance() -> None:
+    """The container's cgroup caps RAM at 62GB; four parallel repo downloads
+    in xet high-performance mode tripped the OOM killer (2026-08-27). Repos
+    must be queued and drained one at a time with that mode unset."""
+    setup = (REPO / "deploy" / "pod_setup.sh").read_text(encoding="utf-8")
+    assert "env -u HF_XET_HIGH_PERFORMANCE" in setup
+    assert "\ndl_repos_start\n" in setup, "the repo chain is never started"
+    assert setup.index("dl_repo openai/gpt-oss-20b") < setup.index("\ndl_repos_start\n")
+    assert "repos.failed" in setup, "a failed repo must be named, not hidden behind the chain's pid"
+    assert "NEED_KB=$((192 * 1024 * 1024" in setup
+
+
 def test_there_are_deploy_scripts_to_check() -> None:
     """Guard against this whole file silently passing on an empty list."""
     assert SCRIPTS, "expected deploy/*.sh to exist"
@@ -168,10 +202,14 @@ def test_the_advertised_download_size_includes_the_lora() -> None:
     """The log line is what an operator watches to know whether a stall is
     normal. It was ~51GB before this LoRA's 0.69GB was added, then ~52GB
     before the Flux base model's ~17GB was added, then ~73GB more for the
-    three understanding models."""
+    three understanding models -- then ~82GB once two of them were swapped
+    for 7B models that fit (kept complete), plus ~41GB for gpt-oss-20b."""
     body = POD_SETUP.read_text(encoding="utf-8")
 
-    assert "starting weight downloads (~52GB H3 + ~17GB Flux + ~73GB understanding models)" in body
+    assert (
+        "starting weight downloads (~52GB H3 + ~17GB Flux + ~82GB understanding models "
+        "+ ~41GB gpt-oss-20b)"
+    ) in body
 
 
 # ------------------------------------------------- the ComfyUI flag probe
@@ -425,3 +463,29 @@ def test_a_missed_close_does_not_fire_late() -> None:
     """`Persistent=true` would run a queued job at boot. Closing is idempotent,
     so this is noise rather than spend -- but it was set deliberately."""
     assert "Persistent=false" in VPS_SETUP.read_text(encoding="utf-8")
+
+
+def test_daily_timers_name_their_zone() -> None:
+    """systemd reads a bare OnCalendar in the box's local zone. The Jetson
+    runs Asia/Taipei, so "20:05" meant as 04:05 Taipei fired at 20:05 Taipei
+    and terminated a live render (2026-08-27). Only the every-minute reaper
+    is zone-free."""
+    body = (REPO / "deploy" / "jetson_setup.sh").read_text(encoding="utf-8")
+    assert 'when="04:05 Asia/Taipei"' in body
+    assert 'when="02:30 Asia/Taipei"' in body
+
+
+def test_renamed_flux_files_are_not_redownloaded_when_present() -> None:
+    """📏 2026-08-27: a re-provision re-fetched the three Flux files that were
+    already on the volume under their renamed names, filled the volume, and
+    the FATAL stopped the inference server from starting."""
+    setup = (REPO / "deploy" / "pod_setup.sh").read_text(encoding="utf-8")
+    assert 'if [ -n "${4:-}" ] && [ -s "$4" ]; then' in setup
+    for target in (
+        '"$M/loras/flux_nsfw_uncensored_v1.safetensors"',
+        '"$M/diffusion_models/flux1-dev.safetensors"',
+        '"$M/vae/ae.safetensors"',
+    ):
+        assert target in setup, target
+        # the same path the rename step below produces
+        assert setup.count(target.strip('"').replace("$M/", "")) >= 2

@@ -31,6 +31,8 @@ https://developers.line.biz/en/reference/messaging-api/#send-reply-message
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 REPLY_ENDPOINT = "https://api.line.me/v2/bot/message/reply"
@@ -52,8 +54,10 @@ class LineReplyClient:
         self._token = access_token
         self._timeout = timeout_s
 
-    async def reply_text(self, reply_token: str, *texts: str) -> None:
-        """Reply with one or more text messages.
+    async def reply_text(self, reply_token: str, *texts: str) -> list[str]:
+        """Reply with one or more text messages. Returns LINE's ids of the
+        sent messages (`sentMessages[].id`), so the「收到」reply to a
+        request can be quoted later to name that request.
 
         Text only, and not because the media constraints are hard — `push.py`
         meets them now. Because there is nothing to send yet: this fires within
@@ -61,13 +65,25 @@ class LineReplyClient:
         media message here would have no media.
         """
         if not texts:
-            return
-        if len(texts) > MAX_MESSAGES_PER_REPLY:
-            raise LineReplyError(f"at most {MAX_MESSAGES_PER_REPLY} messages per reply")
-
+            return []
         messages = [{"type": "text", "text": t[:MAX_TEXT_CHARS]} for t in texts]
-        payload = {"replyToken": reply_token, "messages": messages}
+        return await self.reply_messages(reply_token, messages)
 
+
+    async def reply_messages(self, reply_token: str, messages: list[dict[str, Any]]) -> list[str]:
+        """Reply with prepared message objects -- media included.
+
+        The media caveat on `reply_text` is about *timing*, not the API: a
+        reply token is good for about a minute, and the clip is minutes
+        away when a request arrives. `/讓我看看` is the case where the media
+        already exists, so the same free reply can carry it -- and it must,
+        because this trigger exists for the month in which push quota is gone.
+        """
+        if not messages:
+            return []
+        if len(messages) > MAX_MESSAGES_PER_REPLY:
+            raise LineReplyError(f"at most {MAX_MESSAGES_PER_REPLY} messages per reply")
+        payload = {"replyToken": reply_token, "messages": messages}
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             try:
                 response = await client.post(
@@ -77,11 +93,15 @@ class LineReplyClient:
                 )
             except httpx.HTTPError as exc:
                 raise LineReplyError(f"could not reach the LINE Reply API: {exc}") from exc
-
         if response.status_code >= 400:
             raise LineReplyError(
                 f"reply rejected ({response.status_code}): {response.text[:500]}"
             )
+        try:
+            sent = response.json().get("sentMessages") or []
+        except ValueError:
+            sent = []
+        return [str(m["id"]) for m in sent if isinstance(m, dict) and m.get("id")]
 
 
 class NullReplyClient:
@@ -89,6 +109,12 @@ class NullReplyClient:
 
     def __init__(self) -> None:
         self.sent: list[tuple[str, tuple[str, ...]]] = []
+        self.sent_messages: list[tuple[str, list[dict[str, Any]]]] = []
 
-    async def reply_text(self, reply_token: str, *texts: str) -> None:
+    async def reply_text(self, reply_token: str, *texts: str) -> list[str]:
         self.sent.append((reply_token, texts))
+        return [f"sent-{reply_token}-{i}" for i in range(len(texts))]
+
+    async def reply_messages(self, reply_token: str, messages: list[dict[str, Any]]) -> list[str]:
+        self.sent_messages.append((reply_token, messages))
+        return [f"sent-{reply_token}-{i}" for i in range(len(messages))]

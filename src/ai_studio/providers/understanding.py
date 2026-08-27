@@ -1,4 +1,4 @@
-"""Understanding models (moondream3, Qwen3-Omni-Captioner, Tarsier2) through
+"""Understanding models (moondream3, Qwen2-Audio, Qwen2.5-VL) through
 the pod-side inference server (`deploy/inference_server.py`).
 
 One parametrized class rather than three concrete ones: the three models
@@ -22,7 +22,7 @@ from typing import Any
 
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import JobState, MediaKind
-from ai_studio.core.errors import ProviderJobFailed, ProviderSubmitError
+from ai_studio.core.errors import ProviderError, ProviderJobFailed, ProviderSubmitError
 from ai_studio.core.understanding_spec import (
     UnderstandingAsset,
     UnderstandingCapabilities,
@@ -45,17 +45,18 @@ _CAPABILITY_DEFAULTS: dict[MediaKind, dict[str, Any]] = {
     ),
     MediaKind.AUDIO_UNDERSTAND: dict(
         provider="understanding",
-        model_id="Qwen/Qwen3-Omni-30B-A3B-Captioner",
-        accepts_prompt=False,
+        model_id="Qwen/Qwen2-Audio-7B-Instruct",
+        accepts_prompt=True,
         max_input_seconds=30.0,
-        expected_latency_s=45.0,
+        expected_latency_s=30.0,
     ),
     MediaKind.VIDEO_UNDERSTAND: dict(
         provider="understanding",
-        model_id="omni-research/Tarsier2-7b-0115",
+        model_id="Qwen/Qwen2.5-VL-7B-Instruct + Qwen/Qwen2-Audio-7B-Instruct",
         accepts_prompt=True,
         max_input_seconds=120.0,
-        expected_latency_s=30.0,
+        expected_latency_s=60.0,
+        max_output_chars=1600,
     ),
 }
 
@@ -135,7 +136,7 @@ class UnderstandingProvider:
     async def poll(self, job: UnderstandingJob) -> UnderstandingJob:
         now = time.time()
         payload = await self.client.poll_job(job.job_id)
-        state = str(payload.get("state") or "running")
+        state = str(payload.get("state") or "")
         if state == "completed":
             return job.with_state(
                 JobState.COMPLETED,
@@ -148,7 +149,13 @@ class UnderstandingProvider:
             )
         if state == "queued":
             return job.with_state(JobState.QUEUED, now=now)
-        return job.with_state(JobState.RUNNING, now=now)
+        if state == "running":
+            return job.with_state(JobState.RUNNING, now=now)
+        # Fail loudly: a state this client does not know is a wire-protocol
+        # drift against deploy/inference_server.py, not a job that is still
+        # running. Treating it as "running" would hang the job until the
+        # window deadline and hide the actual mismatch.
+        raise ProviderError(f"job {job.job_id}: unknown state {state!r} from the inference server")
 
     # ----------------------------------------------------------------- fetch
 

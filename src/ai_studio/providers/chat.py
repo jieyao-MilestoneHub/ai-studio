@@ -18,7 +18,7 @@ from typing import Any
 from ai_studio.config.settings import get_settings
 from ai_studio.core.chat_spec import ChatAsset, ChatCapabilities, ChatJob, ChatRequest
 from ai_studio.core.enums import JobState
-from ai_studio.core.errors import ProviderJobFailed
+from ai_studio.core.errors import ProviderError, ProviderJobFailed
 from ai_studio.inference.client import InferenceClient
 
 DEFAULT_HOURLY_USD = 0.74
@@ -75,7 +75,10 @@ class ChatProvider:
     async def submit(self, request: ChatRequest) -> ChatJob:
         now = time.time()
         history = request.extra.get("history")
-        job_id = await self.client.submit_chat_job(request.text, history=history)
+        # The developer/system instruction block for the reply, chosen by
+        # the pipeline (prompts/chat.py) -- the provider only carries it.
+        system = request.extra.get("system")
+        job_id = await self.client.submit_chat_job(request.text, history=history, system=system)
         return ChatJob(
             provider=self.name,
             job_id=job_id,
@@ -90,7 +93,7 @@ class ChatProvider:
     async def poll(self, job: ChatJob) -> ChatJob:
         now = time.time()
         payload = await self.client.poll_job(job.job_id)
-        state = str(payload.get("state") or "running")
+        state = str(payload.get("state") or "")
         if state == "completed":
             return job.with_state(
                 JobState.COMPLETED,
@@ -103,7 +106,13 @@ class ChatProvider:
             )
         if state == "queued":
             return job.with_state(JobState.QUEUED, now=now)
-        return job.with_state(JobState.RUNNING, now=now)
+        if state == "running":
+            return job.with_state(JobState.RUNNING, now=now)
+        # Fail loudly: a state this client does not know is a wire-protocol
+        # drift against deploy/inference_server.py, not a job that is still
+        # running. Treating it as "running" would hang the job until the
+        # window deadline and hide the actual mismatch.
+        raise ProviderError(f"job {job.job_id}: unknown state {state!r} from the inference server")
 
     # ----------------------------------------------------------------- fetch
 

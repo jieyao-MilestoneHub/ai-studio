@@ -168,8 +168,11 @@ process alive.
 **The reaper is now per-render-kind, and it never closes a pod with work
 waiting.** `session reap` runs every minute; it closes a quiet pod after
 `IMAGE_IDLE_MINUTES` (5) if the last render was an image, `VIDEO_IDLE_MINUTES`
-(10) if it was a clip, or `UNDERSTANDING_IDLE_MINUTES` (5) if the last thing
-this pod did was a `/說圖`/`/說音`/`/說影` job. The three numbers differ
+(10) if it was a clip, `UNDERSTANDING_IDLE_MINUTES` (5) if the last thing
+this pod did was a `/說圖`/`/說音`/`/說影` job, or `CHAT_IDLE_MINUTES` (15)
+after a `/himonkey` reply — the longest of the four, because a chat
+conversation pauses and resumes in a way a render request does not, and it
+is sized against the reopen fixed cost rather than any observed pause. The three numbers differ
 because the reloads do: 📏 Flux comes back into VRAM in ~15 s, H3's 32B text
 encoder in 60–90 s, so a video pod is worth holding longer.
 `UNDERSTANDING_IDLE_MINUTES` is `[speculative]` in a stronger sense than the
@@ -185,14 +188,18 @@ night before its first job — with the weights on a network volume a reopen
 is a ~1-minute ComfyUI restart, not the 📏 15-minute, $0.18 download it was,
 so the grace can be short again.
 
-### The GPU hand-off between ComfyUI and the understanding server
+### The GPU hand-off between ComfyUI and the inference server
 
 Idle grace is about *closing* the pod; this is about what happens *while it
 stays open* and the queue alternates between a generation job and an
 understanding one. Both share the one 24GB card, and neither H3, Flux, nor
-any of the three understanding models comfortably coexists with another
-model resident at the same time — so exactly one of {ComfyUI's checkpoint,
-an understanding model} may be loaded at once, never both.
+any of the three understanding models, nor `/himonkey`'s gpt-oss-20b,
+comfortably coexists with another model resident at the same time — so
+exactly one of {ComfyUI's checkpoint, one of the inference server's four
+backends} may be loaded at once, never both. Chat and the three
+understanding kinds are the *same* side of this split: they share one
+`ModelSlot` in `deploy/inference_server.py`, and `make_room_for()` groups
+`MediaKind.CHAT` with them.
 
 The hand-off is **pull-based**, not each side pinging the other:
 `pipeline.drain.make_room_for()` runs in the one place that already knows
@@ -200,7 +207,8 @@ which job is about to run (`drain_window`'s and `worker._run_one`'s
 dispatch point) and evicts *the other side's* model before every submit —
 `ComfyClient.free_memory()` (`POST /free` on ComfyUI, port 8188) before a
 generation job, `InferenceClient.unload()` (`POST /unload` on
-`deploy/inference_server.py`, port 8189) before an understanding one.
+`deploy/inference_server.py`, port 8189) before an understanding or chat
+one.
 Centralizing this where the dispatch decision is already made means neither
 provider needs to know the other's endpoint exists.
 

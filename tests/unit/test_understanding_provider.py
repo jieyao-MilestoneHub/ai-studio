@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from ai_studio.core.enums import JobState, MediaKind
-from ai_studio.core.errors import ProviderJobFailed
+from ai_studio.core.errors import ProviderError, ProviderJobFailed
 from ai_studio.core.understanding_spec import UnderstandingJob, UnderstandingRequest
 from ai_studio.inference.client import InferenceClient
 from ai_studio.providers.stub import StubUnderstandingProvider
@@ -30,16 +30,20 @@ def test_understanding_capabilities_reflect_the_model_per_modality() -> None:
     assert image_caps.accepts_prompt is True
     assert image_caps.max_input_seconds is None
 
-    assert "Qwen3-Omni" in audio_caps.model_id
-    assert audio_caps.accepts_prompt is False, "Qwen3-Omni-Captioner rejects a text prompt"
+    assert "Qwen2-Audio" in audio_caps.model_id
+    assert audio_caps.accepts_prompt is True
     assert audio_caps.max_input_seconds == 30.0
 
-    assert "Tarsier2" in video_caps.model_id
+    assert "Qwen2.5-VL" in video_caps.model_id
     assert video_caps.accepts_prompt is True
 
 
 def test_check_prompt_raises_loudly_rather_than_dropping_it() -> None:
-    caps = understanding_capabilities(MediaKind.AUDIO_UNDERSTAND)
+    """No current backend is prompt-less (Qwen3-Omni-Captioner was), so the
+    rule is exercised on a capability built by hand."""
+    caps = understanding_capabilities(MediaKind.AUDIO_UNDERSTAND).model_copy(
+        update={"accepts_prompt": False}
+    )
     with pytest.raises(ValueError):
         caps.check_prompt("what mood is this?")
     caps.check_prompt(None)  # no prompt is always fine
@@ -105,9 +109,17 @@ async def test_a_failed_backend_job_polls_to_failed(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_rejects_a_prompt_the_backend_does_not_accept() -> None:
-    """Qwen3-Omni-Captioner takes no text prompt -- a caller that supplies one
-    must be told loudly, before anything is uploaded, not silently ignored."""
+async def test_submit_rejects_a_prompt_the_backend_does_not_accept(monkeypatch) -> None:
+    """A backend that takes no text prompt (Qwen3-Omni-Captioner did) -- a
+    caller that supplies one must be told loudly, before anything is
+    uploaded, not silently ignored. No current backend is prompt-less, so
+    the capability is overridden for the test."""
+    from ai_studio.providers import understanding as mod
+
+    monkeypatch.setitem(
+        mod._CAPABILITY_DEFAULTS, MediaKind.AUDIO_UNDERSTAND,
+        {**mod._CAPABILITY_DEFAULTS[MediaKind.AUDIO_UNDERSTAND], "accepts_prompt": False},
+    )
     provider = UnderstandingProvider(modality=MediaKind.AUDIO_UNDERSTAND, base_url="http://pod:8189")
     request = UnderstandingRequest(
         shot_id="job1", modality=MediaKind.AUDIO_UNDERSTAND,
@@ -173,6 +185,26 @@ async def test_stub_also_rejects_a_prompt_for_audio(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError):
         await provider.submit(request)
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_poll_state_raises_instead_of_hanging(tmp_path: Path) -> None:
+    source = tmp_path / "clip.m4a"
+    source.write_bytes(b"x")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/submit":
+            return httpx.Response(200, json={"job_id": "job-1"})
+        return httpx.Response(200, json={"state": "paused"})
+
+    provider = _provider(MediaKind.AUDIO_UNDERSTAND, handler)
+    request = UnderstandingRequest(
+        shot_id="job1", modality=MediaKind.AUDIO_UNDERSTAND, input_media_path=str(source)
+    )
+    job = await provider.submit(request)
+    with pytest.raises(ProviderError, match="unknown state 'paused'"):
+        await provider.poll(job)
+    await provider.aclose()
 
 
 @pytest.mark.asyncio

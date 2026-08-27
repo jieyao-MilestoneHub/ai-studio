@@ -50,7 +50,7 @@ this fallback is taken.
 | GPU | shared with H3/Flux — RTX 4090 24GB minimum, per the existing ladder | one pod, one card; understanding and generation never run concurrently (see below) |
 | VRAM headroom | `[speculative]` — moondream3 alone is `[reported]` >16GB, which is most of a 24GB card on its own | unmeasured: whether the eviction hand-off with ComfyUI (`ComfyClient.free_memory()` / `InferenceClient.unload()`, see `docs/schedule.md`'s "GPU hand-off" section) leaves any transient double-residency that could OOM |
 | CUDA | same pod, same template as H3 — see [model-h3.md](model-h3.md) | `deploy/inference_server.py` runs inside ComfyUI's own `.venv-cu128`, reusing its torch+CUDA build rather than a fresh venv |
-| Disk | full repo, into the standard HF cache (`HF_HOME=/workspace/.hf`) | see `deploy/pod_setup.sh`'s `dl_repo` calls |
+| Disk | 📏 47.6GB — the whole repo, into the standard HF cache (`HF_HOME=/workspace/.hf`) | its `model.safetensors.index.json` maps every weight to the four `modelv2-*` shards (18.5GB); `model-0000*` (18.5GB, an older shard set) and `model_fp8.pt` (10.5GB) are kept anyway by decision |
 
 **Unverified dependency risk**: `deploy/inference_server.py` pip-installs
 `transformers`/`accelerate`/`bitsandbytes` into ComfyUI's own venv rather
@@ -61,12 +61,14 @@ deployment before trusting it.
 
 ## Settings
 
-- **Prompt**: `/說圖` never sends one (see [line-bot.md](line-bot.md)'s
-  "none of the three take trailing text" rule) — `MoondreamBackend.infer()`
-  falls back to `"Describe this image in detail."` when `prompt` is `None`.
-  Moondream's own API supports a steering question (`.query(image,
-  question)`); a future CLI caller could pass one via
-  `UnderstandingRequest.prompt`, which the LINE path deliberately never does.
+- **Prompt**: two skills, per the model docs. A bare `/說圖` sends no
+  question and `MoondreamBackend.infer()` runs `caption(image,
+  length="long")`; `/說圖 <question>` is rewritten by gpt-oss on the pod
+  into one specific English question (`prompts/understanding.py`) and runs
+  `query(image, question, reasoning=True)`. **English only** — 📏 asked
+  three ways on 2026-08-27 it never wrote Chinese, so the LINE delivery is
+  prefixed 「(moondream3 只能用英文描述)」 rather than paying a second model
+  swap to translate.
 - **Output length**: capped at `UnderstandingCapabilities.max_output_chars`
   (1000, `[speculative]`) on the ai-studio side, and again at
   `MAX_OUTPUT_CHARS` inside `deploy/inference_server.py` — a runaway

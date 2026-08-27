@@ -92,26 +92,45 @@ Rules:
   English equivalent. Proper nouns and on-screen text stay verbatim, in
   double quotes. If the request is thin, the description is short -- never
   padded with invented detail.
-- The first shot's description opens with the core idea in one sentence:
-  who, where, doing what, in what style. Only visible things; never abstract
-  praise like "stunning", "high-end", "cinematic masterpiece".
-- Each shot names four things: when it starts (cut_at_s), the subject
-  (restate the same character or object every cut so it does not change
-  face), the framing (wide / medium / close-up), and the one action.
-- At most __MAX_SHOTS__ shots, and for clips of 10 seconds or less at most 2
-  cuts. One shot is fine and often better.
-- The first shot has no cut_at_s. Every later shot must have one, strictly
-  increasing, and strictly less than the total duration given below.
-- description and all audio fields are English even when the request is Chinese.
-- Omit dialogue entirely unless the request implies someone speaks. When a
-  person is the subject and nobody speaks, say they are not speaking, lips
-  closed, and give them something to do (walking, looking, reading).
-- If the request lists things that must not appear ("不要..."), carry them into
-  the description as explicit "no ..." phrases (no subtitles, no logos, no
-  extra people, no fast cuts).
-- Music: tie it to events rather than only to seconds ("no music until the
-  door opens, enters as it opens, stops when it shuts"), or exactly N/A.
-- If the request implies a style change part-way through, make it a second shot.
+- Give the clip ONE job: one subject doing one clearly visible thing. If the
+  request lists several ideas, keep the first as the action and fold the rest
+  in as setting or a second shot -- never a montage.
+- Lead with the ACTION. The first sentence of every description names the
+  subject and its physical action with a motion quality ("walks slowly, each
+  paw placed deliberately", "turns her head in one quick snap"). Static
+  adjectives come after the verb, never before it.
+- Name the shot type in words (wide shot / medium shot / close-up / low angle
+  / over-the-shoulder). Never write bare praise: no "cinematic", "stunning",
+  "high quality", "masterpiece", "8k".
+- Exactly ONE camera move per shot, from the closed vocabulary. Never combine
+  moves ("orbit while pushing in"). static_shot is a good default.
+- Restate the same subject in every shot (same person, same clothes, same
+  colours) so the face and outfit do not change across a cut.
+- At most __MAX_SHOTS__ shots; for clips of 10 seconds or less at most 2
+  cuts. One shot is fine and often better. The first shot has no cut_at_s;
+  later ones strictly increase and stay strictly below the total duration.
+  A style change part-way is a second shot at a stated time.
+- Audio is rendered in the same pass, so direct it explicitly. Name the
+  concrete sounds (footsteps on gravel, rain on a tin roof, a kettle
+  whistling). Omit dialogue unless the request implies speech; when a person
+  is on screen and silent, say "not speaking, lips closed" and give them an
+  action. If nobody speaks, end overall_soundscape with "No dialogue."
+- non_diegetic_music: instrumentation, tempo and dynamics tied to events
+  ("solo piano, slow, enters when the door opens") -- or exactly N/A. Never
+  a mood word (no "melancholic", "epic", "emotional").
+- Carry the user's 「不要…」 list, and always finish the LAST shot's
+  description with the negatives as one sentence: "No text, no subtitles, no
+  logos, no watermark, no extra people." There is no separate negative
+  prompt; the description is the only place it can go.
+- description and every audio field are English, even when the request is
+  Chinese.
+
+- Output ONE line of minified JSON: no line breaks, no indentation, no
+  comments, nothing before the opening brace or after the closing one.
+
+Example -- request: 「一隻橘貓走在下雨的路上,然後變成梵谷風格的像素貓」,
+total duration 10.12 seconds:
+{"shots":[{"style":"Live-action, cinematic","description":"Medium tracking shot: an orange tabby cat walks slowly along a wet asphalt road in steady rain, each paw placed deliberately, fur damp and flattened, streetlights reflecting in puddles. Not speaking. No people.","camera":{"motion":"tracking_shot","amplitude":"small","speed":"slow","toward":"the cat"}},{"cut_at_s":6.0,"description":"Close-up: the same orange tabby cat, now rendered as pixel art in the style of a Van Gogh painting with thick swirling brushstroke pixels, keeps walking in the same rain. No text, no subtitles, no logos, no watermark, no extra people.","camera":{"motion":"static_shot","amplitude":"small","speed":"normal"}}],"overall_soundscape":"Steady rain hisses on asphalt and taps on distant rooftops; soft wet paw steps; a car passes far away. No dialogue.","non_diegetic_music":"N/A"}
 """.replace("__MAX_SHOTS__", str(MAX_SHOTS))
 
 I2V_BRIEF = """\
@@ -124,7 +143,8 @@ Do not invent a different scene, subject or setting: the request is about
 this photo. If the request names a style change (e.g. "become an oil
 painting"), describe the picture's own content transforming into that style
 over the clip, starting from the photo exactly as it is. Nobody speaks unless
-the request says so."""
+the request says so. The picture already answers "what is in frame"; spend
+the words on the action and its motion quality."""
 """What the model is told on top of SYSTEM_PROMPT for image-to-video. Without
 it, "變油畫風格" against a portrait came back as "a traditional Chinese painting
 of a bustling market" -- a perfectly good shot plan for a scene that was not

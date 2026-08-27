@@ -128,11 +128,17 @@ say "window timers"
 for phase in reap close gc; do
   case "$phase" in
     reap)  cmd="session reap";  when="*:0/1" ;;
-    close) cmd="session close"; when="20:05" ;;
+    # The explicit zone is load-bearing. These were written as UTC numbers
+    # ("20:05 UTC = 04:05 Taipei, the quietest hour") but a bare OnCalendar
+    # is read in the box's *local* zone, so "20:05" fired at 20:05 Taipei --
+    # prime evening -- and terminated a pod with a render 46 minutes in
+    # (observed live 2026-08-27, pod i5s1j69xkcihnn). Written in the zone
+    # the schedule is actually reasoned about in, so nobody converts again.
+    close) cmd="session close"; when="04:05 Asia/Taipei" ;;
     # Daily disk sweep: prune delivered media and received photos past the
-    # retention window (AI_STUDIO_FILES_RETENTION_DAYS). 18:30 UTC = 02:30
-    # Asia/Taipei, a quiet hour.
-    gc)    cmd="gc";            when="18:30" ;;
+    # retention window (AI_STUDIO_FILES_RETENTION_DAYS). 02:30 Taipei, a
+    # quiet hour.
+    gc)    cmd="gc";            when="02:30 Asia/Taipei" ;;
   esac
   cat > /etc/systemd/system/ai-studio-${phase}.service <<UNIT
 [Unit]
@@ -151,9 +157,9 @@ UNIT
 Description=ai-studio window ${phase} timer
 
 [Timer]
-# UTC. 20:05 UTC is 04:05 Asia/Taipei: the quietest hour, so the daily hard
-# close (a backstop behind the reaper and --terminate-after) lands on an
-# idle pod, not on a render.
+# 04:05 Asia/Taipei: the quietest hour, so the daily hard close (a backstop
+# behind the reaper and --terminate-after) lands on an idle pod, not on a
+# render. The zone is spelled out -- see the `when=` table above.
 OnCalendar=${when}
 # A missed 'close' firing late is noise; closing is idempotent either way.
 Persistent=false

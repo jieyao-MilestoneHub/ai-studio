@@ -60,7 +60,10 @@ class _FakeBackend:
     def unload(self) -> None:
         self.unloaded = True
 
-    def infer(self, media_path: object, prompt: object, *, history: object = None) -> str:
+    def infer(
+        self, media_path: object, prompt: object, *, history: object = None, options: object = None
+    ) -> str:
+        self.last_options = options
         return "ok"
 
 
@@ -244,3 +247,313 @@ def test_final_channel_falls_back_to_the_whole_text_if_no_marker_is_found() -> N
     """A leaked thinking trace is a worse failure than skipped channel-
     splitting, but returning nothing at all is worse still."""
     assert srv._final_channel("plain reply, no channels") == "plain reply, no channels"
+
+
+@pytest.mark.asyncio
+async def test_a_slow_load_does_not_freeze_the_event_loop(monkeypatch) -> None:
+    """The first request against real weights (2026-08-27): moondream3's
+    ~60s load ran inline in `_ensure_loaded`, every route stalled for the
+    duration, /poll returned nothing, and the client's 30s poll timeout
+    failed a job that was fine. A load must run off the loop so /poll and
+    /healthz keep answering while it happens."""
+    import time
+
+    class _SlowBackend(_FakeBackend):
+        def load(self) -> None:
+            time.sleep(0.5)  # blocking, like from_pretrained
+            super().load()
+
+    monkeypatch.setitem(srv._BACKENDS, "slow", lambda: _SlowBackend("slow"))
+    srv._slot.backend = None
+
+    ticks = 0
+
+    async def heartbeat() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.05)
+            ticks += 1
+
+    beat = asyncio.create_task(heartbeat())
+    try:
+        await srv._ensure_loaded("slow")
+    finally:
+        beat.cancel()
+    # A frozen loop would have let the heartbeat run ~0 times during the load.
+    assert ticks >= 5, f"event loop starved during load ({ticks} ticks)"
+
+
+def test_final_channel_cuts_at_return_and_survives_stripped_special_tokens() -> None:
+    """📏 Shapes from the first real gpt-oss-20b generation (2026-08-27)."""
+    raw = (
+        "<|channel|>analysis<|message|>User wants one sentence.<|end|>"
+        "<|start|>assistant<|channel|>final<|message|>我是 AI 語言助手。<|return|>"
+    )
+    assert srv._final_channel(raw) == "我是 AI 語言助手。"
+    stripped = "analysisUser wants one sentence.assistantfinal我是 AI 語言助手。"
+    assert srv._final_channel(stripped) == "我是 AI 語言助手。"
+
+
+def test_final_channel_never_leaks_a_truncated_analysis() -> None:
+    """📏 2026-08-27: a generation that spent its whole token budget in the
+    analysis channel must not be returned as the reply."""
+    truncated = "<|channel|>analysis<|message|>The user writes in Chinese and I should"
+    out = srv._final_channel(truncated)
+    assert "The user writes" not in out and out
+
+
+@pytest.mark.asyncio
+async def test_eviction_sweeps_vram_before_the_next_load(monkeypatch) -> None:
+    """📏 job 86 (2026-08-27): the evicted model's memory was not yet
+    collected when the next load ran, and it OOMed. The sweep must run
+    between unload() and load(), and again on the /unload route."""
+    order: list[str] = []
+    monkeypatch.setattr(srv, "_release_vram", lambda: order.append("release"))
+
+    class _Tracing(_FakeBackend):
+        def load(self) -> None:
+            order.append(f"load:{self.modality}")
+            super().load()
+
+        def unload(self) -> None:
+            order.append(f"unload:{self.modality}")
+            super().unload()
+
+    monkeypatch.setitem(srv._BACKENDS, "a", lambda: _Tracing("a"))
+    monkeypatch.setitem(srv._BACKENDS, "b", lambda: _Tracing("b"))
+    srv._slot.backend = None
+    await srv._ensure_loaded("a")
+    await srv._ensure_loaded("b")
+    assert order == ["load:a", "unload:a", "release", "load:b"]
+
+
+@pytest.mark.asyncio
+async def test_an_oom_load_is_retried_once_after_a_sweep(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(srv, "_release_vram", lambda: calls.append("release"))
+    attempts = {"n": 0}
+
+    class _FlakyOOM(_FakeBackend):
+        def load(self) -> None:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise RuntimeError("CUDA out of memory. Tried to allocate 512.00 MiB")
+            super().load()
+
+    monkeypatch.setitem(srv._BACKENDS, "flaky", lambda: _FlakyOOM("flaky"))
+    srv._slot.backend = None
+    backend = await srv._ensure_loaded("flaky")
+    assert backend.modality == "flaky" and attempts["n"] == 2
+    assert calls == ["release"]
+
+
+@pytest.mark.asyncio
+async def test_a_non_oom_load_failure_is_not_retried(monkeypatch) -> None:
+    monkeypatch.setattr(srv, "_release_vram", lambda: None)
+    attempts = {"n": 0}
+
+    class _Broken(_FakeBackend):
+        def load(self) -> None:
+            attempts["n"] += 1
+            raise ValueError("Unrecognized configuration class")
+
+    monkeypatch.setitem(srv._BACKENDS, "broken2", lambda: _Broken("broken2"))
+    srv._slot.backend = None
+    with pytest.raises(ValueError):
+        await srv._ensure_loaded("broken2")
+    assert attempts["n"] == 1
+
+
+# ------------------------------------------------ /submit options (the rewriter)
+
+
+def test_generation_options_default_to_off() -> None:
+    opts = srv.GenerationOptions()
+    assert (opts.system, opts.max_new_tokens, opts.reasoning_effort, opts.json_only) == (
+        None, None, None, False
+    )
+
+
+@pytest.mark.asyncio
+async def test_submit_carries_the_options_onto_the_job_and_clamps_tokens(monkeypatch) -> None:
+    """The rewriter asks for a system block, JSON-only decoding and a larger
+    token budget through /submit; the ceiling keeps UNLOAD_WAIT_TIMEOUT_S honest."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setitem(srv._BACKENDS, "chat", lambda: _FakeBackend("chat"))
+    srv._slot.backend = None
+    with TestClient(srv.app) as c:
+        r = c.post("/submit", data={
+            "modality": "chat", "prompt": "hi", "system": "# Instructions\nbe brief",
+            "max_new_tokens": "99999", "reasoning_effort": "low", "json_only": "true",
+        })
+        assert r.status_code == 200, r.text
+        job = srv._jobs[r.json()["job_id"]]
+        assert job.options.system == "# Instructions\nbe brief"
+        assert job.options.max_new_tokens == srv.MAX_NEW_TOKENS_CEILING
+        assert job.options.json_only is True
+        assert job.options.reasoning_effort == "low"
+
+        bad = c.post("/submit", data={"modality": "chat", "prompt": "hi", "reasoning_effort": "max"})
+        assert bad.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_json_only_lifts_the_output_cap(monkeypatch) -> None:
+    """An H3 shot plan is well over MAX_OUTPUT_CHARS; truncating it mid-object
+    would fail every rewrite. json_only jobs get the larger cap."""
+
+    class _Long(_FakeBackend):
+        def infer(self, media_path, prompt, *, history=None, options=None) -> str:
+            return "{" + "x" * 5000 + "}"
+
+    monkeypatch.setitem(srv._BACKENDS, "long", lambda: _Long("long"))
+    srv._slot.backend = None
+    plain = srv.Job(job_id="p", modality="long", media_path=None, prompt="q")
+    await srv._run_job(plain)
+    assert plain.state == "completed" and len(plain.result_text) == srv.MAX_OUTPUT_CHARS
+
+    rich = srv.Job(
+        job_id="r", modality="long", media_path=None, prompt="q",
+        options=srv.GenerationOptions(json_only=True),
+    )
+    await srv._run_job(rich)
+    assert rich.state == "completed" and len(rich.result_text) == 5002
+
+
+def test_outer_json_trims_to_the_braces_and_leaves_bare_text_alone() -> None:
+    assert srv._outer_json('Sure! {"a": 1} hope it helps') == '{"a": 1}'
+    assert srv._outer_json('{"a": {"b": 2}}') == '{"a": {"b": 2}}'
+    assert srv._outer_json("no braces here") == "no braces here"
+
+
+def test_gpt_oss_puts_the_system_block_first_and_honours_the_options() -> None:
+    """Message assembly for the rewriter role, with a fake tokenizer/model:
+    the system block leads, history follows, the user turn is last, and the
+    chat template is asked for the requested effort."""
+    import json
+
+    class _Inputs(dict):
+        def to(self, device):
+            return self
+
+    class _Tensor:
+        shape = (1, 7)
+
+        def __getitem__(self, item):
+            return self
+
+    class _Tok:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def apply_chat_template(self, messages, **kw):
+            self.calls.append({"messages": messages, **kw})
+            return _Inputs(input_ids=_Tensor())
+
+        def decode(self, ids, **kw):
+            return '<|channel|>final<|message|>{"prompt": "a cat"}<|return|>'
+
+    class _Model:
+        def __init__(self) -> None:
+            self.kwargs: dict = {}
+
+        def generate(self, **kw):
+            self.kwargs = kw
+            return [_Tensor()]
+
+    backend = srv.GptOssChatBackend()
+    backend._tokenizer = _Tok()
+    backend._model = _Model()
+    history = json.dumps([["user", "早"], ["assistant", "早安"]])
+    out = backend.infer(
+        None, "Request: 一隻貓", history=history,
+        options=srv.GenerationOptions(system="SYS", max_new_tokens=600, json_only=True),
+    )
+
+    assert out == '{"prompt": "a cat"}'
+    call = backend._tokenizer.calls[0]
+    assert [m["role"] for m in call["messages"]] == ["system", "user", "assistant", "user"]
+    assert call["messages"][0]["content"] == "SYS"
+    assert call["reasoning_effort"] == "low"
+    assert backend._model.kwargs["max_new_tokens"] == 600
+    assert backend._model.kwargs["do_sample"] is False
+
+
+# ------------------------------------------------ /說影 sees and hears
+
+
+@pytest.mark.asyncio
+async def test_a_video_job_runs_the_frame_model_then_the_audio_model(monkeypatch, tmp_path) -> None:
+    """Qwen2.5-VL is deaf; a video job must follow it with the audio model on
+    the extracted track and join the two answers under headings."""
+    order: list[str] = []
+
+    class _Tracing(_FakeBackend):
+        def infer(self, media_path, prompt, *, history=None, options=None) -> str:
+            order.append(f"{self.modality}:{Path(str(media_path)).suffix}:{prompt}")
+            return f"{self.modality}-answer"
+
+    monkeypatch.setitem(srv._BACKENDS, "video", lambda: _Tracing("video"))
+    monkeypatch.setitem(srv._BACKENDS, "audio", lambda: _Tracing("audio"))
+    monkeypatch.setattr(srv, "_has_audio_track", lambda p: True)
+    monkeypatch.setattr(srv, "_extract_track", lambda p: Path(str(p)).with_suffix(".track.wav"))
+    srv._slot.backend = None
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"x")
+
+    job = srv.Job(job_id="v", modality="video", media_path=clip, prompt=None)
+    await srv._run_job(job)
+
+    assert job.state == "completed", job.error
+    assert order == [
+        "video:.mp4:None",
+        f"audio:.wav:{srv.VIDEO_AUDIO_QUESTION}",
+    ]
+    assert job.result_text.startswith("【畫面】\nvideo-answer")
+    assert "【聲音】\naudio-answer" in job.result_text
+    assert srv._slot.backend.modality == "audio", "the audio model is what stays resident"
+
+
+@pytest.mark.asyncio
+async def test_a_silent_video_skips_the_audio_model_and_says_so(monkeypatch, tmp_path) -> None:
+    loads: list[str] = []
+
+    class _Tracing(_FakeBackend):
+        def load(self) -> None:
+            loads.append(self.modality)
+            super().load()
+
+    monkeypatch.setitem(srv._BACKENDS, "video", lambda: _Tracing("video"))
+    monkeypatch.setitem(srv._BACKENDS, "audio", lambda: _Tracing("audio"))
+    monkeypatch.setattr(srv, "_has_audio_track", lambda p: False)
+    srv._slot.backend = None
+    clip = tmp_path / "s.mp4"
+    clip.write_bytes(b"x")
+
+    job = srv.Job(job_id="s", modality="video", media_path=clip, prompt="他做了什麼")
+    await srv._run_job(job)
+
+    assert job.state == "completed"
+    assert loads == ["video"]
+    assert srv.AUDIO_TRACK_SILENT in job.result_text
+
+
+@pytest.mark.asyncio
+async def test_the_users_question_reaches_both_models(monkeypatch, tmp_path) -> None:
+    asked: list[tuple[str, str | None]] = []
+
+    class _Tracing(_FakeBackend):
+        def infer(self, media_path, prompt, *, history=None, options=None) -> str:
+            asked.append((self.modality, prompt))
+            return "ok"
+
+    monkeypatch.setitem(srv._BACKENDS, "video", lambda: _Tracing("video"))
+    monkeypatch.setitem(srv._BACKENDS, "audio", lambda: _Tracing("audio"))
+    monkeypatch.setattr(srv, "_has_audio_track", lambda p: True)
+    monkeypatch.setattr(srv, "_extract_track", lambda p: p)
+    srv._slot.backend = None
+    clip = tmp_path / "q.mp4"
+    clip.write_bytes(b"x")
+    await srv._run_job(srv.Job(job_id="q", modality="video", media_path=clip, prompt="他在唱什麼歌"))
+    assert asked == [("video", "他在唱什麼歌"), ("audio", "他在唱什麼歌")]

@@ -60,7 +60,9 @@ log "card has ${VRAM_GB}GB -> ${QUANT} weights"
 # next pod re-provisions instead of trusting a stale volume. Bumped to 2 when
 # the three understanding models (moondream3/Qwen3-Omni-Captioner/Tarsier2)
 # were added, so a volume provisioned before that gets them on its next open.
-SETUP_VERSION=2
+# Bumped to 3 when gpt-oss-20b (/himonkey) joined the download set, 4 when
+# Qwen2-Audio and Qwen2.5-VL replaced Qwen3-Omni-Captioner and Tarsier2.
+SETUP_VERSION=4
 MARKER="/workspace/.ai-studio-setup-v${SETUP_VERSION}-${QUANT}"
 if [ -f "$MARKER" ] && [ -d "$CU/custom_nodes/ComfyUI-MiniMax-H3-Turbo" ]; then
   log "volume already provisioned ($MARKER); skipping download and install"
@@ -108,8 +110,13 @@ log "installing the understanding-model stack (transformers/accelerate/bitsandby
 # conflicts with what moondream3/Qwen3-Omni-Captioner/Tarsier2's
 # trust_remote_code modeling code needs -- check `pip check` output on the
 # first real deployment, before trusting this venv serves both processes.
+# kernels==0.16.0: what transformers 5.16 needs to run gpt-oss-20b's native
+# MXFP4. Without it the loader says "defaulting to dequantizing the model
+# to bf16" -- 40GB, an OOM on a 24GB card (observed live 2026-08-27). The
+# version window is transformers' own (0.16 <= v < 0.17).
 ./.venv-cu128/bin/pip install -q --upgrade transformers accelerate bitsandbytes \
-  soundfile pillow fastapi 'uvicorn[standard]' python-multipart 2>&1 \
+  soundfile librosa pillow fastapi 'uvicorn[standard]' python-multipart \
+  'kernels==0.16.0' 'qwen-vl-utils[decord]==0.0.8' 2>&1 \
   | grep -viE 'warning|notice' | tail -3
 # python-multipart: FastAPI's File()/Form()/UploadFile support is an optional
 # feature dependency, not pulled in by fastapi or uvicorn[standard] on their
@@ -141,10 +148,13 @@ python3 -c 'import hf_transfer' 2>/dev/null ||
 export HF_XET_HIGH_PERFORMANCE=1 HF_HUB_ENABLE_HF_TRANSFER=1 HF_HOME=/workspace/.hf
 command -v hf >/dev/null || pip install -q --break-system-packages -U huggingface_hub
 
-# ~142GB of weights against whatever /workspace actually has (52GB H3 + 17GB
-# Flux + ~73GB for the three understanding models, moondream3 + the
-# full-precision Qwen3-Omni-Captioner + Tarsier2 -- see the `dl_repo` calls
-# below). Caught here, loudly, before it is caught 30 minutes later as two
+# ~192GB of weights against whatever /workspace actually has (52GB H3 + 17GB
+# Flux + ~82GB for the three understanding models, moondream3 (48) +
+# Qwen2-Audio (17) + Qwen2.5-VL (17), + ~41GB for the complete gpt-oss-20b
+# repo -- whole repos, every checkpoint format they ship; see the `dl_repo`
+# calls below). On a network volume `df` reports the
+# whole cluster's free space, so this check only bites on a plain container
+# disk. Caught here, loudly, before it is caught 30 minutes later as two
 # silently-missing safetensors files: a download that dies mid-transfer
 # because the disk filled exits same as a download that finished, and
 # `pgrep` alone cannot tell those apart. Observed live: this volume can come
@@ -155,29 +165,72 @@ command -v hf >/dev/null || pip install -q --break-system-packages -U huggingfac
 # free, and must not refuse to finish what it started.
 AVAIL_KB="$(df -k /workspace | awk 'NR==2{print $4}')"
 HAVE_KB="$(du -sk "$M" 2>/dev/null | cut -f1)"
-NEED_KB=$((142 * 1024 * 1024 - ${HAVE_KB:-0}))
+NEED_KB=$((192 * 1024 * 1024 - ${HAVE_KB:-0}))
 [ "$AVAIL_KB" -ge "$NEED_KB" ] || die \
-  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~$((NEED_KB / 1048576))GB more headroom (~52GB H3 + ~17GB Flux + ~73GB understanding models, $((${HAVE_KB:-0} / 1048576))GB already present)"
+  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~$((NEED_KB / 1048576))GB more headroom (~52GB H3 + ~17GB Flux + ~82GB understanding models + ~41GB gpt-oss-20b, $((${HAVE_KB:-0} / 1048576))GB already present)"
 
 DL_PIDS=()
-dl() {  # repo file destdir
+dl() {  # repo file destdir [already-present-path]
+  # The optional 4th argument is the path the file is *renamed to* further
+  # down (the Flux LoRA/UNet/VAE, whose in-repo names do not match what the
+  # workflow JSON asks for). A re-run on a volume that already has the
+  # renamed file must not fetch it again: 📏 2026-08-27 a re-provision on a
+  # 281/300GB volume re-downloaded all three, hit "Disk quota exceeded", and
+  # the FATAL that followed stopped the inference server from ever starting
+  # -- with the files sitting right there under their final names.
+  if [ -n "${4:-}" ] && [ -s "$4" ]; then
+    log "  present, skipping download: $(basename "$4")"
+    return 0
+  fi
   nohup hf download "$1" "$2" --local-dir "$3" \
     > "/workspace/dl-logs/$(basename "$2").log" 2>&1 &
   DL_PIDS+=("$!:$(basename "$2")")
   log "  downloading $(basename "$2")"
 }
-dl_repo() {  # repo -- the whole repo, into the standard HF cache (HF_HOME)
+dl_repo() {  # repo [exclude-glob ...] -- the whole repo, into the HF cache (HF_HOME)
   # No --local-dir: `transformers.from_pretrained(repo_id, ...)` in
   # inference_server.py looks the model up by repo id in HF_HOME's cache,
   # not in an arbitrary directory, so this has to populate that cache rather
   # than a flat directory the way `dl` does for ComfyUI's non-cache-aware
   # node loaders.
-  nohup hf download "$1" \
-    > "/workspace/dl-logs/$(basename "$1").log" 2>&1 &
-  DL_PIDS+=("$!:$(basename "$1")")
-  log "  downloading $(basename "$1") (full repo, into HF_HOME cache)"
+  #
+  # Queued, not launched: whole repos download ONE AT A TIME, in a single
+  # background chain started by `dl_repos_start` below, and without xet's
+  # high-performance mode. Measured 2026-08-27: this container's cgroup caps
+  # RAM at 62GB (memory.limit_in_bytes; `free` shows the host's 251GB and
+  # lies), one repo download in high-performance mode alone sat at ~51GB
+  # used, and four repos plus the eight single-file downloads in parallel
+  # tripped the OOM killer twice (memory.events oom_kill 2) -- two `hf
+  # download`s died with a bare "Killed", no ENOSPC, no traceback.
+  #
+  # Exclude globs are supported but unused: the repos are kept complete
+  # (spare checkpoint formats included, ~57GB) by decision on 2026-08-27,
+  # and the volume was sized to 300GB for it (250GB hit `Disk quota
+  # exceeded` 📏 at 229GB of du, with ~28GB still to come plus xet scratch).
+  printf '%s\n' "$*" >> /workspace/dl-logs/repos.list
+  log "  queued $(basename "$1") (full repo, into HF_HOME cache, sequential${2:+, excluding: ${*:2}})"
 }
-log "starting weight downloads (~52GB H3 + ~17GB Flux + ~73GB understanding models)"
+dl_repos_start() {
+  [ -s /workspace/dl-logs/repos.list ] || return 0
+  : > /workspace/dl-logs/repos.failed
+  cat > /workspace/dl-repos.sh <<'CHAIN'
+rc=0
+while read -r repo excludes; do
+  [ -n "$repo" ] || continue
+  # shellcheck disable=SC2086  -- the excludes are meant to word-split
+  hf download "$repo" ${excludes:+--exclude $excludes} \
+    > "/workspace/dl-logs/$(basename "$repo").log" 2>&1 \
+    || { basename "$repo" >> /workspace/dl-logs/repos.failed; rc=1; }
+done < /workspace/dl-logs/repos.list
+exit $rc
+CHAIN
+  nohup env -u HF_XET_HIGH_PERFORMANCE bash /workspace/dl-repos.sh \
+    > /workspace/dl-logs/repos.log 2>&1 &
+  DL_PIDS+=("$!:repos")
+  log "  downloading $(wc -l < /workspace/dl-logs/repos.list) repo(s) sequentially"
+}
+: > /workspace/dl-logs/repos.list
+log "starting weight downloads (~52GB H3 + ~17GB Flux + ~82GB understanding models + ~41GB gpt-oss-20b)"
 dl Comfy-Org/MiniMax-H3 "$DIT" "$M"
 dl Comfy-Org/MiniMax-H3 text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors "$M"
 dl Comfy-Org/MiniMax-H3 vae/minimax_h3_video_vae_fp16.safetensors "$M"
@@ -186,17 +239,17 @@ dl larryvrh/MiniMax-H3-Turbo-Lora minimax_h3_turbo_v4_step600_ema.safetensors "$
 # The Flux image LoRA. 687,476,088 bytes measured from the HF blobs API.
 # Needs no trigger word: neither candidate's model card declares an
 # instance_prompt -- this is an "unrestrain" adapter, not a concept LoRA.
-dl Heartsync/Flux-NSFW-uncensored lora.safetensors "$M/loras"
+dl Heartsync/Flux-NSFW-uncensored lora.safetensors "$M/loras" "$M/loras/flux_nsfw_uncensored_v1.safetensors"
 # Flux.1-dev itself. black-forest-labs/FLUX.1-dev is the canonical source but
 # is HF-gated (401 with no token, and this script has none configured).
 # comfyanonymous's repackaging is the same fp8-scaled weights, ungated.
-dl comfyanonymous/flux_dev_scaled_fp8_test flux_dev_fp8_scaled_diffusion_model.safetensors "$M/diffusion_models"
+dl comfyanonymous/flux_dev_scaled_fp8_test flux_dev_fp8_scaled_diffusion_model.safetensors "$M/diffusion_models" "$M/diffusion_models/flux1-dev.safetensors"
 dl comfyanonymous/flux_text_encoders clip_l.safetensors "$M/text_encoders"
 dl comfyanonymous/flux_text_encoders t5xxl_fp8_e4m3fn.safetensors "$M/text_encoders"
 # The Flux VAE (ae.safetensors) ships inside the same gated black-forest-labs
 # repo. Comfy-Org/z_image re-hosts the byte-identical file ungated -- checked
 # against several such repackagings, all serving the same file with no auth.
-dl Comfy-Org/z_image split_files/vae/ae.safetensors "$M/vae"
+dl Comfy-Org/z_image split_files/vae/ae.safetensors "$M/vae" "$M/vae/ae.safetensors"
 
 # The three understanding models (/說圖 /說音 /說影), each a whole repo rather
 # than one file -- see `dl_repo`'s comment. Qwen3-Omni-Captioner is
@@ -209,8 +262,22 @@ dl Comfy-Org/z_image split_files/vae/ae.safetensors "$M/vae"
 # the two numbers are not comparable, one is on-disk and one is in-VRAM) for
 # not depending on an unverified third party's requantization.
 dl_repo moondream/moondream3-preview
-dl_repo Qwen/Qwen3-Omni-30B-A3B-Captioner
-dl_repo omni-research/Tarsier2-7b-0115
+# Qwen2-Audio-7B-Instruct and Qwen2.5-VL-7B-Instruct replaced
+# Qwen3-Omni-Captioner (does not fit 24GB on transformers 5) and Tarsier2
+# (custom class pinned to transformers 4.47) on 2026-08-27 -- see
+# docs/model-qwen3-omni-captioner.md and docs/model-tarsier2.md. Both fp16,
+# ~17GB each, Apache-2.0, ungated.
+dl_repo Qwen/Qwen2-Audio-7B-Instruct
+dl_repo Qwen/Qwen2.5-VL-7B-Instruct
+# /himonkey's gpt-oss-20b, the fourth backend of inference_server.py. Its
+# repo is 41GB (📏), the sharded MXFP4 weights plus original/ and metal/, loaded by
+# `GptOssChatBackend.load()` from HF_HOME. Staged here for the same reason
+# the three above are: a `from_pretrained` that has to pull the weights from the
+# Hub inside the first /himonkey request's background thread would surface
+# as a 10-minute silent stall (or an ENOSPC nobody sees) rather than as a
+# failed setup step -- exactly what the headroom check above exists for.
+dl_repo openai/gpt-oss-20b
+dl_repos_start
 
 # ── 4. wait for the weights, then restart ComfyUI ─────────────────────────
 while pgrep -f 'hf download' >/dev/null; do
@@ -226,7 +293,14 @@ done
 FAILED_DL=()
 for entry in "${DL_PIDS[@]}"; do
   pid="${entry%%:*}"; name="${entry#*:}"
-  wait "$pid" 2>/dev/null || FAILED_DL+=("$name")
+  if ! wait "$pid" 2>/dev/null; then
+    if [ "$name" = repos ]; then
+      while IFS= read -r failed_repo; do FAILED_DL+=("$failed_repo"); done \
+        < /workspace/dl-logs/repos.failed
+    else
+      FAILED_DL+=("$name")
+    fi
+  fi
 done
 [ "${#FAILED_DL[@]}" -eq 0 ] || die \
   "download(s) failed: ${FAILED_DL[*]} -- see /workspace/dl-logs/<name>.log ($(df -h /workspace | awk 'NR==2{print $4}') free)"
@@ -337,9 +411,32 @@ sys.exit(1 if missing else 0)
 # Started fresh every pod open (not gated by FAST_PATH): the process itself
 # does not persist across a pod restart even when its pip packages and
 # downloaded weights do.
+# The MXFP4 Triton kernels that `kernels` fetches for gpt-oss-20b at load
+# time. The server runs HF-offline, and `kernels` resolves its own version
+# tags against the Hub -- a plain `hf download` of the repo is not enough
+# ("Version 1 of 'kernels-community/gpt-oss-triton-kernels' is not
+# available in the local cache", observed live 2026-08-27 even with the
+# snapshot present). Let it fetch once, online, into the same HF_HOME.
+log "caching gpt-oss MXFP4 kernels"
+HF_HOME=/workspace/.hf "$PY" -c '
+from kernels import get_kernel
+get_kernel("kernels-community/gpt-oss-triton-kernels", version=1)' 2>&1 | tail -1 \
+  || die "could not cache kernels-community/gpt-oss-triton-kernels"
+
 log "starting the understanding-model server on :8189"
 pkill -f 'inference_server.py'; sleep 1
-nohup "$PY" /workspace/inference_server.py > /workspace/inference.log 2>&1 &
+# The server inherits HF_HOME (weights) and HF_TOKEN (the gated Tarsier2
+# repo) from this script's environment. Both are load-bearing -- observed
+# live 2026-08-27 when it was restarted by hand without them: no HF_HOME
+# re-downloaded 60GB of Qwen3-Omni into the 20GB container disk ("No space
+# left on device"); no HF_TOKEN died probing Tarsier2's chat_template.jinja.
+# NOT HF_HUB_OFFLINE=1, though it was tried: `kernels` 0.16 refuses to
+# resolve gpt-oss's MXFP4 kernel version offline even when it is cached
+# ("Version 1 of 'kernels-community/gpt-oss-triton-kernels' is not
+# available in the local cache and Hugging Face Hub is in offline mode").
+# If you restart this server by hand, restart it with the same three.
+HF_HOME=/workspace/.hf \
+  nohup "$PY" /workspace/inference_server.py > /workspace/inference.log 2>&1 &
 
 for i in $(seq 1 30); do
   sleep 2

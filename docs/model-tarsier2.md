@@ -76,6 +76,19 @@ falls back to `"Describe what happens in this video in detail."` when
 `prompt` is `None`. A future CLI caller could supply one via
 `UnderstandingRequest.prompt`, which the LINE path deliberately never does.
 
+## 📏 2026-08-27: not loadable by transformers alone
+
+The checkpoint's `architectures` is `TarsierForConditionalGeneration` with
+`model_type: llava` over a `qwen2_vl` text/vision config — a custom class
+that lives in ByteDance's `tarsier` repo (branch `tarsier2`), not in
+transformers; `AutoModelForCausalLM` refuses it ("Unrecognized configuration
+class LlavaConfig"). That repo pins `transformers==4.47.0` (plus `decord`,
+`triton==2.2.0`); the pod runs 5.16.1 for gpt-oss-20b's MXFP4. Running it
+means a second venv and a second server process, or a different video
+model that transformers 5 loads natively. Also confirmed: the repo is gated
+(`gated: auto`) — accept its terms once and set `HF_TOKEN`, which
+`deploy/pod_setup.sh` now requires before downloading.
+
 ## What we have measured ourselves, and what we have not
 
 📏 **Measured on our own account**

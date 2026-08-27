@@ -35,7 +35,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ai_studio.prompts.convert import ConversionError, LlmClient, _extract_json
 
@@ -85,12 +85,28 @@ class FluxPrompt(BaseModel):
         return f"{self.text}, {self.quality}" if self.quality else self.text
 
 
+MAX_WORDS = 90
+"""A reply longer than this is rejected and retried rather than accepted.
+
+Flux.1-dev's guidance is 40-60 words; past ~200 the T5 encoder summarises and
+detail is dropped silently, and CLIP-L only ever sees the first 77 tokens. A
+long answer is the model ignoring the rules, so it is a failed conversion,
+not a prompt to truncate."""
+
+
 class _Translated(BaseModel):
     """What the LLM is allowed to return. Anything else is a failed conversion."""
 
     model_config = ConfigDict(frozen=True)
 
     prompt: str = Field(min_length=1, max_length=DEFAULT_MAX_CHARS)
+
+    @model_validator(mode="after")
+    def _not_too_long(self) -> _Translated:
+        words = len(self.prompt.split())
+        if words > MAX_WORDS:
+            raise ValueError(f"prompt is {words} words; the ceiling is {MAX_WORDS}")
+        return self
 
 
 SYSTEM_PROMPT = """\
@@ -102,20 +118,27 @@ Schema:
 {"prompt": "<the English prompt>"}
 
 Rules:
-- Always English, however the request is written.
-- The request is the spec: translate it faithfully, do not embellish or
-  "improve" it. Every concrete word the user used (objects, colours, clothing,
-  styles, places, names, numbers) survives as its plain English equivalent;
-  proper nouns stay verbatim. A thin request gives a short prompt -- never one
-  padded with invented detail.
-- Describe only what is visible: subject, appearance, pose, clothing, setting,
-  lighting, composition. Concrete and observable, never abstract mood words.
-- Keep every concrete detail the request gives. Do not invent a subject it did
-  not ask for, and do not sanitise or refuse what it did ask for.
-- One flowing description. No lists, no headings, no weights, no parentheses,
-  no "masterpiece"-style quality tags -- those are added separately.
-- Preserve any on-screen text the request names, in double quotes, verbatim.
-- No more than 60 words.
+- Always English, whatever language the request is in. Proper nouns stay
+  verbatim; on-screen text the user asked for stays verbatim in double quotes.
+- The request is the spec: translate faithfully, do not embellish, do not
+  refuse or sanitise. Every concrete word the user used (objects, colours,
+  clothing, styles, places, names, numbers) survives as its plain English
+  equivalent. A thin request gives a short prompt, never one padded with
+  invented detail.
+- Write 1-3 flowing natural-language sentences, 40-60 words, in this order:
+  subject (who/what, appearance, clothing) -> what they are doing / pose ->
+  environment and time of day -> materials and textures (be physical:
+  brushed steel, coarse wool, cracked leather) -> lighting as direction +
+  colour + quality ("soft window light from the left") -> style or medium
+  ("35mm photo", "watercolour illustration") only if the user named one.
+- Only visible things. No mood words, no praise ("beautiful", "masterpiece",
+  "8k"), no tag lists, no headings, no weights or parentheses like (word:1.2).
+- No negatives: phrase everything positively ("an empty street", not "no
+  people"). Never write the phrase "white background"; if the user wants a
+  plain one, say "a plain light-grey studio backdrop".
+- Do not append quality words; they are added separately.
+- Output ONE line of minified JSON: nothing before the opening brace or
+  after the closing one.
 """
 
 

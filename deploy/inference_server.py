@@ -8,7 +8,7 @@ a *second* file over the same one-file-at-a-time SSH transport rather than
 being embedded inline.
 
 **Lazy load/unload, one model at a time.** Only one of {moondream3-preview,
-Qwen3-Omni-30B-A3B-Captioner (Q4), Tarsier2-7b-0115, gpt-oss-20b} is ever
+Qwen2-Audio-7B-Instruct, Qwen2.5-VL-7B-Instruct, gpt-oss-20b} is ever
 resident in VRAM, and never at the same time as ComfyUI's own checkpoint --
 the whole card is 24GB and none of these comfortably coexist with an H3/Flux
 model (nor, for gpt-oss-20b specifically, with H3 itself: H3 alone measures
@@ -63,6 +63,8 @@ and run standalone (`python3 inference_server.py`), so it has no access to
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
 import json
 import logging
 import time
@@ -78,7 +80,34 @@ logging.basicConfig(level=logging.INFO, format="[inference] %(message)s")
 _log = logging.getLogger("inference_server")
 
 UPLOAD_DIR = Path("/workspace/inference_uploads")
-MAX_OUTPUT_CHARS = 1000
+MAX_OUTPUT_CHARS = 1600
+"""Two model answers under headings for /說影 (📏 ~700 chars each at
+max_new_tokens 384/512) need more than the old 1000; the LINE text limit is
+5000. `UnderstandingCapabilities.max_output_chars` on the client side is the
+other half of this ceiling."""
+MAX_JSON_OUTPUT_CHARS = 8000
+"""For `json_only` jobs (the prompt rewriter): an H3 shot plan is well over
+1000 characters, and truncating it mid-object would fail every conversion."""
+MAX_NEW_TOKENS_CEILING = 1536
+"""The most a caller may ask for; keeps UNLOAD_WAIT_TIMEOUT_S honest."""
+
+
+@dataclass
+class GenerationOptions:
+    """Per-request knobs a caller may set on /submit. All optional; every
+    backend that does not understand one ignores it.
+
+    `system` is the harmony developer/system instruction block for gpt-oss
+    (persona for /himonkey; "you are a prompt engineer, reply with JSON" for
+    the rewriter). `json_only` switches to greedy decoding, trims the reply
+    to its outermost braces, and lifts the output cap to MAX_JSON_OUTPUT_CHARS.
+    """
+
+    system: str | None = None
+    max_new_tokens: int | None = None
+    reasoning_effort: str | None = None
+    json_only: bool = False
+
 """Ceiling on a returned description/reply -- mirrors
 `ai_studio.core.understanding_spec.UnderstandingCapabilities.max_output_chars`
 / `ai_studio.core.chat_spec.ChatCapabilities.max_output_chars` on the other
@@ -99,8 +128,38 @@ class ModelBackend(Protocol):
     def load(self) -> None: ...
     def unload(self) -> None: ...
     def infer(
-        self, media_path: Path | None, prompt: str | None, *, history: str | None = None
+        self,
+        media_path: Path | None,
+        prompt: str | None,
+        *,
+        history: str | None = None,
+        options: GenerationOptions | None = None,
     ) -> str: ...
+
+
+AUDIO_DEFAULT_QUESTION = (
+    "請只用繁體中文,依下列格式條列描述這段聲音,不要加開場白:\n"
+    "類型:(人聲說話 / 唱歌 / 音樂 / 環境音 / 混合)\n"
+    "內容:(若有人說話或唱歌,盡量逐字寫出說的內容;若是音樂,寫出樂器、曲風、節奏、有無人聲)\n"
+    "細節:(說話者人數與性別、語言、語氣情緒;背景聲、環境、音質)\n"
+    "一句話總結:"
+)
+"""What /說音 asks when the user adds no question. One language, a fixed
+shape: 📏 2026-08-27 a two-language ask came back with the English half
+dropped. Byte-identical to `ai_studio.prompts.understanding.AUDIO_DEFAULT_QUESTION`
+(this file cannot import the package); a unit test pins the two together."""
+
+VIDEO_DEFAULT_QUESTION = (
+    "請只用繁體中文(台灣用字,不要簡體字)描述這段影片,依下列項目條列,不要加開場白:\n"
+    "場景:(地點、時間、天氣、環境)\n"
+    "人物/主體:(人數、外觀、衣著)\n"
+    "動作與變化:(依時間順序,開頭 → 中段 → 結尾 發生了什麼)\n"
+    "畫面文字:(字幕、招牌、標誌上的文字,逐字寫出;沒有就寫「無」)\n"
+    "鏡頭:(靜止或移動、拍攝角度、有無剪接)\n"
+    "一句話總結:"
+)
+"""What /說影 asks when the user adds no question. 📏 2026-08-27 the model
+wrote 声音 once without the 台灣用字 instruction."""
 
 
 class MoondreamBackend:
@@ -135,33 +194,50 @@ class MoondreamBackend:
         self._model = None
         torch.cuda.empty_cache()
 
-    def infer(self, media_path: Path | None, prompt: str | None, *, history: str | None = None) -> str:
+    def infer(
+        self,
+        media_path: Path | None,
+        prompt: str | None,
+        *,
+        history: str | None = None,
+        options: GenerationOptions | None = None,
+    ) -> str:
         from PIL import Image
 
         assert media_path is not None  # only "chat" jobs ever omit it
         image = Image.open(media_path).convert("RGB")
-        question = prompt or "Describe this image in detail."
-        result = self._model.query(image, question)
-        return str(result.get("answer", result) if isinstance(result, dict) else result)
+        # English only. 📏 2026-08-27: asked three ways (a bilingual
+        # instruction, a Traditional-Chinese question, "Answer in Traditional
+        # Chinese only"), moondream3 answered in English every time -- the
+        # model does not write Chinese, so the caption stays English.
+        # Two skills, per the model docs: `caption(length=...)` for a
+        # description (no question), `query(question, reasoning=True)` for
+        # a specific one. A bare "describe this" through query() is the
+        # weaker path; the long caption is what the model was trained to do.
+        if prompt:
+            result = self._model.query(image, prompt, reasoning=True)
+            return str(result.get("answer", result) if isinstance(result, dict) else result)
+        result = self._model.caption(image, length="long")
+        return str(result.get("caption", result) if isinstance(result, dict) else result)
 
 
-class Qwen3OmniCaptionerBackend:
-    """Qwen/Qwen3-Omni-30B-A3B-Captioner -- audio captioning, Q4 quantized.
+class Qwen2AudioBackend:
+    """Qwen/Qwen2-Audio-7B-Instruct -- audio understanding, fp16, ~17GB.
 
-    `[speculative]` loader, and the least certain of the three: **rejects a
-    text prompt outright** per its own model card, so `infer` ignores
-    `prompt` entirely rather than raising -- the caller-side
-    `UnderstandingCapabilities.accepts_prompt = False` is what should stop a
-    prompt arriving here in the first place. The Q4 form is loaded via
-    `transformers`' own 4-bit quantization here; if the published artifact
-    is GGUF rather than a quantizable safetensors checkpoint, this loader
-    needs to switch to `llama-cpp-python` bindings instead -- check the
-    actual repo contents before deploying.
+    Replaces Qwen3-Omni-30B-A3B-Captioner, which does not fit a 24GB card on
+    this stack (transformers 5 keeps its fused MoE experts in fp16 under both
+    bitsandbytes and compressed-tensors -- see docs/model-qwen3-omni-
+    captioner.md). Loader and inference follow the model card:
+    `Qwen2AudioForConditionalGeneration` + `AutoProcessor`, chat template
+    with one audio part, librosa at the feature extractor's sampling rate.
+    Instruction-tuned, so it takes a prompt and answers in Chinese when
+    asked to -- weaker at fine-grained captioning than the 30B model, but it
+    runs.
     """
 
     modality = "audio"
-    model_id = "Qwen/Qwen3-Omni-30B-A3B-Captioner"
-    accepts_prompt = False
+    model_id = os.environ.get("AI_STUDIO_AUDIO_MODEL_ID", "Qwen/Qwen2-Audio-7B-Instruct")
+    accepts_prompt = True
     max_input_seconds = 30.0
 
     def __init__(self) -> None:
@@ -170,18 +246,11 @@ class Qwen3OmniCaptionerBackend:
 
     def load(self) -> None:
         import torch
-        from transformers import AutoProcessor, BitsAndBytesConfig
+        from transformers import AutoProcessor, Qwen2AudioForConditionalGeneration
 
-        quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
-        self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
-        # The exact model class for Qwen3-Omni is not yet pinned here --
-        # `AutoModelForCausalLM` is the generic fallback; swap in the
-        # model's own class (as its README specifies) if this errors.
-        from transformers import AutoModelForCausalLM
-
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_id, trust_remote_code=True, quantization_config=quant_config,
-            device_map="cuda",
+        self._processor = AutoProcessor.from_pretrained(self.model_id)
+        self._model = Qwen2AudioForConditionalGeneration.from_pretrained(
+            self.model_id, device_map="cuda", dtype=torch.float16
         )
 
     def unload(self) -> None:
@@ -191,31 +260,62 @@ class Qwen3OmniCaptionerBackend:
         self._processor = None
         torch.cuda.empty_cache()
 
-    def infer(self, media_path: Path | None, prompt: str | None, *, history: str | None = None) -> str:
-        import soundfile as sf
+    def infer(
+        self,
+        media_path: Path | None,
+        prompt: str | None,
+        *,
+        history: str | None = None,
+        options: GenerationOptions | None = None,
+    ) -> str:
+        import librosa
 
         assert media_path is not None  # only "chat" jobs ever omit it
-        audio, sample_rate = sf.read(str(media_path))
-        inputs = self._processor(audio=audio, sampling_rate=sample_rate, return_tensors="pt").to(
-            "cuda"
+        question = prompt or AUDIO_DEFAULT_QUESTION
+        conversation = [{
+            "role": "user",
+            "content": [{"type": "audio", "audio_url": str(media_path)}, {"type": "text", "text": question}],
+        }]
+        text = self._processor.apply_chat_template(
+            conversation, add_generation_prompt=True, tokenize=False
         )
-        output_ids = self._model.generate(**inputs, max_new_tokens=256)
-        return str(self._processor.batch_decode(output_ids, skip_special_tokens=True)[0])
+        sr = self._processor.feature_extractor.sampling_rate
+        # LINE audio is .m4a; librosa 1.0 has no audioread fallback, so
+        # soundfile fails with "Format not recognised" (📏 2026-08-27).
+        # Transcode with the pod's ffmpeg to a mono WAV at the model's rate.
+        wav = media_path.with_suffix(".16k.wav")
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", str(media_path), "-ac", "1", "-ar", str(sr), "-f", "wav", str(wav)],
+            check=True, capture_output=True,
+        )
+        audio, _ = librosa.load(str(wav), sr=sr, mono=True)
+        inputs = self._processor(text=text, audio=[audio], return_tensors="pt", padding=True)
+        inputs = inputs.to("cuda")
+        out = self._model.generate(**inputs, max_new_tokens=384)
+        out = out[:, inputs["input_ids"].shape[1]:]
+        return str(self._processor.batch_decode(
+            out, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0]).strip()
 
 
-class Tarsier2Backend:
-    """omni-research/Tarsier2-7b-0115 -- dense video captioning, FP16.
+class Qwen25VLVideoBackend:
+    """Qwen/Qwen2.5-VL-7B-Instruct -- video understanding, fp16, ~17GB.
 
-    `[speculative]` loader: Tarsier ships its own `trust_remote_code=True`
-    modeling code with a chat-style video-QA interface. The lightest of the
-    three (~14-16GB `[reported]`), and the only one with no stated input
-    length ceiling -- see `docs/model-tarsier2.md`'s flagged-unresolved
-    `MAX_VIDEO_UNDERSTAND_S`.
+    Replaces Tarsier2-7b-0115, whose `TarsierForConditionalGeneration` lives
+    only in ByteDance's repo pinned to transformers 4.47 (see docs/model-
+    tarsier2.md). Loader and inference follow the model card:
+    `Qwen2_5_VLForConditionalGeneration` + `AutoProcessor`, the video read
+    and sampled by `qwen_vl_utils.process_vision_info` (decord). `max_pixels`
+    caps each sampled frame so a phone clip does not blow the token budget.
     """
 
     modality = "video"
-    model_id = "omni-research/Tarsier2-7b-0115"
+    model_id = os.environ.get("AI_STUDIO_VIDEO_MODEL_ID", "Qwen/Qwen2.5-VL-7B-Instruct")
     accepts_prompt = True
+    MAX_PIXELS = int(os.environ.get("AI_STUDIO_VIDEO_MAX_PIXELS", str(360 * 420)))
+    """Per sampled frame. 480*480+ improves grounding per the Qwen docs; an
+    env var so the experiment is a restart, not a redeploy."""
+    FPS = 1.0
 
     def __init__(self) -> None:
         self._model: Any = None
@@ -223,12 +323,12 @@ class Tarsier2Backend:
 
     def load(self) -> None:
         import torch
-        from transformers import AutoModelForCausalLM, AutoProcessor
+        from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-        self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_id, trust_remote_code=True, torch_dtype=torch.float16
-        ).to("cuda")
+        self._processor = AutoProcessor.from_pretrained(self.model_id)
+        self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            self.model_id, device_map="cuda", dtype=torch.float16
+        )
 
     def unload(self) -> None:
         import torch
@@ -237,14 +337,39 @@ class Tarsier2Backend:
         self._processor = None
         torch.cuda.empty_cache()
 
-    def infer(self, media_path: Path | None, prompt: str | None, *, history: str | None = None) -> str:
+    def infer(
+        self,
+        media_path: Path | None,
+        prompt: str | None,
+        *,
+        history: str | None = None,
+        options: GenerationOptions | None = None,
+    ) -> str:
+        from qwen_vl_utils import process_vision_info
+
         assert media_path is not None  # only "chat" jobs ever omit it
-        question = prompt or "Describe what happens in this video in detail."
-        inputs = self._processor(text=question, videos=str(media_path), return_tensors="pt").to(
-            "cuda"
-        )
-        output_ids = self._model.generate(**inputs, max_new_tokens=256)
-        return str(self._processor.batch_decode(output_ids, skip_special_tokens=True)[0])
+        question = prompt or VIDEO_DEFAULT_QUESTION
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "video", "video": f"file://{media_path}", "max_pixels": self.MAX_PIXELS, "fps": self.FPS},
+                {"type": "text", "text": question},
+            ],
+        }]
+        text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        # qwen-vl-utils 0.0.8 (the card's pin) returns two values; the
+        # `return_video_kwargs=True` form is a later release (📏 2026-08-27:
+        # "unexpected keyword argument").
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = self._processor(
+            text=[text], images=image_inputs, videos=video_inputs, padding=True,
+            return_tensors="pt",
+        ).to("cuda")
+        out = self._model.generate(**inputs, max_new_tokens=512)
+        out = out[:, inputs["input_ids"].shape[1]:]
+        return str(self._processor.batch_decode(
+            out, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0]).strip()
 
 
 class GptOssChatBackend:
@@ -296,8 +421,22 @@ class GptOssChatBackend:
         self._tokenizer = None
         torch.cuda.empty_cache()
 
-    def infer(self, media_path: Path | None, prompt: str | None, *, history: str | None = None) -> str:
+    def infer(
+        self,
+        media_path: Path | None,
+        prompt: str | None,
+        *,
+        history: str | None = None,
+        options: GenerationOptions | None = None,
+    ) -> str:
+        opts = options or GenerationOptions()
         messages: list[dict[str, str]] = []
+        if opts.system:
+            # The HF gpt-oss chat template renders a system-role message as
+            # the harmony *developer* "# Instructions" block and synthesises
+            # the real system header (identity, cutoff, date, Reasoning:
+            # <effort>) itself from `reasoning_effort`.
+            messages.append({"role": "system", "content": opts.system})
         if history:
             # (role, content) pairs, oldest first -- see
             # `ai_studio.pipeline.queue.JobQueue.recent_chat_turns`, the
@@ -306,37 +445,105 @@ class GptOssChatBackend:
                 messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": prompt or ""})
 
-        input_ids = self._tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt"
+        # 📏 2026-08-27, transformers 5.16: apply_chat_template(return_tensors=
+        # "pt") hands back a BatchEncoding (a dict), not a tensor -- passed
+        # positionally to generate() it died with KeyError: 'shape'. Ask for
+        # the dict explicitly and unpack it.
+        # reasoning_effort="low" is a documented gpt-oss chat-template
+        # kwarg. 📏 2026-08-27: at the default effort a one-line question
+        # spent the whole 512-token budget inside the analysis channel and
+        # never reached "final" -- the reply was thinking or nothing. A group
+        # chat wants the short answer, not the deliberation.
+        inputs = self._tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, return_tensors="pt", return_dict=True,
+            reasoning_effort=opts.reasoning_effort or "low",
         ).to("cuda")
-        output_ids = self._model.generate(input_ids, max_new_tokens=self.MAX_NEW_TOKENS)
-        decoded = self._tokenizer.decode(
-            output_ids[0][input_ids.shape[-1] :], skip_special_tokens=True
-        )
-        return _final_channel(decoded)
+        max_new = min(opts.max_new_tokens or self.MAX_NEW_TOKENS, MAX_NEW_TOKENS_CEILING)
+        gen_kwargs: dict[str, Any] = {"max_new_tokens": max_new}
+        if opts.json_only:
+            gen_kwargs["do_sample"] = False  # a schema wants the argmax, not a sample
+        output_ids = self._model.generate(**inputs, **gen_kwargs)
+        prompt_len = inputs["input_ids"].shape[-1]
+        # Keep the special tokens: harmony's channel markers ARE special
+        # tokens, and with skip_special_tokens=True the decode came back as
+        # "analysis<thinking>assistantfinal<reply>" -- the leak _final_channel
+        # exists to prevent (📏 first real generation, 2026-08-27).
+        decoded = self._tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=False)
+        # The raw harmony transcript, for the log: the one place channel
+        # routing problems show up (📏 2026-08-27: a JSON rewrite came back as
+        # "想太久了" -- the fallback -- without the analysis budget being hit).
+        _log.info("gpt-oss raw decode (%d chars): %s", len(decoded), decoded[:400].replace("\n", "\\n"))
+        text = _final_channel(decoded)
+        return _outer_json(text) if opts.json_only else text
+
+
+def _outer_json(text: str) -> str:
+    """The first balanced {...} object in a reply, or the reply unchanged if
+    there is none -- the caller's JSON parser then fails loudly on it.
+
+    Balanced-brace scan rather than first-`{`/last-`}`: a reply that trails
+    off mid-object, or that puts prose with a brace after the JSON, would
+    otherwise be sliced into something that is neither."""
+    start = text.find("{")
+    if start == -1:
+        return text
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return text[start:]
 
 
 def _final_channel(text: str) -> str:
     """Pull only harmony's "final" channel out of a raw gpt-oss-20b decode.
 
-    `[speculative]`: the exact channel-tag syntax has not been verified
-    against a real generation on this hardware yet -- a best-effort reading
-    of the published format, to be corrected against real output before the
-    first deployment. Falls back to the whole decoded text if no channel
-    marker is found rather than returning nothing -- a reply that leaked a
-    thinking trace is a worse failure than skipped channel-splitting, but
-    returning nothing at all is worse still.
+    📏 Verified against a real generation on the RTX 4090 (2026-08-27): the
+    raw decode is `<|channel|>analysis<|message|>…<|end|><|start|>assistant
+    <|channel|>final<|message|>…<|return|>` -- the final channel closes with
+    `<|return|>` (end of turn), not `<|end|>`, so both are cut on. With the
+    special tokens stripped the same text reads "analysis…assistantfinal…",
+    which the second branch handles so a tokenizer change cannot leak the
+    thinking trace. Falls back to the whole text only when neither shape is
+    present -- returning nothing at all would be worse still.
     """
     marker = "<|channel|>final<|message|>"
     if marker in text:
-        return text.split(marker, 1)[1].split("<|end|>", 1)[0].strip()
+        tail = text.split(marker, 1)[1]
+        for stop in ("<|return|>", "<|end|>", "<|call|>"):
+            tail = tail.split(stop, 1)[0]
+        return tail.strip()
+    stripped = "assistantfinal"
+    if stripped in text:
+        return text.rsplit(stripped, 1)[1].strip()
+    if "<|channel|>analysis" in text or text.startswith("analysis"):
+        # The budget ran out inside the thinking channel. Leaking that trace
+        # as the reply is the failure this function exists to prevent; say
+        # what happened instead.
+        return "(想太久了,這次沒有寫出回答 -- 請再問一次,或問短一點)"
     return text.strip()
 
 
 _BACKENDS: dict[str, type[ModelBackend]] = {
     "image": MoondreamBackend,
-    "audio": Qwen3OmniCaptionerBackend,
-    "video": Tarsier2Backend,
+    "audio": Qwen2AudioBackend,
+    "video": Qwen25VLVideoBackend,
     "chat": GptOssChatBackend,
 }
 
@@ -353,6 +560,7 @@ class Job:
     history: str | None = None
     """JSON-encoded (role, content) pairs, oldest first -- chat only. See
     `GptOssChatBackend.infer()`."""
+    options: GenerationOptions = field(default_factory=lambda: GenerationOptions())
     state: str = "queued"  # queued | running | completed | failed
     result_text: str | None = None
     error: str | None = None
@@ -388,7 +596,7 @@ only holds a weak reference to a task created with `create_task`, so an
 unreferenced one can be garbage-collected mid-run, silently killing the job.
 Discarded via the task's own done-callback once it finishes."""
 
-UNLOAD_WAIT_TIMEOUT_S = 120.0
+UNLOAD_WAIT_TIMEOUT_S = 180.0
 """How long eviction waits for an in-flight `infer()` call to clear before
 giving up and unloading anyway. Must stay comfortably above
 `GptOssChatBackend.MAX_NEW_TOKENS`'s own worst-case generation time so this
@@ -429,11 +637,21 @@ def _release_vram() -> None:
     module docstring.
     """
     try:
+        import gc
+
         import torch
 
+        # gc first: `empty_cache()` only returns blocks no tensor references,
+        # and a just-dropped HF model is held alive by reference cycles until
+        # the collector runs. 📏 2026-08-27 (job 86): "evicting chat to load
+        # image" set gpt-oss's refs to None, moondream3 then OOMed twice at
+        # 22.7GiB in this process, and loaded on the third try once the
+        # cycles had been collected in between.
+        gc.collect()
+        torch.cuda.synchronize()
         torch.cuda.empty_cache()
     except Exception:  # pragma: no cover - defensive; must never mask the real error
-        _log.warning("could not release VRAM after a failed load", exc_info=True)
+        _log.warning("could not release VRAM", exc_info=True)
 
 
 async def _ensure_loaded(modality: str) -> ModelBackend:
@@ -452,48 +670,129 @@ async def _ensure_loaded(modality: str) -> ModelBackend:
     async with _slot.lock:
         if _slot.backend is not None:
             _log.info("evicting %s to load %s", _slot.backend.modality, modality)
-            _slot.backend.unload()
+            await asyncio.to_thread(_slot.backend.unload)
             _slot.backend = None
+            # The evicted model must actually be gone before the next one
+            # claims the card -- see _release_vram.
+            await asyncio.to_thread(_release_vram)
         backend_cls = _BACKENDS[modality]
         backend = backend_cls()
         _log.info("loading %s (%s)", backend.model_id, modality)
         started = time.monotonic()
-        try:
-            backend.load()
-        except Exception:
-            _log.exception(
-                "failed to load %s (%s) -- releasing any partial VRAM claim",
-                backend.model_id, modality,
-            )
-            _release_vram()
-            raise
+        # Off the event loop, like infer(): a cold load is 📏 ~60s for
+        # moondream3 and minutes for Qwen3-Omni-Captioner (quantised on
+        # load), and run inline it froze every route -- /poll returned
+        # nothing at all for the whole load, so the client's 30s poll
+        # timeout gave up on a job that was in fact fine (observed live
+        # 2026-08-27, first request against real weights). The slot lock
+        # is an asyncio.Lock, so holding it across the await is what
+        # serialises loads without stalling /healthz and /poll.
+        #
+        # One retry, after a sweep: a load that OOMs because the previous
+        # tenant's memory had not been collected yet succeeds on the next
+        # attempt (📏 job 86 above), and paying that inside the server beats
+        # failing the user's request and making them ask again.
+        for attempt in (1, 2):
+            try:
+                await asyncio.to_thread(backend.load)
+                break
+            except Exception as exc:
+                _log.exception(
+                    "failed to load %s (%s), attempt %d -- releasing any partial VRAM claim",
+                    backend.model_id, modality, attempt,
+                )
+                backend = backend_cls()
+                await asyncio.to_thread(_release_vram)
+                if attempt == 2 or "out of memory" not in str(exc).lower():
+                    raise
         _log.info("loaded %s in %.0fs", backend.model_id, time.monotonic() - started)
         _slot.backend = backend
         return backend
 
 
+AUDIO_TRACK_SILENT = "(這段影片沒有聲音軌)"
+VIDEO_AUDIO_QUESTION = (
+    "請只用繁體中文(台灣用字,不要簡體字),條列描述這段影片的聲音,不要加開場白。"
+    "每一項都要填,沒有的就寫「無」:\n"
+    "類型:(人聲說話 / 唱歌 / 音樂 / 環境音或雜訊 / 電子音或提示音 / 混合 -- 選一個最接近的)\n"
+    "內容:(若有人說話或唱歌,盡量逐字寫出;若是音樂,寫出樂器、曲風、節奏;若是環境音或電子音,描述是什麼聲音、持續還是間斷)\n"
+    "細節:(說話者人數與語氣、背景聲、音量與音質)"
+)
+"""What the audio model is asked about a video's track when the user gave no
+question of their own. Shorter than AUDIO_DEFAULT_QUESTION: this is half of
+an answer, the frames are the other half."""
+
+
+def _has_audio_track(path: Path) -> bool:
+    """ffprobe: does the container carry an audio stream? A silent clip must
+    skip the audio pass and say so, not run the model on nothing."""
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_type",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    return proc.returncode == 0 and "audio" in proc.stdout
+
+
+def _extract_track(path: Path) -> Path:
+    wav = path.with_suffix(".track.wav")
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(path), "-vn", "-ac", "1", "-ar", "16000",
+         "-f", "wav", str(wav)],
+        check=True, capture_output=True,
+    )
+    return wav
+
+
+async def _infer_with(modality: str, media_path: Path | None, prompt: str | None, job: Job) -> str:
+    """Load `modality`'s backend (evicting whatever is resident) and run one
+    inference off the event loop, bracketed by `in_flight` -- see ModelSlot."""
+    backend = await _ensure_loaded(modality)
+    _slot.in_flight += 1
+    try:
+        return await asyncio.to_thread(
+            backend.infer, media_path, prompt, history=job.history, options=job.options
+        )
+    finally:
+        _slot.in_flight -= 1
+
+
 async def _run_job(job: Job) -> None:
     job.state = "running"
     try:
-        backend = await _ensure_loaded(job.modality)
-        # Run the blocking model call off the event loop -- this is the one
-        # call in the whole server that can take tens of seconds (longer,
-        # unbounded until GptOssChatBackend.MAX_NEW_TOKENS caps it, for
-        # chat). `_slot.in_flight` brackets it so eviction knows to wait --
-        # see ModelSlot's docstring.
-        _slot.in_flight += 1
-        try:
-            result = await asyncio.to_thread(
-                backend.infer, job.media_path, job.prompt, history=job.history
-            )
-        finally:
-            _slot.in_flight -= 1
-        job.result_text = result[:MAX_OUTPUT_CHARS]
+        if job.modality == "video" and job.media_path is not None:
+            # /說影 sees AND hears: Qwen2.5-VL only samples frames
+            # (process_vision_info), so on its own it describes a silent
+            # film. Run it on the frames, then -- if the clip has a track --
+            # evict to Qwen2-Audio and run that on the ffmpeg-extracted
+            # audio (one swap, 📏 ~27 s), and join the two under headings.
+            # The user's own question, if any, goes to both models; a bare
+            # trigger gets each model's engineered default.
+            visual = await _infer_with("video", job.media_path, job.prompt, job)
+            if _has_audio_track(job.media_path):
+                track = await asyncio.to_thread(_extract_track, job.media_path)
+                heard = await _infer_with("audio", track, job.prompt or VIDEO_AUDIO_QUESTION, job)
+            else:
+                heard = AUDIO_TRACK_SILENT
+            result = f"【畫面】\n{visual.strip()}\n\n【聲音】\n{heard.strip()}"
+        else:
+            result = await _infer_with(job.modality, job.media_path, job.prompt, job)
+        cap = MAX_JSON_OUTPUT_CHARS if job.options.json_only else MAX_OUTPUT_CHARS
+        job.result_text = result[:cap]
         job.state = "completed"
     except Exception as exc:  # a job's own failure must not crash the server
         _log.exception("job %s failed", job.job_id)
         job.error = str(exc)
         job.state = "failed"
+    if job.state == "failed":
+        # Outside the `except` block on purpose. Observed live 2026-08-27:
+        # Qwen3-Omni OOMed half-way through load() and 23.9GB stayed
+        # allocated until the process was restarted, even though
+        # _ensure_loaded had called _release_vram() -- inside an `except`,
+        # the in-flight exception's traceback still references load()'s
+        # frames, and those hold the half-built model, so gc cannot free
+        # it. Here the exception has been dropped and the sweep can work.
+        _release_vram()
 
 
 # --------------------------------------------------------------------- app
@@ -515,6 +814,10 @@ async def submit(
     modality: str = Form(...),
     prompt: str | None = Form(None),
     history: str | None = Form(None),
+    system: str | None = Form(None),
+    max_new_tokens: int | None = Form(None),
+    reasoning_effort: str | None = Form(None),
+    json_only: bool = Form(False),
 ) -> JSONResponse:
     if modality not in _BACKENDS:
         raise HTTPException(400, f"unknown modality {modality!r}, expected one of {list(_BACKENDS)}")
@@ -529,7 +832,18 @@ async def submit(
         media_path.write_bytes(await media.read())
 
     job_id = uuid.uuid4().hex
-    job = Job(job_id=job_id, modality=modality, media_path=media_path, prompt=prompt, history=history)
+    if reasoning_effort not in (None, "low", "medium", "high"):
+        raise HTTPException(400, f"reasoning_effort must be low|medium|high, got {reasoning_effort!r}")
+    options = GenerationOptions(
+        system=system or None,
+        max_new_tokens=min(max_new_tokens, MAX_NEW_TOKENS_CEILING) if max_new_tokens else None,
+        reasoning_effort=reasoning_effort,
+        json_only=json_only,
+    )
+    job = Job(
+        job_id=job_id, modality=modality, media_path=media_path, prompt=prompt,
+        history=history, options=options,
+    )
     _jobs[job_id] = job
     # Fire-and-forget: the caller polls. A cold model load can plausibly
     # exceed the ~100s Cloudflare window on RunPod's pod proxy even though a
@@ -578,8 +892,9 @@ async def unload() -> dict[str, Any]:
     async with _slot.lock:
         if _slot.backend is not None:
             _log.info("unloading %s (GPU hand-off to ComfyUI)", _slot.backend.modality)
-            _slot.backend.unload()
+            await asyncio.to_thread(_slot.backend.unload)
             _slot.backend = None
+            await asyncio.to_thread(_release_vram)
     return {"ok": True}
 
 

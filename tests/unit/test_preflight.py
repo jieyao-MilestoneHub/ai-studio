@@ -56,8 +56,16 @@ def test_a_check_that_cannot_run_skips_rather_than_passing() -> None:
     """The failure mode that would make this whole module worse than nothing:
     "we could not verify this" rendering as "this is verified"."""
     assert preflight.check_signature_and_dedupe().status is Status.SKIP
-    assert preflight.check_queue_and_conversion().status is Status.SKIP
     assert preflight.check_placement().status is Status.SKIP
+
+
+def test_the_conversion_check_runs_offline_and_passes() -> None:
+    """The rewriter is gpt-oss on the pod, which does not exist before a
+    window; the check proves the queue -> prompt -> `_rendered` path with a
+    scripted reply instead of skipping, so it is a real assertion."""
+    result = preflight.check_queue_and_conversion()
+    assert result.status is Status.PASS, result.detail
+    assert "built_by=llm" in result.detail
 
 
 def test_every_skip_says_why() -> None:

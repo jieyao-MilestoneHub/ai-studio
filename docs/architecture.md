@@ -140,6 +140,21 @@ Two things make this quartet different from the other two:
   section for how it shares the one 24GB card with ComfyUI's H3/Flux
   checkpoint without ever holding both at once.
 
+### A fourth quartet: `ChatProvider`
+
+`core/chat_spec.py` (`ChatCapabilities`/`ChatRequest`/`ChatJob`/`ChatAsset`,
+`MediaKind.CHAT`) and `providers/base.py`'s `ChatProvider` give `/himonkey`
+(text in, text out, gpt-oss-20b) the same shape again, and for the same
+reason: a cold load of a 16GB checkpoint does not fit the ~100s proxy
+window. Like understanding it has no output file and is served by the same
+`deploy/inference_server.py` process — it is the fourth backend behind the
+one `ModelSlot`, so `pipeline.drain.make_room_for()` treats it as the same
+evictable side as the three understanding kinds. What is *different*: it
+carries a rolling history (`JobQueue.recent_chat_turns()`, last 10 turns)
+into each request, and its spend is capped by its own sub-budget
+(`AI_STUDIO_MAX_CHAT_MONTH_USD`, checked in `pipeline.drain.render_chat`
+before submit) and per-user daily cap, separate from the video/image ones.
+
 ## Gate ordering is architectural
 
 Gates split PRE / POST. PRE (plan, format, prompt) are pure functions of
@@ -162,10 +177,10 @@ generation is a receipt, not a check.
 | `comfy` | built — client, graph binding, turbo validation |
 | `inference` | built — `InferenceClient`, the HTTP surface for `deploy/inference_server.py`'s three understanding models |
 | `llm` | built — endpoint client that converts a chat message into a structured prompt |
-| `providers` | `stub`/`stub-understanding` and `comfyui` (clip, MiniMax H3) built; `flux` (image, Flux.1-dev) built; `understand-{image,audio,video}` (moondream3/Qwen3-Omni-Captioner/Tarsier2) built |
+| `providers` | `stub`/`stub-understanding` and `comfyui` (clip, MiniMax H3) built; `flux` (image, Flux.1-dev) built; `understand-{image,audio,video}` (moondream3/Qwen3-Omni-Captioner/Tarsier2) built; `chat` (gpt-oss-20b) built |
 | `gates` | shell built; no rules yet |
 | `planner`, `render` | not started |
-| `pipeline` | built — SQLite request queue, drain loop, LLM-conversion worker |
+| `pipeline` | built — SQLite request queue, drain loop, worker with a prepare phase (batched prompt rewriting on the pod via `pod_llm.PodLlmClient`) and a bounded model-affinity claim |
 | `runtime` | `pod`, `session`, and `budget` built against the live REST v2 schema |
 | `cli` | `doctor`, `format`, `generate`, `pod {capacity,up,status,down}`, `session {open,close,status,reap,drain}`, `line` |
 | `api`, `bots` | built — FastAPI webhook/status/file service and the LINE bot |

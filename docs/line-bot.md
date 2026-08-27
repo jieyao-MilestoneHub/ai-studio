@@ -65,17 +65,17 @@ no file produced:
 
 | trigger | describes | model |
 |---|---|---|
-| a photo, then `/說圖` | that photo | moondream3-preview (fallback: Florence-2-large) |
-| an audio clip, then `/說音` | that clip | Qwen3-Omni-Captioner |
-| a video clip, then `/說影` | that clip | Tarsier2 |
+| a photo, then `/說圖` | that photo | moondream3-preview — English only 📏 (it does not write Chinese, asked three ways) |
+| an audio clip, then `/說音` | that clip | Qwen2-Audio-7B-Instruct, asked for Traditional Chinese then English |
+| a video clip, then `/說影` | that clip — **picture and sound**: Qwen2.5-VL on the frames, then Qwen2-Audio on the ffmpeg-extracted track (one model swap, 📏 ~27 s), answered under 【畫面】/【聲音】; a silent clip says so | Qwen2.5-VL-7B-Instruct + Qwen2-Audio-7B-Instruct, Traditional Chinese |
 
 **None of the three take trailing text.** `/說圖 這是誰` is refused with a
 usage line and never enqueued — the mirror image of the four generation
 triggers, which require non-empty text. This holds uniformly across all
-three even though moondream3-preview and Tarsier2 could technically accept a
-steering prompt, because Qwen3-Omni-Captioner cannot (it rejects a text
-prompt outright), and having the same trigger *shape* behave differently
-per command is exactly the kind of per-command surprise this bot avoids
+three even though all three current models could technically accept a
+steering prompt (the original audio model, Qwen3-Omni-Captioner, could
+not), because having the same trigger *shape* behave differently per
+command is exactly the kind of per-command surprise this bot avoids
 elsewhere ("one spelling per trigger, no aliases").
 
 **The photo/audio/video cache works exactly like `/圖影`'s**: whatever was
@@ -110,6 +110,77 @@ job submits — see [architecture.md](architecture.md).
 against this project's use** the way MiniMax H3's and Flux's have. See
 `docs/model-moondream3.md`, `docs/model-qwen3-omni-captioner.md`,
 `docs/model-tarsier2.md` for what is (and is not yet) verified.
+
+## A free trigger: `/影音`
+
+| trigger | produces | runs on |
+|---|---|---|
+| a video, then `/影音` | that clip's audio track as an M4A (AAC 128 kbps), sent as a LINE **audio message** in the reply | ffmpeg on the host — no GPU, no pod, no queue |
+
+The only trigger that costs nothing but CPU, which is why it is handled
+inline in the webhook rather than enqueued: the worker would open a
+$0.74/hr pod for an ffmpeg call. Same pairing rule as `/說影` (your own
+clip, within 5 minutes), same free reply as「讓我看看」(no push quota). A
+clip with no audio track, or one ffmpeg refuses, is said in words. The file
+lands under `AI_STUDIO_FILES_DIR` and is swept by the same retention as the
+renders.
+
+## An eighth trigger: chat
+
+| trigger | produces | model |
+|---|---|---|
+| `/himonkey <想說的話>` | a plain-text reply | gpt-oss-20b, via `deploy/inference_server.py` |
+
+`/himonkey` with no text is refused with a usage line, like the four
+generation triggers. There is no media to pair, so nothing is cached or
+claimed. The reply carries the sender's last 10 turns as context
+(`JobQueue.recent_chat_turns()`) — a rolling window, not a transcript.
+
+**It has its own caps, not the render ones.** Chat messages do not count
+against `AI_STUDIO_MAX_JOBS_PER_USER_PER_DAY`; they have
+`AI_STUDIO_MAX_CHAT_MESSAGES_PER_USER_PER_DAY` (default 50) instead, because a
+normal conversation's cadence would otherwise exhaust a user's whole
+video/image allowance. Spend is fenced by `AI_STUDIO_MAX_CHAT_MONTH_USD`
+(default $15) — checked in `pipeline.drain.render_chat` before any submit,
+on top of the all-kinds monthly cap, so chat traffic cannot quietly eat the
+budget video and image depend on. Both defaults are starting guesses, not
+considered numbers; see issue #27.
+
+**Same pod, same one-model-at-a-time rule** as the understanding triggers:
+gpt-oss-20b is the fourth backend behind the inference server's one model
+slot, evicted by the next generation job and evicting ComfyUI's checkpoint
+in turn. A pod whose last job was chat is held `CHAT_IDLE_MINUTES` (15)
+before the reaper closes it — see [schedule.md](schedule.md).
+
+⚠️ gpt-oss-20b's licence is Apache 2.0 with no geographic restriction
+(`docs/model-gpt-oss-20b.md`) — the one model here whose licence *is*
+settled — but nothing about it has run on real hardware yet.
+
+## 「讓我看看」: pulling a result when push is gone
+
+LINE's free tier allows 200 push messages a month, and this bot delivers
+every finished render with one — so the quota can run out mid-month (it
+did on 2026-08-27), after which the worker finishes renders nobody is told
+about. *Replies* are not metered, so the fallback is pull-based:
+
+| shape | what happens |
+|---|---|
+| quote-reply an earlier message with「讓我看看」 | exactly that one job comes back: the clip/image as a media object (with the poster the worker already rendered), a description as text. Not done → "還沒好(生成中)"; failed → "失敗:reason"; not a request the bot took → says so. Quote either your own `/影片 …` message or the bot's「收到」answer to it |
+| bare「讓我看看」 | everything finished in this group and not yet delivered, oldest first — up to four media objects plus one summary text (LINE's five-message reply limit); the summary says how many are still waiting |
+
+A leading `/` or the IME's fullwidth solidus is tolerated, like the status
+words. **The user keeps their own clock**: a reply token lives about a
+minute after the message, so the bot cannot answer a request from before
+the render finished — it can only answer the message that asks. The
+「收到」reply says so while the quota is out (`JobQueue.
+push_quota_exhausted()`, set by the worker the first time a push fails on
+quota this month), so nobody waits for a push that will never come.
+
+Only what actually went out is marked delivered: `pipeline.worker._deliver`
+leaves a job undelivered when both the media push and its text fallback
+fail on quota (`*-and-silent`), and the pull marks it delivered on a
+successful reply — so a rejected reply is retried by asking again, and a
+restart never re-pushes what was handed over.
 
 ## Why it is shaped this way
 
@@ -492,7 +563,34 @@ priorities, no concurrency above one.
 - **`--terminate-after` is set on every pod.** It is the backstop for the case
   where this host dies mid-window.
 
-## Measured: the conversion endpoint
+## Conversion on the pod (since 2026-08-27)
+
+Prompt rewriting happens in the **GPU worker**, not the webhook, using the
+gpt-oss-20b already served by `deploy/inference_server.py`. The webhook only
+enqueues. Each worker tick runs a *prepare phase* first
+(`pipeline/worker.py::prepare`): jobs that need no rewriter (chat, a bare
+`/說圖` `/說音` `/說影`, raw mode) are converted at once; the rest are
+converted **all together while gpt-oss is resident** — one
+`make_room_for(CHAT)` evicts ComfyUI's checkpoint, every pending rewrite
+runs, then rendering resumes. So N queued clips pay one gpt-oss load
+(📏 57–68 s) and one H3 load, not 2N. The batch is deferred while a
+generation checkpoint still has parsed work of its own kind, and a bounded
+model-affinity claim (`MAX_AFFINITY_RUN`) keeps the loaded checkpoint busy.
+
+What each model gets is in the `prompts/` package and in each
+`docs/model-*.md` Prompting section; the job's `_built_by` records the path
+(`llm`, `llm-retry`, `template (llm failed: …)`, `raw`,
+`understanding-default|raw|llm|llm-retry|template…`, `chat`).
+
+`/說圖 /說音 /說影` now take **optional** trailing text: it is the user's
+question, rewritten on the pod into that model's best form (English for
+moondream3, 繁體中文 structured for the two Qwen models).
+
+## Historical: the serverless conversion endpoint (retired 2026-08-27)
+
+Kept for the numbers; nothing calls it any more (`llm/endpoint.py` remains
+only for `ScriptedLlmClient` in tests).
+
 
 Deployed as `runpod-workers/worker-vllm` on `ADA_24` with
 `--model-reference https://huggingface.co/Qwen/Qwen2.5-7B-Instruct:main`,
@@ -538,8 +636,10 @@ the schema explicitly forbids.
 
 So the validation layer is earning its place — the output is schema-*valid*
 because `prompts/h3.py` enforces structure — but the *instructions* are only
-partly obeyed. A larger model, or a few-shot example in the system prompt, is the
-obvious next lever if shot splitting matters.
+partly obeyed. Both levers were pulled on 2026-08-27: the rewriter is now
+gpt-oss-20b, and `prompts/convert.py`'s system prompt carries a few-shot
+example (the orange cat that becomes a Van Gogh pixel cat, as two shots)
+that the real parser validates in a unit test.
 
 ## Cost
 

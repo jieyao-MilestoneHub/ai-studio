@@ -742,7 +742,14 @@ def provision(
         remote_path="/workspace/inference_server.py",
     )
 
-    body = script.read_text(encoding="utf-8")
+    # The HF token rides as the first stdin line, ahead of the script body,
+    # and is read into the environment `nohup` inherits: it never lands on
+    # the pod's disk (the script file is the *rest* of stdin) nor in argv
+    # (visible in `ps` on both ends). Empty line when unset -- pod_setup.sh
+    # itself decides whether that is fatal (it is, while Tarsier2 is gated
+    # and not yet cached).
+    token = get_settings().hf_token
+    body = (token.get_secret_value() if token else "") + "\n" + script.read_text(encoding="utf-8")
     argv = [
         "ssh", "-i", str(SSH_KEY), "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", "-p", port, f"root@{host}",
@@ -750,6 +757,7 @@ def provision(
         # then races the closing ssh stdin and writes an empty file (observed
         # live, 2026-08-27). Separated, cat drains stdin in the foreground and
         # only the setup run is backgrounded.
+        "IFS= read -r HF_TOKEN; export HF_TOKEN; "
         "cat > /workspace/pod_setup.sh; nohup bash /workspace/pod_setup.sh "
         f"{session.vram_gb} > /workspace/setup.log 2>&1 < /dev/null & disown; echo started",
     ]

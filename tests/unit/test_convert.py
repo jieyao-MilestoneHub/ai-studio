@@ -289,10 +289,17 @@ def test_the_system_prompt_forbids_embellishment_and_keeps_the_users_words() -> 
         "do not embellish",
         "Every concrete word the user used",
         "Proper nouns and on-screen text stay verbatim",
-        "not speaking, lips",
+        "not speaking, lips closed",
         "at most 2",
         "cuts. One shot is fine",
-        "\"no ...\" phrases",
+        # The community H3 guidance (2026-08-27): action first, one camera
+        # move, audio directed, negatives inside the description, one job.
+        "Lead with the ACTION",
+        "Exactly ONE camera move per shot",
+        "No dialogue.",
+        "No text, no subtitles, no logos, no watermark, no extra people.",
+        "Give the clip ONE job",
+        "Never write bare praise",
     ):
         assert rule in SYSTEM_PROMPT, rule
     assert "describe only what\nhappens next" in I2V_BRIEF
@@ -302,8 +309,26 @@ def test_the_system_prompt_forbids_embellishment_and_keeps_the_users_words() -> 
 def test_the_flux_system_prompt_keeps_the_users_words_too() -> None:
     from ai_studio.prompts.flux import SYSTEM_PROMPT
 
-    assert "translate it faithfully, do not embellish" in SYSTEM_PROMPT
-    assert "proper nouns stay verbatim" in SYSTEM_PROMPT
+    assert "translate faithfully, do not embellish" in SYSTEM_PROMPT
+    assert "Proper nouns stay\n  verbatim" in SYSTEM_PROMPT
+    # Flux community guidance: sentences in a fixed order, 40-60 words, no
+    # weights, no negatives, never "white background".
+    for rule in ("40-60 words", "No negatives", "white background", "(word:1.2)"):
+        assert rule in SYSTEM_PROMPT, rule
+
+
+def test_the_h3_few_shot_example_parses_through_the_real_builder() -> None:
+    """The example in the system prompt is the model's strongest instruction.
+    If it ever stops validating, the model is being shown a shape the code
+    would reject -- so it is built here, with the real parser."""
+    from ai_studio.prompts.convert import SYSTEM_PROMPT, _extract_json, build_prompt
+
+    example = SYSTEM_PROMPT.split("total duration 10.12 seconds:", 1)[1]
+    prompt = build_prompt(_extract_json(example), duration_s=10.12)
+    assert len(prompt.shots) == 2
+    assert prompt.shots[1].cut_at_s == 6.0
+    assert prompt.non_diegetic_music == "N/A"
+    assert "No dialogue." in prompt.overall_soundscape
 
 
 # ------------------------------------------------------------------ raw mode

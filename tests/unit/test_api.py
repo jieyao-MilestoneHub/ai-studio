@@ -16,7 +16,6 @@ from ai_studio.api.main import create_app
 from ai_studio.bots.line.reply import NullReplyClient
 from ai_studio.bots.line.verify import sign
 from ai_studio.bots.line.webhook import WebhookHandler
-from ai_studio.config.settings import get_settings
 from ai_studio.pipeline.queue import JobQueue
 
 SECRET = "test-channel-secret"
@@ -34,21 +33,8 @@ def _build(tmp_path: Path, *, allowed_group: str | None = GROUP):
         allowed_group_id=allowed_group,
         base_url="https://vg.example.com",
     )
-    # llm=None: this file's whole premise is "no network, no credentials", and
-    # get_settings() reads whatever real .env happens to sit in the repo root.
-    app = create_app(queue=queue, handler=handler, files_dir=tmp_path / "files", llm=None)
+    app = create_app(queue=queue, handler=handler, files_dir=tmp_path / "files")
     return app, queue, replier
-
-
-@pytest.fixture
-def structured_prompts(monkeypatch: pytest.MonkeyPatch):
-    """These two tests are about the structured conversion path; the default
-    since 2026-08-27 is raw (the user's words verbatim, no LLM)."""
-    monkeypatch.setenv("AI_STUDIO_PROMPT_MODE", "structured")
-    get_settings(refresh=True)
-    yield
-    monkeypatch.delenv("AI_STUDIO_PROMPT_MODE", raising=False)
-    get_settings(refresh=True)
 
 
 @pytest.fixture
@@ -102,23 +88,15 @@ def test_the_verify_button_gets_a_200(client) -> None:
     assert _post(c, []).status_code == 200
 
 
-def test_a_trigger_message_is_accepted_and_converted_in_the_background(
-    client, structured_prompts
-) -> None:
-    """The 200 goes out first; conversion runs after, so it reaches `parsed`.
-
-    With no LLM configured that conversion is the template fallback, which is
-    exactly the behaviour that keeps the pipeline runnable with no LLM at all.
-    """
+def test_a_trigger_message_is_accepted_and_left_queued_for_the_worker(client) -> None:
+    """The webhook only enqueues. Conversion needs the pod (the rewriter is
+    gpt-oss-20b on it), so it happens in the worker's prepare phase -- this
+    process must never try, and the row stays `queued`, not `parsed`."""
     c, queue, replier = client
     assert _post(c, [_event("/影片 一隻橘貓走在雨中")]).status_code == 200
-    assert queue.counts() == {"parsed": 1}
+    assert queue.counts() == {"queued": 1}
     assert "想查進度可以看" in replier.sent[0][1][0]
-
-    job = queue.recent()[0]
-    assert job.prompt is not None
-    assert job.prompt["_built_by"] == "template"
-    assert job.prompt["_rendered"].startswith("integrated_multimodal_description:")
+    assert queue.recent()[0].prompt is None
 
 
 # --------------------------------------------------------------- status page
@@ -131,7 +109,8 @@ def test_the_status_page_renders_for_a_known_token(client) -> None:
 
     response = c.get(f"/q/{token}")
     assert response.status_code == 200
-    assert "等待生成" in response.text, "conversion has already run"
+    assert "等待生成" in response.text
+    assert "整理成模型看得懂的提示" in response.text, "queued wording says what the pod will do first"
     assert "一隻貓" in response.text
 
 
@@ -140,9 +119,7 @@ def test_an_unknown_token_is_404_not_an_error_page(client) -> None:
     assert c.get("/q/does-not-exist").status_code == 404
 
 
-def test_a_finished_job_shows_a_download_link_and_the_shot_breakdown(
-    client, structured_prompts
-) -> None:
+def test_a_finished_job_shows_a_download_link_and_the_shot_breakdown(client) -> None:
     c, queue, _ = client
     _post(c, [_event("/影片 一隻貓")])
     job = queue.recent()[0]
@@ -230,7 +207,7 @@ def test_healthz_reports_the_queue(client) -> None:
 
     payload = c.get("/healthz").json()
     assert payload["ok"] is True
-    assert payload["queue"] == {"parsed": 1}
+    assert payload["queue"] == {"queued": 1}  # conversion happens in the worker now
 
 
 # ------------------------------------------------------------- capture mode
@@ -426,3 +403,53 @@ def test_a_join_in_another_group_warns_about_nothing(tmp_path: Path, caplog) -> 
     messages = [r.getMessage() for r in caplog.records]
     assert not any("JOINED" in m for m in messages)
     queue.close()
+
+
+def test_the_page_names_the_open_model_with_a_link(client) -> None:
+    """Asked 2026-08-27: every job page says which open model produced it and
+    links to its repo. Generators come from a fixed table, understanding and
+    chat from the provider's capabilities, so a model swap shows up here."""
+    from ai_studio.api.main import model_for
+    from ai_studio.core.enums import MediaKind
+
+    c, queue, _ = client
+    _post(c, [_event("/影片 一隻貓")])
+    job = queue.recent()[0]
+    body = c.get(f"/q/{job.token}").text
+    assert "開源模型" in body
+    assert 'href="https://huggingface.co/Comfy-Org/MiniMax-H3"' in body
+    assert "專案 REPO" in body
+    assert 'href="https://github.com/jieyao-MilestoneHub/ai-studio"' in body
+
+    for kind in MediaKind:
+        name, url = model_for(kind)
+        assert name and url.startswith("https://huggingface.co/")
+    assert model_for(MediaKind.CHAT)[1].endswith("/openai/gpt-oss-20b")
+    assert "Qwen2-Audio" in model_for(MediaKind.AUDIO_UNDERSTAND)[0]
+
+
+def test_the_running_wording_matches_the_kind_of_job(client) -> None:
+    """A chat or a photo-description page must not say 正在算圖 (asked 2026-08-27)."""
+    from ai_studio.api.main import state_text
+    from ai_studio.core.enums import MediaKind
+    from ai_studio.pipeline.queue import Job, JobState
+
+    def running(kind):
+        return Job(
+            id=1, token="t", event_id="e", group_id="g", user_id=None, text="x",
+            state=JobState.RUNNING, media_kind=kind, first_frame_path=None, quote_token=None,
+            message_id=None, reply_message_id=None, requested_seconds=None,
+            input_media_path=None, prompt_json=None, output_path=None, result_text=None,
+            cost_usd=None, error=None, gpu_tier=None, created_at=0.0, parsed_at=None,
+            started_at=0.0, finished_at=None, delivered_at=None, attempts=1,
+        )
+
+    seen = set()
+    for kind in MediaKind:
+        label, note = state_text(running(kind))
+        assert label and note
+        seen.add(note)
+    assert len(seen) == len(list(MediaKind)), "every kind gets its own sentence"
+    assert "算圖" not in state_text(running(MediaKind.CHAT))[1]
+    assert "算圖" not in state_text(running(MediaKind.IMAGE_UNDERSTAND))[1]
+    assert "算影片" in state_text(running(MediaKind.VIDEO))[1]

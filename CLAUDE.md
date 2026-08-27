@@ -14,24 +14,36 @@ when working under `twin/`; nothing below applies there.
 
 AI video generation *and* understanding on RunPod: **MiniMax H3** clips and
 **Flux.1-dev** images generated through ComfyUI, plus **moondream3**,
-**Qwen3-Omni-Captioner**, and **Tarsier2** describing a photo/audio/video clip
+**Qwen2-Audio-7B-Instruct**, and **Qwen2.5-VL-7B-Instruct** describing a photo/audio/video clip
 back — all on a shared GPU pod, generation assembled with an editing grammar
 derived from
 [`Hao0321/video-autopilot-kit`](https://github.com/Hao0321/video-autopilot-kit)
 (MIT). A FastAPI service + LINE bot lets a group chat trigger any of them
 (`/影片` for video, `/圖片` for image, photo then `/圖影` / `/圖圖` for
 image-to-video / image-to-image, photo/audio/video then `/說圖` / `/說音` /
-`/說影` to describe it; one spelling each, no aliases) — see
+`/說影` to describe it, `/himonkey` for plain-text chat via **gpt-oss-20b**,
+video then `/影音` to get its audio track as an M4A (ffmpeg on the host,
+no pod), and「讓我看看」— quote-reply an earlier request to pull that one
+result back as a free reply when push quota is gone; one spelling each, no
+aliases) — see
 `docs/line-bot.md`.
 
 Currently built: core model, format policy, H3 prompt builder, Flux prompt
 builder, ComfyUI client, the pod-side understanding-model server and its
-client, stub providers, pod lifecycle, CLI, FastAPI + LINE bot (six triggers,
-queue, status pages, monthly budget guard). **Not built:** the editing
+client, stub providers, pod lifecycle, CLI, FastAPI + LINE bot (eight triggers,
+queue, status pages, monthly budget guard), and the **pod-side prompt
+rewriter**: every request is rewritten into its model's best input shape by
+gpt-oss-20b on the pod before it renders (`prompts/convert.py` H3 schema +
+community rules, `prompts/flux.py`, `prompts/understanding.py`,
+`prompts/chat.py`), batched by the worker's prepare phase so N clips pay one
+model swap; `_built_by` on the job says which path ran. No serverless
+endpoint is involved (retired 2026-08-27). **Not built:** the editing
 grammar implementation, gate rules, planner, render. The grammar is
 specified in `docs/editing-grammar.md` and waiting. The three understanding
-models' licences have not yet been verified — see `docs/model-moondream3.md`,
-`docs/model-qwen3-omni-captioner.md`, `docs/model-tarsier2.md`.
+models' licences: moondream3 unverified (`docs/model-moondream3.md`); the
+two Qwen models are Apache-2.0 per their cards (`docs/model-qwen2-audio.md`,
+`docs/model-qwen2.5-vl.md`). The models they replaced, and why, are in
+`docs/model-qwen3-omni-captioner.md` and `docs/model-tarsier2.md`.
 
 ## Commands
 

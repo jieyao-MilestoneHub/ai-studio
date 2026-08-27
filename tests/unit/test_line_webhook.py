@@ -849,3 +849,146 @@ async def test_a_fullwidth_slash_from_a_mobile_ime_still_triggers(wired) -> None
     assert outcome.action == "accepted"
     assert outcome.job.media_kind is MediaKind.IMAGE
     assert outcome.job.text == "一隻貓"
+
+
+# ------------------------------------------------------- 讓我看看 (pull)
+
+
+def _finish(queue, job_id: int, output: str | None = None, *, text: str | None = None,
+            error: str | None = None):
+    job = queue.by_id(job_id)
+    queue.set_parsed(job.id, {})
+    queue.claim_next()
+    if error is not None:
+        queue.fail(job.id, error, requeue=False)
+    elif text is not None:
+        queue.complete_text(job.id, text)
+    else:
+        queue.complete(job.id, output or "runs/x/clip.mp4")
+    return queue.by_id(job.id)
+
+
+@pytest.mark.asyncio
+async def test_quoting_a_request_hands_back_only_that_job(wired, tmp_path: Path) -> None:
+    handler, queue, replier = wired
+    handler.files_dir = tmp_path
+    body = _body([_text_event("/影片 一隻貓", event_id="e1"),
+                  _text_event("/影片 一隻狗", event_id="e2")])
+    body_json = json.loads(body)
+    body_json["events"][0]["message"]["id"] = "m-cat"
+    body_json["events"][1]["message"]["id"] = "m-dog"
+    body = json.dumps(body_json).encode()
+    cat, dog = await handler.handle(body, sign(body, SECRET))
+    _finish(queue, cat.job.id, "runs/x/cat.mp4")
+    (tmp_path / "cat_poster.jpg").write_bytes(b"jpg")
+    _finish(queue, dog.job.id, "runs/x/dog.mp4")
+
+    ask = _body([_text_event("讓我看看", event_id="e3", message={
+        "type": "text", "id": "m3", "text": "讓我看看", "quotedMessageId": "m-cat"})])
+    (outcome,) = await handler.handle(ask, sign(ask, SECRET))
+
+    assert outcome.action == "show" and outcome.job.id == cat.job.id
+    _, messages = replier.sent_messages[-1]
+    assert messages[0]["type"] == "video"
+    assert messages[0]["originalContentUrl"].endswith("/files/cat.mp4")
+    assert messages[0]["previewImageUrl"].endswith("/files/cat_poster.jpg")
+    assert queue.by_id(cat.job.id).delivered_at is not None
+    assert queue.by_id(dog.job.id).delivered_at is None  # the other one stays for later
+
+
+@pytest.mark.asyncio
+async def test_quoting_the_bots_own_receipt_names_the_request_too(wired, tmp_path: Path) -> None:
+    handler, queue, replier = wired
+    body = _body([_text_event("/影片 一隻貓", event_id="e1")])
+    (accepted,) = await handler.handle(body, sign(body, SECRET))
+    receipt_id = replier.sent[-1][0]  # NullReplyClient ids are sent-<token>-<n>
+    assert queue.by_id(accepted.job.id).reply_message_id == f"sent-{receipt_id}-0"
+    _finish(queue, accepted.job.id, text="一隻橘貓坐在窗台上")
+
+    ask = _body([_text_event("讓我看看", event_id="e2", message={
+        "type": "text", "id": "m2", "text": "讓我看看",
+        "quotedMessageId": f"sent-{receipt_id}-0"})])
+    (outcome,) = await handler.handle(ask, sign(ask, SECRET))
+    assert outcome.detail == "handed over"
+    assert "一隻橘貓" in replier.sent_messages[-1][1][-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_quoting_an_unfinished_or_failed_job_says_so_explicitly(wired) -> None:
+    handler, queue, replier = wired
+    body = _body([_text_event("/影片 一隻貓", event_id="e1", message={
+        "type": "text", "id": "m-cat", "text": "/影片 一隻貓"})])
+    (accepted,) = await handler.handle(body, sign(body, SECRET))
+
+    def ask(eid):
+        return _body([_text_event("讓我看看", event_id=eid, message={
+            "type": "text", "id": eid, "text": "讓我看看", "quotedMessageId": "m-cat"})])
+
+    (o,) = await handler.handle(ask("e2"), sign(ask("e2"), SECRET))
+    assert o.detail == "not done" and "還沒好" in replier.sent[-1][1][0]
+    assert queue.by_id(accepted.job.id).delivered_at is None
+
+    _finish(queue, accepted.job.id, error="OOM on the pod")
+    (o,) = await handler.handle(ask("e3"), sign(ask("e3"), SECRET))
+    assert o.detail == "failed" and "失敗" in replier.sent[-1][1][0]
+    assert "OOM" in replier.sent[-1][1][0]
+
+    unknown = _body([_text_event("讓我看看", event_id="e4", message={
+        "type": "text", "id": "e4", "text": "讓我看看", "quotedMessageId": "nope"})])
+    (o,) = await handler.handle(unknown, sign(unknown, SECRET))
+    assert o.detail == "quoted message unknown"
+    assert "沒有對應" in replier.sent[-1][1][0]
+
+
+@pytest.mark.asyncio
+async def test_bare_show_hands_over_everything_undelivered_and_marks_it(wired, tmp_path: Path) -> None:
+    handler, queue, replier = wired
+    handler.files_dir = tmp_path
+    body = _body([_text_event("/圖片 一隻貓", event_id="e1"), _text_event("/影片 一隻狗", event_id="e2")])
+    a, b = await handler.handle(body, sign(body, SECRET))
+    _finish(queue, a.job.id, "runs/x/cat.png")
+    _finish(queue, b.job.id, "runs/x/dog.mp4")  # no poster -> link only
+
+    ask = _body([_text_event("/讓我看看", event_id="e3")])
+    (outcome,) = await handler.handle(ask, sign(ask, SECRET))
+
+    assert outcome.detail == "2 handed over"
+    _, messages = replier.sent_messages[-1]
+    assert [m["type"] for m in messages] == ["image", "text"]
+    assert "dog.mp4" not in messages[-1]["text"] and "/q/" in messages[-1]["text"]
+    assert all(queue.by_id(j.id).delivered_at for j in (a.job, b.job))
+
+    again = _body([_text_event("讓我看看", event_id="e4")])
+    await handler.handle(again, sign(again, SECRET))
+    assert "沒有等著給你看的成品" in replier.sent[-1][1][0]
+
+
+@pytest.mark.asyncio
+async def test_accept_warns_about_the_pull_once_push_quota_is_gone(wired) -> None:
+    handler, queue, replier = wired
+    queue.note_push_quota_exhausted()
+    body = _body([_text_event("/影片 一隻貓", event_id="e1")])
+    await handler.handle(body, sign(body, SECRET))
+    assert "讓我看看" in replier.sent[-1][1][0] and "推播額度" in replier.sent[-1][1][0]
+
+
+@pytest.mark.asyncio
+async def test_every_link_sits_on_its_own_line(wired, tmp_path: Path) -> None:
+    """LINE renders a URL glued to text as one unbroken run; a newline before
+    it makes the link tappable and the sentence readable (asked 2026-08-27)."""
+    import re
+
+    handler, queue, replier = wired
+    body = _body([_text_event("/影片 一隻貓", event_id="e1")])
+    (accepted,) = await handler.handle(body, sign(body, SECRET))
+    _finish(queue, accepted.job.id, "runs/x/cat.mp4")
+    ask = _body([_text_event("讓我看看", event_id="e2")])
+    await handler.handle(ask, sign(ask, SECRET))
+    status = _body([_text_event("進度", event_id="e3")])
+    await handler.handle(status, sign(status, SECRET))
+
+    texts = [t for _, ts in replier.sent for t in ts]
+    texts += [m["text"] for _, ms in replier.sent_messages for m in ms if m["type"] == "text"]
+    for text in texts:
+        for m in re.finditer(r"https://", text):
+            assert m.start() == 0 or text[m.start() - 1] == "\n", text

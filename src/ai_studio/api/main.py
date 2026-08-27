@@ -7,8 +7,8 @@ cold start does not reliably fit in that budget.
 Route budget discipline:
 
 - `POST /callback` does an HMAC, a few comparisons, one SQLite insert and one
-  reply. Nothing else. The LLM conversion runs in a background task *after* the
-  response is sent; the GPU render happens hours later in the window.
+  reply. Nothing else. Prompt rewriting and the GPU render both happen in the
+  worker process, on the pod, when a job is claimed.
 - `GET /q/{token}` and `GET /files/{name}` are plain reads.
 
 Because results are delivered as a link rather than a LINE video message, the
@@ -32,7 +32,7 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 
 from ai_studio.bots.line.content import LineContentClient
@@ -40,19 +40,9 @@ from ai_studio.bots.line.reply import LineReplyClient, NullReplyClient
 from ai_studio.bots.line.webhook import InvalidSignature, WebhookHandler
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import MediaKind
-from ai_studio.llm.endpoint import RunpodLlmClient
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
 
 _log = logging.getLogger("ai_studio.webhook")
-
-_LLM_UNSET = object()
-"""Distinguishes "no override passed" from "explicitly no LLM" for `llm=`.
-
-`None` is itself a meaningful, valid value for `llm` -- it is what turns on the
-template fallback -- so it cannot double as the "use settings" default without
-making that fallback impossible to select on purpose from a test.
-"""
-
 
 def _pod_is_warm() -> bool:
     """A pod is open and inside its lease. Read per request, not cached: the
@@ -68,7 +58,6 @@ def create_app(
     queue: JobQueue | None = None,
     handler: WebhookHandler | None = None,
     files_dir: Path | None = None,
-    llm: RunpodLlmClient | None = _LLM_UNSET,  # type: ignore[assignment]
 ) -> FastAPI:
     """Build the app. Dependencies are injectable so tests need no credentials."""
     settings = get_settings()
@@ -81,21 +70,9 @@ def create_app(
     app.state.files_dir = Path(files_dir or settings.files_dir)
     app.state.files_dir.mkdir(parents=True, exist_ok=True)
 
-    # `_convert_later` reads `app.state.llm`; unset, it falls back to the
-    # template prompt (a working path, just the 26.0-quality one, not the
-    # 367.6 structured one). Both credentials have to be present for a call
-    # that can actually authenticate.
-    if llm is _LLM_UNSET:
-        llm = (
-            RunpodLlmClient(
-                settings.llm_endpoint_id,
-                settings.runpod_api_key.get_secret_value(),
-                model=settings.llm_model,
-            )
-            if settings.llm_endpoint_id and settings.runpod_api_key
-            else None
-        )
-    app.state.llm = llm
+    # No prompt conversion here any more: the rewriter is gpt-oss-20b on the
+    # pod, and the GPU worker converts each request in its prepare phase
+    # (pipeline/worker.py). This process only enqueues.
 
     if handler is None:
         secret = settings.line_channel_secret
@@ -127,13 +104,16 @@ def create_app(
             content=content,
             incoming_dir=Path("incoming"),
             is_warm=_pod_is_warm,
+            # So「讓我看看」can attach the poster the worker already rendered
+            # next to the clip -- same directory drain writes to.
+            files_dir=app.state.files_dir,
         )
     app.state.handler = handler
 
     # ------------------------------------------------------------- webhook
 
     @app.post("/callback")
-    async def callback(request: Request, background: BackgroundTasks) -> PlainTextResponse:
+    async def callback(request: Request) -> PlainTextResponse:
         # Raw bytes: the signature is over exactly what was sent. Parsing first
         # and re-encoding would change the body and never verify.
         body = await request.body()
@@ -153,12 +133,8 @@ def create_app(
         else:
             _log.info("callback ok: %s", ", ".join(_summarise(o) for o in outcomes))
 
-        # Conversion runs after the response goes out, so it cannot eat the
-        # two-second budget however slow the LLM endpoint's cold start is.
         for outcome in outcomes:
-            if outcome.action == "accepted" and outcome.job is not None:
-                background.add_task(_convert_later, app, outcome.job.id)
-            elif outcome.action == "memberJoined":
+            if outcome.action == "memberJoined":
                 # The set of people who can spend GPU time just changed.
                 # Nothing here polls the roster, so this is the only notice.
                 _log.warning("member(s) JOINED the group: %s", outcome.detail)
@@ -222,44 +198,119 @@ def _summarise(outcome: Any) -> str:
     return " ".join(parts)
 
 
-async def _convert_later(app: FastAPI, job_id: int) -> None:
-    """Turn a queued request into a validated H3 prompt.
-
-    Imported lazily and failure-tolerant: a conversion problem must leave the
-    request in the queue for a retry, not take down the web process.
-    """
-    try:
-        from ai_studio.pipeline.convert_worker import convert_job
-
-        await convert_job(app.state.queue, job_id, getattr(app.state, "llm", None))
-    except Exception:  # background task: the job stays queued for a retry
-        return
-
-
 # ----------------------------------------------------------------- rendering
 
 _STATE_ZH = {
-    JobState.QUEUED: ("解析中", "正在把你的描述轉成模型看得懂的分鏡"),
+    JobState.QUEUED: ("等待生成", "已排入佇列;GPU 開機後會先把你的描述整理成模型看得懂的提示"),
     JobState.PARSED: ("等待生成", "已排入佇列,GPU 開機中或排隊中"),
     JobState.RUNNING: ("生成中", "正在算圖,約 5 分鐘"),
     JobState.DONE: ("完成", ""),
     JobState.FAILED: ("失敗", ""),
 }
+"""The generic (video) wording; `state_text()` specialises it per kind."""
+
+_RUNNING_ZH: dict[MediaKind, tuple[str, str]] = {
+    # (label, note) while the job is on the GPU. Durations are 📏 from the
+    # RTX 4090 on 2026-08-27, cold load included, rounded up so the page
+    # under-promises: image ~30 s warm; a 10 s clip 2-5 min; the three
+    # understanding models and chat each take ~1 min to load if another
+    # model is resident, then seconds to answer.
+    MediaKind.VIDEO: ("生成中", "正在算影片,約 2 到 5 分鐘"),
+    MediaKind.IMAGE: ("生成中", "正在算圖,約 30 秒到 1 分鐘"),
+    MediaKind.IMAGE_UNDERSTAND: ("辨識中", "正在看這張照片,約 1 分鐘(含載入模型)"),
+    MediaKind.AUDIO_UNDERSTAND: ("辨識中", "正在聽這段聲音,約 1 分鐘(含載入模型)"),
+    MediaKind.VIDEO_UNDERSTAND: ("辨識中", "正在看這段影片,約 1 到 2 分鐘(含載入模型)"),
+    MediaKind.CHAT: ("回覆中", "正在想怎麼回你,約 1 分鐘(含載入模型)"),
+}
+
+_WAITING_ZH: dict[MediaKind, tuple[str, str]] = {
+    MediaKind.VIDEO: ("等待生成", "已排入佇列,GPU 開機中或排隊中"),
+    MediaKind.IMAGE: ("等待生成", "已排入佇列,GPU 開機中或排隊中"),
+    MediaKind.IMAGE_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
+    MediaKind.AUDIO_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
+    MediaKind.VIDEO_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
+    MediaKind.CHAT: ("等待回覆", "已排入佇列,GPU 開機中或排隊中"),
+}
+
+
+def state_text(job: Job) -> tuple[str, str]:
+    """(label, note) for the page, worded for what the job actually is.
+
+    "正在算圖" on a chat or a video-description page read as the wrong page
+    (asked 2026-08-27). Understanding and chat jobs also skip the
+    parsing step, so their queued wording never claims to be building
+    shots. Unknown kind raises -- a wrong sentence is worse than none.
+    """
+    kind = job.media_kind
+    if job.state is JobState.RUNNING:
+        return _RUNNING_ZH[kind]
+    if job.state is JobState.PARSED:
+        return _WAITING_ZH[kind]
+    if job.state is JobState.QUEUED:
+        label, _ = _WAITING_ZH[kind]
+        return label, _STATE_ZH[JobState.QUEUED][1]
+    return _STATE_ZH[job.state]
+
+
+PROJECT_REPO_URL = "https://github.com/jieyao-MilestoneHub/ai-studio"
+"""Shown on every job page so a viewer can find the code that made it."""
+
+_GENERATION_MODELS: dict[MediaKind, tuple[str, str]] = {
+    # The two ComfyUI-served generators name their weights by repo, not by a
+    # capabilities snapshot (their `model_id` is "<model>@<w>x<h>"), so the
+    # public repo is spelled out here. The weights `deploy/pod_setup.sh`
+    # actually downloads: Comfy-Org's repackaging of MiniMax H3, and the
+    # fp8 Flux.1-dev transformer from Comfy-Org/flux1-dev (ungated, same
+    # weights as black-forest-labs/FLUX.1-dev).
+    MediaKind.VIDEO: ("MiniMax H3 (MiniMax-H3-fl2va)", "https://huggingface.co/Comfy-Org/MiniMax-H3"),
+    MediaKind.IMAGE: ("Flux.1-dev", "https://huggingface.co/black-forest-labs/FLUX.1-dev"),
+}
+
+
+def model_for(kind: MediaKind) -> tuple[str, str]:
+    """The open model a job of this kind runs on, and where it lives.
+
+    Understanding and chat read the id off the provider's capabilities so
+    a model swap (2026-08-27: two of the three understanding models) shows
+    up here without a second edit; the two generators are a fixed table.
+    Raises on a kind nothing serves -- fail loudly, never a blank row.
+    """
+    if kind in _GENERATION_MODELS:
+        return _GENERATION_MODELS[kind]
+    if kind is MediaKind.CHAT:
+        from ai_studio.providers.chat import chat_capabilities
+
+        model_id = chat_capabilities().model_id
+    elif kind.is_understanding:
+        from ai_studio.providers.understanding import understanding_capabilities
+
+        model_id = understanding_capabilities(kind).model_id
+    else:
+        raise ValueError(f"no model table entry for {kind!r}")
+    return model_id, f"https://huggingface.co/{model_id}"
 
 
 def _render(job: Job, position: int | None, base_url: str) -> str:
-    label, note = _STATE_ZH[job.state]
-    rows = [("狀態", label), ("你的描述", job.text)]
+    label, note = state_text(job)
+    rows: list[tuple[str, str]] = [("狀態", html.escape(label)), ("你的描述", html.escape(job.text))]
     if position:
         rows.append(("佇列位次", f"第 {position} 位"))
     if job.gpu_tier:
-        rows.append(("使用的 GPU", job.gpu_tier))
+        rows.append(("使用的 GPU", html.escape(job.gpu_tier)))
+    model_name, model_url = model_for(job.media_kind)
+    rows.append((
+        "開源模型",
+        f'<a href="{html.escape(model_url)}" rel="noopener">{html.escape(model_name)}</a>',
+    ))
+    rows.append((
+        "專案 REPO",
+        f'<a href="{html.escape(PROJECT_REPO_URL)}" rel="noopener">{html.escape(PROJECT_REPO_URL)}</a>',
+    ))
     if job.error:
-        rows.append(("錯誤", job.error[:300]))
+        rows.append(("錯誤", html.escape(job.error[:300])))
 
-    body = "".join(
-        f"<tr><th>{html.escape(k)}</th><td>{html.escape(str(v))}</td></tr>" for k, v in rows
-    )
+    # Values are already HTML (escaped text, or the anchors above).
+    body = "".join(f"<tr><th>{html.escape(k)}</th><td>{v}</td></tr>" for k, v in rows)
 
     action = ""
     if job.state is JobState.DONE and job.output_path:

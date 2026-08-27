@@ -13,6 +13,8 @@ from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import MediaKind
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
 from ai_studio.prompts import flux as flux_prompts
+from ai_studio.prompts import understanding as understanding_prompts
+from ai_studio.prompts.chat import CHAT_DEVELOPER_PROMPT
 from ai_studio.prompts.convert import LlmClient, convert
 from ai_studio.prompts.flux import FluxPrompt
 from ai_studio.prompts.h3 import I2VA_INSTRUCTION, H3Mode, H3Prompt
@@ -110,22 +112,28 @@ async def convert_job(
     if job is None:
         return "skipped: not queued"
 
+    mode_setting = prompt_mode or get_settings().prompt_mode
+
     if job.media_kind is MediaKind.CHAT:
-        # No prompt to build and no LLM rewrite: gpt-oss-20b gets the user's
-        # raw text directly, so this goes straight to claimable -- a distinct
-        # tag from "understanding" so logs/tests can tell the two apart.
-        queue.set_parsed(job.id, {"_built_by": "chat"})
+        # The user's words are never rewritten (a chat is a chat), but the
+        # reply gets the engineered developer prompt -- persona, language,
+        # length -- which `drain.render_chat` carries as `extra["system"]`.
+        queue.set_parsed(job.id, {"_built_by": "chat", "_system": CHAT_DEVELOPER_PROMPT})
         return "chat"
 
     if job.media_kind.is_understanding:
-        # No prompt to build: the webhook already validated everything an
-        # understanding job needs (a cached photo/audio/video, the audio
-        # duration cap) before enqueueing it. Go straight to claimable.
-        queue.set_parsed(job.id, {"_built_by": "understanding"})
-        return "understanding"
+        # The webhook already validated the media; what is built here is the
+        # *question*: the engineered default when the trigger came bare, or
+        # the user's own question rewritten into the model's best form
+        # (structured mode) / sent as typed (raw mode). None means the image
+        # caption path on the server -- see prompts/understanding.py.
+        question, how = await understanding_prompts.convert_question(
+            job.text, client if mode_setting == "structured" else None, modality=job.media_kind
+        )
+        queue.set_parsed(job.id, {"_built_by": how, "_question": question})
+        return how
 
     length = clamp_duration(job.requested_seconds) if job.requested_seconds else duration_s
-    mode_setting = prompt_mode or get_settings().prompt_mode
     if mode_setting == "raw":
         queue.set_parsed(job.id, raw_payload(job, duration_s=length))
         return "raw"
@@ -165,3 +173,21 @@ async def convert_pending(
         key = how.split(" ")[0]
         tally[key] = tally.get(key, 0) + 1
     return tally
+
+
+def needs_llm(job: Job, prompt_mode: str) -> bool:
+    """Whether converting this job would call the rewriter at all.
+
+    The worker uses this to split a batch: jobs that do not need the LLM are
+    converted at once, the rest wait until gpt-oss is loaded -- one model
+    swap for the whole batch, not one per job. Chat never needs it (the words
+    go verbatim); an understanding job needs it only when the user added a
+    question; generation needs it only in structured mode.
+    """
+    if job.media_kind is MediaKind.CHAT:
+        return False
+    if prompt_mode != "structured":
+        return False
+    if job.media_kind.is_understanding:
+        return bool(job.text.strip())
+    return True
