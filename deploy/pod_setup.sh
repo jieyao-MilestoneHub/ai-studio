@@ -142,13 +142,13 @@ python3 -c 'import hf_transfer' 2>/dev/null ||
 export HF_XET_HIGH_PERFORMANCE=1 HF_HUB_ENABLE_HF_TRANSFER=1 HF_HOME=/workspace/.hf
 command -v hf >/dev/null || pip install -q --break-system-packages -U huggingface_hub
 
-# ~182GB of weights against whatever /workspace actually has (52GB H3 + 17GB
-# Flux + ~99GB for the three understanding models, moondream3 (19) + the
-# full-precision Qwen3-Omni-Captioner (63) + Tarsier2 (17), + ~14GB for
-# gpt-oss-20b's sharded MXFP4 weights -- see the `dl_repo` calls below; the
-# per-repo excludes are what keep this inside a 200GB volume). On a network
-# volume `df` reports the whole cluster's free space, so this check only
-# bites on a plain container disk. Caught here, loudly, before it is caught 30 minutes later as two
+# ~238GB of weights against whatever /workspace actually has (52GB H3 + 17GB
+# Flux + ~128GB for the three understanding models, moondream3 (48) + the
+# full-precision Qwen3-Omni-Captioner (63) + Tarsier2 (17), + ~41GB for the
+# complete gpt-oss-20b repo -- whole repos, every checkpoint format they
+# ship; see the `dl_repo` calls below). On a network volume `df` reports the
+# whole cluster's free space, so this check only bites on a plain container
+# disk. Caught here, loudly, before it is caught 30 minutes later as two
 # silently-missing safetensors files: a download that dies mid-transfer
 # because the disk filled exits same as a download that finished, and
 # `pgrep` alone cannot tell those apart. Observed live: this volume can come
@@ -159,9 +159,9 @@ command -v hf >/dev/null || pip install -q --break-system-packages -U huggingfac
 # free, and must not refuse to finish what it started.
 AVAIL_KB="$(df -k /workspace | awk 'NR==2{print $4}')"
 HAVE_KB="$(du -sk "$M" 2>/dev/null | cut -f1)"
-NEED_KB=$((182 * 1024 * 1024 - ${HAVE_KB:-0}))
+NEED_KB=$((238 * 1024 * 1024 - ${HAVE_KB:-0}))
 [ "$AVAIL_KB" -ge "$NEED_KB" ] || die \
-  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~$((NEED_KB / 1048576))GB more headroom (~52GB H3 + ~17GB Flux + ~99GB understanding models + ~14GB gpt-oss-20b, $((${HAVE_KB:-0} / 1048576))GB already present)"
+  "/workspace has $((AVAIL_KB / 1048576))GB free, need ~$((NEED_KB / 1048576))GB more headroom (~52GB H3 + ~17GB Flux + ~128GB understanding models + ~41GB gpt-oss-20b, $((${HAVE_KB:-0} / 1048576))GB already present)"
 
 DL_PIDS=()
 dl() {  # repo file destdir
@@ -186,9 +186,9 @@ dl_repo() {  # repo [exclude-glob ...] -- the whole repo, into the HF cache (HF_
   # tripped the OOM killer twice (memory.events oom_kill 2) -- two `hf
   # download`s died with a bare "Killed", no ENOSPC, no traceback.
   #
-  # Exclude globs skip the files the loader never opens (read off each
-  # repo's model.safetensors.index.json, 2026-08-27): repos ship spare
-  # checkpoint formats that would otherwise cost ~57GB of a 200GB volume.
+  # Exclude globs are supported but unused: the repos are kept complete
+  # (spare checkpoint formats included, ~57GB) by decision on 2026-08-27,
+  # and the volume was sized to 250GB for it.
   printf '%s\n' "$*" >> /workspace/dl-logs/repos.list
   log "  queued $(basename "$1") (full repo, into HF_HOME cache, sequential${2:+, excluding: ${*:2}})"
 }
@@ -212,7 +212,7 @@ CHAIN
   log "  downloading $(wc -l < /workspace/dl-logs/repos.list) repo(s) sequentially"
 }
 : > /workspace/dl-logs/repos.list
-log "starting weight downloads (~52GB H3 + ~17GB Flux + ~99GB understanding models + ~14GB gpt-oss-20b)"
+log "starting weight downloads (~52GB H3 + ~17GB Flux + ~128GB understanding models + ~41GB gpt-oss-20b)"
 dl Comfy-Org/MiniMax-H3 "$DIT" "$M"
 dl Comfy-Org/MiniMax-H3 text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors "$M"
 dl Comfy-Org/MiniMax-H3 vae/minimax_h3_video_vae_fp16.safetensors "$M"
@@ -256,21 +256,17 @@ fi
 # one-time download (~60GB `[reported]` vs Q4's ~17-22GB *resident* size --
 # the two numbers are not comparable, one is on-disk and one is in-VRAM) for
 # not depending on an unverified third party's requantization.
-# Its index maps every weight to modelv2-*; model-* and model_fp8.pt are
-# older/alternate formats the remote code never opens (29GB).
-dl_repo moondream/moondream3-preview 'model-0000*' 'model_fp8.pt'
+dl_repo moondream/moondream3-preview
 dl_repo Qwen/Qwen3-Omni-30B-A3B-Captioner
 dl_repo omni-research/Tarsier2-7b-0115
 # /himonkey's gpt-oss-20b, the fourth backend of inference_server.py. Its
-# repo is the native-MXFP4 checkpoint (~16GB `[reported]`), loaded as-is by
+# repo is 41GB (📏), the sharded MXFP4 weights plus original/ and metal/, loaded by
 # `GptOssChatBackend.load()` from HF_HOME. Staged here for the same reason
-# the three above are: a `from_pretrained` that has to pull 16GB from the
+# the three above are: a `from_pretrained` that has to pull the weights from the
 # Hub inside the first /himonkey request's background thread would surface
 # as a 10-minute silent stall (or an ENOSPC nobody sees) rather than as a
 # failed setup step -- exactly what the headroom check above exists for.
-# Its index maps to model-0000*-of-00002; original/ (raw MXFP4 for the
-# reference impl) and metal/ (Apple) are 27.6GB transformers never reads.
-dl_repo openai/gpt-oss-20b 'original/*' 'metal/*'
+dl_repo openai/gpt-oss-20b
 dl_repos_start
 
 # ── 4. wait for the weights, then restart ComfyUI ─────────────────────────
