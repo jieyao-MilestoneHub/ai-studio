@@ -137,6 +137,8 @@ Rules:
   people"). Never write the phrase "white background"; if the user wants a
   plain one, say "a plain light-grey studio backdrop".
 - Do not append quality words; they are added separately.
+- Output ONE line of minified JSON: nothing before the opening brace or
+  after the closing one.
 """
 
 

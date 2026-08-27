@@ -465,17 +465,46 @@ class GptOssChatBackend:
         # "analysis<thinking>assistantfinal<reply>" -- the leak _final_channel
         # exists to prevent (📏 first real generation, 2026-08-27).
         decoded = self._tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=False)
+        # The raw harmony transcript, for the log: the one place channel
+        # routing problems show up (📏 2026-08-27: a JSON rewrite came back as
+        # "想太久了" -- the fallback -- without the analysis budget being hit).
+        _log.info("gpt-oss raw decode (%d chars): %s", len(decoded), decoded[:400].replace("\n", "\\n"))
         text = _final_channel(decoded)
         return _outer_json(text) if opts.json_only else text
 
 
 def _outer_json(text: str) -> str:
-    """The outermost {...} of a reply, or the reply unchanged if there is no
-    pair -- the caller's JSON parser then fails loudly on it."""
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
-        return text[start:end + 1]
-    return text
+    """The first balanced {...} object in a reply, or the reply unchanged if
+    there is none -- the caller's JSON parser then fails loudly on it.
+
+    Balanced-brace scan rather than first-`{`/last-`}`: a reply that trails
+    off mid-object, or that puts prose with a brace after the JSON, would
+    otherwise be sliced into something that is neither."""
+    start = text.find("{")
+    if start == -1:
+        return text
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return text[start:]
 
 
 def _final_channel(text: str) -> str:

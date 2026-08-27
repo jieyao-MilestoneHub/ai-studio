@@ -125,17 +125,12 @@ Rules:
 - description and every audio field are English, even when the request is
   Chinese.
 
+- Output ONE line of minified JSON: no line breaks, no indentation, no
+  comments, nothing before the opening brace or after the closing one.
+
 Example -- request: 「一隻橘貓走在下雨的路上,然後變成梵谷風格的像素貓」,
 total duration 10.12 seconds:
-{"shots":[
- {"style":"Live-action, cinematic",
-  "description":"Medium tracking shot: an orange tabby cat walks slowly along a wet asphalt road in steady rain, each paw placed deliberately, fur damp and flattened, streetlights reflecting in puddles. Not speaking. No people.",
-  "camera":{"motion":"tracking_shot","amplitude":"small","speed":"slow","toward":"the cat"}},
- {"cut_at_s":6.0,
-  "description":"Close-up: the same orange tabby cat, now rendered as pixel art in the style of a Van Gogh painting with thick swirling brushstroke pixels, keeps walking in the same rain. No text, no subtitles, no logos, no watermark, no extra people.",
-  "camera":{"motion":"static_shot","amplitude":"small","speed":"normal"}}],
- "overall_soundscape":"Steady rain hisses on asphalt and taps on distant rooftops; soft wet paw steps; a car passes far away. No dialogue.",
- "non_diegetic_music":"N/A"}
+{"shots":[{"style":"Live-action, cinematic","description":"Medium tracking shot: an orange tabby cat walks slowly along a wet asphalt road in steady rain, each paw placed deliberately, fur damp and flattened, streetlights reflecting in puddles. Not speaking. No people.","camera":{"motion":"tracking_shot","amplitude":"small","speed":"slow","toward":"the cat"}},{"cut_at_s":6.0,"description":"Close-up: the same orange tabby cat, now rendered as pixel art in the style of a Van Gogh painting with thick swirling brushstroke pixels, keeps walking in the same rain. No text, no subtitles, no logos, no watermark, no extra people.","camera":{"motion":"static_shot","amplitude":"small","speed":"normal"}}],"overall_soundscape":"Steady rain hisses on asphalt and taps on distant rooftops; soft wet paw steps; a car passes far away. No dialogue.","non_diegetic_music":"N/A"}
 """.replace("__MAX_SHOTS__", str(MAX_SHOTS))
 
 I2V_BRIEF = """\
