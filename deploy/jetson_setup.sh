@@ -130,11 +130,24 @@ RestartSec=10
 WantedBy=multi-user.target
 UNIT
 
+say "journald limits"
+# journald defaults to 10% of the disk capped at 4 GiB and no time bound:
+# once full, the oldest lines vanish with no notice. The JSONL trace under
+# logs/ is the durable record (archived daily); the journal only needs to
+# cover the hot window. Compress=yes is already the default.
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/ai-studio.conf <<CONF
+[Journal]
+SystemMaxUse=1G
+MaxRetentionSec=30day
+CONF
+systemctl restart systemd-journald >/dev/null 2>&1 || true
+
 say "window timers"
 # Both timers only ever close things. Nothing on a schedule opens a pod; the
 # worker does, on demand. --terminate-after on the pod itself is the last
 # backstop and closes a pod even if this box dies entirely.
-for phase in reap close gc; do
+for phase in reap close gc archive; do
   case "$phase" in
     reap)  cmd="session reap";  when="*:0/1" ;;
     # The explicit zone is load-bearing. These were written as UTC numbers
@@ -148,6 +161,12 @@ for phase in reap close gc; do
     # retention window (AI_STUDIO_FILES_RETENTION_DAYS). 02:30 Taipei, a
     # quiet hour.
     gc)    cmd="gc";            when="02:30 Asia/Taipei" ;;
+    # Daily archive: snapshot the queue db, tar+zstd the JSONL traces, session
+    # and pod records, drama state and the ledger into archive/<day>/, verify,
+    # then prune hot logs older than AI_STUDIO_LOG_HOT_DAYS (only what the
+    # manifest names) and archives older than AI_STUDIO_ARCHIVE_KEEP_DAYS.
+    # After gc, in the same quiet hour. See docs/observability.md.
+    archive) cmd="archive";     when="03:00 Asia/Taipei" ;;
   esac
   cat > /etc/systemd/system/ai-studio-${phase}.service <<UNIT
 [Unit]
@@ -190,7 +209,7 @@ systemctl daemon-reload
 systemctl enable --now ai-studio-ngrok.service >/dev/null 2>&1 || true
 systemctl enable --now ai-studio.service >/dev/null 2>&1 || true
 systemctl enable --now ai-studio-worker.service >/dev/null 2>&1 || true
-for phase in reap close gc; do
+for phase in reap close gc archive; do
   systemctl enable --now ai-studio-${phase}.timer >/dev/null 2>&1 || true
 done
 
@@ -201,7 +220,7 @@ cat <<NEXT
   2. curl https://${DOMAIN}/healthz                 -> {"ok":true,...}
   3. LINE console webhook URL: https://${DOMAIN}/callback  -> Verify
   4. systemctl is-active ai-studio-ngrok ai-studio ai-studio-worker -> three active
-  5. systemctl list-timers 'ai-studio-*'            -> three timers armed
+  5. systemctl list-timers 'ai-studio-*'            -> four timers armed
   6. cd ${APP_DIR} && uv run ai-studio preflight
 
   Logs: journalctl -u ai-studio -f    journalctl -u ai-studio-worker -f

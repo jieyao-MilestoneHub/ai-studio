@@ -390,7 +390,7 @@ def test_the_generate_and_enable_loops_use_the_same_unit_list() -> None:
     assert len(loops) == 3, f"expected remove/generate/enable, found {len(loops)}"
     generate, enable = loops[1], loops[2]
     assert generate == enable, f"generate={generate} enable={enable}"
-    assert generate == ["reap", "close", "gc"]
+    assert generate == ["reap", "close", "gc", "archive"]
 
 
 def test_the_next_steps_text_matches_how_many_timers_are_created() -> None:
@@ -471,9 +471,19 @@ def test_daily_timers_name_their_zone() -> None:
     runs Asia/Taipei, so "20:05" meant as 04:05 Taipei fired at 20:05 Taipei
     and terminated a live render (2026-08-27). Only the every-minute reaper
     is zone-free."""
+    for script in ("jetson_setup.sh", "vps_setup.sh"):
+        body = (REPO / "deploy" / script).read_text(encoding="utf-8")
+        assert 'when="04:05 Asia/Taipei"' in body, script
+        assert 'when="02:30 Asia/Taipei"' in body, script
+        assert 'when="03:00 Asia/Taipei"' in body, script  # the daily archive
+
+
+def test_the_jetson_script_bounds_journald() -> None:
+    """journald defaults to 4 GiB and no time bound; the JSONL trace is the
+    durable record, so the journal only needs the hot window."""
     body = (REPO / "deploy" / "jetson_setup.sh").read_text(encoding="utf-8")
-    assert 'when="04:05 Asia/Taipei"' in body
-    assert 'when="02:30 Asia/Taipei"' in body
+    assert "/etc/systemd/journald.conf.d/ai-studio.conf" in body
+    assert "SystemMaxUse=1G" in body and "MaxRetentionSec=30day" in body
 
 
 def test_renamed_flux_files_are_not_redownloaded_when_present() -> None:

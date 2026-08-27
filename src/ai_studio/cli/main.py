@@ -95,6 +95,21 @@ def doctor() -> None:
         f"{free_gb:.0f} GB free of {usage.total / 1_073_741_824:.0f} GB "
         f"(retention {settings.files_retention_days:.0f}d, `ai-studio gc`)",
     )
+    log_dir, archive_dir = settings.log_dir, settings.archive_dir
+    log_bytes = sum(p.stat().st_size for p in log_dir.rglob("*") if p.is_file()) if log_dir.is_dir() else 0
+    newest_log = max((p for p in log_dir.rglob("*.jsonl")), key=lambda p: p.stat().st_mtime, default=None) if log_dir.is_dir() else None
+    table.add_row(
+        "logs", _mark(log_dir.is_dir()),
+        f"{log_dir} {log_bytes / 1_048_576:.1f} MB" + (f", newest {newest_log.name}" if newest_log else "")
+        + f" (hot {settings.log_hot_days:.0f}d, level {settings.log_level})",
+    )
+    days = sorted(p.name for p in archive_dir.iterdir() if p.is_dir()) if archive_dir.is_dir() else []
+    arch_bytes = sum(p.stat().st_size for p in archive_dir.rglob("*") if p.is_file()) if archive_dir.is_dir() else 0
+    table.add_row(
+        "archive", _mark(bool(days)),
+        f"{archive_dir} {len(days)} day(s), {arch_bytes / 1_048_576:.1f} MB"
+        + (f", last {days[-1]}" if days else ", none yet") + f" (keep {settings.archive_keep_days:.0f}d, `ai-studio archive`)",
+    )
 
     console.print(table)
     if not ok:
@@ -180,6 +195,44 @@ def gc(
         f"{total_removed} file(s), {total_freed / 1_048_576:.1f} MB, "
         f"older than {max_age:.0f}d"
     )
+
+
+@app.command("archive")
+def archive(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Plan and report; write and delete nothing."),
+) -> None:
+    """Snapshot, compress, verify, then prune. Schedule this daily (03:00 Asia/Taipei).
+
+    Tars the JSONL traces (days before today), session and pod records, drama
+    state/manifests, the spend ledger and files/index.jsonl plus a consistent
+    sqlite backup of the queue into archive/<day>/*.tar.zst with a manifest
+    of sha256s; then deletes hot logs older than AI_STUDIO_LOG_HOT_DAYS
+    (only what a manifest names), archives older than
+    AI_STUDIO_ARCHIVE_KEEP_DAYS, stale dry-run/stub/out files, empty drama
+    dirs and old chat_turns. Idempotent: a second run the same day only prunes.
+    """
+    _setup_logging("archive")
+    from ai_studio.storage.archive import run_archive
+
+    settings = get_settings()
+    result = run_archive(
+        root=Path.cwd(),
+        log_dir=settings.log_dir,
+        runs_dir=settings.runs_dir,
+        files_dir=settings.files_dir,
+        out_dir=Path("out"),
+        archive_dir=settings.archive_dir,
+        hot_days=settings.log_hot_days,
+        keep_days=settings.archive_keep_days,
+        dry_run=dry_run,
+    )
+    if dry_run:
+        console.print(result.plan.summary())
+        for member in result.plan.members[:20]:
+            console.print(f"  + {member}")
+        if len(result.plan.members) > 20:
+            console.print(f"  ... {len(result.plan.members) - 20} more")
+    console.print(f"[green]{result.summary()}[/green]")
 
 
 @app.command("preflight")

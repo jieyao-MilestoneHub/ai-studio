@@ -158,17 +158,22 @@ say "window timers"
 # every scheduled unit left on this box can only reduce what is billing.
 # --terminate-after on the pod itself is still the third and last backstop: it
 # closes a pod even if this box dies entirely.
-for phase in reap close gc; do
+for phase in reap close gc archive; do
   case "$phase" in
     # Close early once the pod has gone quiet. Also the second line of defence
     # for a worker that died still holding one.
     reap)  cmd="session reap";  when="*:0/1" ;;
     # The hard close at the end of business hours.
-    close) cmd="session close"; when="20:05" ;;
+    # Zone spelled out: a bare OnCalendar is read in the box's local zone
+    # (the Jetson lesson, 2026-08-27). 04:05 Taipei = the quietest hour.
+    close) cmd="session close"; when="04:05 Asia/Taipei" ;;
     # Daily disk sweep: prune delivered media and received photos past the
     # retention window (AI_STUDIO_FILES_RETENTION_DAYS). 18:30 UTC = 02:30
     # Asia/Taipei, a quiet hour.
-    gc)    cmd="gc";            when="18:30" ;;
+    gc)    cmd="gc";            when="02:30 Asia/Taipei" ;;
+    # Daily archive of the JSONL traces, session/pod records, drama state and
+    # a sqlite snapshot of the queue -- see docs/observability.md.
+    archive) cmd="archive";     when="03:00 Asia/Taipei" ;;
   esac
   cat > /etc/systemd/system/ai-studio-${phase}.service <<UNIT
 [Unit]
@@ -206,7 +211,7 @@ done
 systemctl daemon-reload
 systemctl enable --now ai-studio.service >/dev/null 2>&1 || true
 systemctl enable --now ai-studio-worker.service >/dev/null 2>&1 || true
-for phase in reap close gc; do
+for phase in reap close gc archive; do
   systemctl enable --now ai-studio-${phase}.timer >/dev/null 2>&1 || true
 done
 
@@ -233,7 +238,7 @@ cat <<NEXT
   3. curl https://${HOSTNAME_ARG}/healthz          -> {"ok":true,...}
   4. LINE console webhook URL: https://${HOSTNAME_ARG}/callback  -> Verify
   5. systemctl is-active ai-studio ai-studio-worker -> two services active
-  6. systemctl list-timers 'ai-studio-*'            -> three timers armed
+  6. systemctl list-timers 'ai-studio-*'            -> four timers armed
      Nothing on a timer opens a pod: the worker does, on demand, 11:00-13:00.
   7. uv run ai-studio preflight                     -> the nine Phase 4 checks
 
