@@ -170,7 +170,18 @@ NEED_KB=$((192 * 1024 * 1024 - ${HAVE_KB:-0}))
   "/workspace has $((AVAIL_KB / 1048576))GB free, need ~$((NEED_KB / 1048576))GB more headroom (~52GB H3 + ~17GB Flux + ~82GB understanding models + ~41GB gpt-oss-20b, $((${HAVE_KB:-0} / 1048576))GB already present)"
 
 DL_PIDS=()
-dl() {  # repo file destdir
+dl() {  # repo file destdir [already-present-path]
+  # The optional 4th argument is the path the file is *renamed to* further
+  # down (the Flux LoRA/UNet/VAE, whose in-repo names do not match what the
+  # workflow JSON asks for). A re-run on a volume that already has the
+  # renamed file must not fetch it again: 📏 2026-08-27 a re-provision on a
+  # 281/300GB volume re-downloaded all three, hit "Disk quota exceeded", and
+  # the FATAL that followed stopped the inference server from ever starting
+  # -- with the files sitting right there under their final names.
+  if [ -n "${4:-}" ] && [ -s "$4" ]; then
+    log "  present, skipping download: $(basename "$4")"
+    return 0
+  fi
   nohup hf download "$1" "$2" --local-dir "$3" \
     > "/workspace/dl-logs/$(basename "$2").log" 2>&1 &
   DL_PIDS+=("$!:$(basename "$2")")
@@ -228,17 +239,17 @@ dl larryvrh/MiniMax-H3-Turbo-Lora minimax_h3_turbo_v4_step600_ema.safetensors "$
 # The Flux image LoRA. 687,476,088 bytes measured from the HF blobs API.
 # Needs no trigger word: neither candidate's model card declares an
 # instance_prompt -- this is an "unrestrain" adapter, not a concept LoRA.
-dl Heartsync/Flux-NSFW-uncensored lora.safetensors "$M/loras"
+dl Heartsync/Flux-NSFW-uncensored lora.safetensors "$M/loras" "$M/loras/flux_nsfw_uncensored_v1.safetensors"
 # Flux.1-dev itself. black-forest-labs/FLUX.1-dev is the canonical source but
 # is HF-gated (401 with no token, and this script has none configured).
 # comfyanonymous's repackaging is the same fp8-scaled weights, ungated.
-dl comfyanonymous/flux_dev_scaled_fp8_test flux_dev_fp8_scaled_diffusion_model.safetensors "$M/diffusion_models"
+dl comfyanonymous/flux_dev_scaled_fp8_test flux_dev_fp8_scaled_diffusion_model.safetensors "$M/diffusion_models" "$M/diffusion_models/flux1-dev.safetensors"
 dl comfyanonymous/flux_text_encoders clip_l.safetensors "$M/text_encoders"
 dl comfyanonymous/flux_text_encoders t5xxl_fp8_e4m3fn.safetensors "$M/text_encoders"
 # The Flux VAE (ae.safetensors) ships inside the same gated black-forest-labs
 # repo. Comfy-Org/z_image re-hosts the byte-identical file ungated -- checked
 # against several such repackagings, all serving the same file with no auth.
-dl Comfy-Org/z_image split_files/vae/ae.safetensors "$M/vae"
+dl Comfy-Org/z_image split_files/vae/ae.safetensors "$M/vae" "$M/vae/ae.safetensors"
 
 # The three understanding models (/說圖 /說音 /說影), each a whole repo rather
 # than one file -- see `dl_repo`'s comment. Qwen3-Omni-Captioner is

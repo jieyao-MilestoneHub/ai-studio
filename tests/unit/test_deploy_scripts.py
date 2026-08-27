@@ -473,3 +473,19 @@ def test_daily_timers_name_their_zone() -> None:
     body = (REPO / "deploy" / "jetson_setup.sh").read_text(encoding="utf-8")
     assert 'when="04:05 Asia/Taipei"' in body
     assert 'when="02:30 Asia/Taipei"' in body
+
+
+def test_renamed_flux_files_are_not_redownloaded_when_present() -> None:
+    """📏 2026-08-27: a re-provision re-fetched the three Flux files that were
+    already on the volume under their renamed names, filled the volume, and
+    the FATAL stopped the inference server from starting."""
+    setup = (REPO / "deploy" / "pod_setup.sh").read_text(encoding="utf-8")
+    assert 'if [ -n "${4:-}" ] && [ -s "$4" ]; then' in setup
+    for target in (
+        '"$M/loras/flux_nsfw_uncensored_v1.safetensors"',
+        '"$M/diffusion_models/flux1-dev.safetensors"',
+        '"$M/vae/ae.safetensors"',
+    ):
+        assert target in setup, target
+        # the same path the rename step below produces
+        assert setup.count(target.strip('"').replace("$M/", "")) >= 2
