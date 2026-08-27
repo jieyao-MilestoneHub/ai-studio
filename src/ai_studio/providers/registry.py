@@ -58,10 +58,11 @@ def _ensure_builtins() -> None:
         return
     _builtins_loaded = True
 
-    from ai_studio.providers.stub import StubProvider, StubUnderstandingProvider
+    from ai_studio.providers.stub import StubImageProvider, StubProvider, StubUnderstandingProvider
 
     register("stub", StubProvider)
     register("stub-understanding", StubUnderstandingProvider)
+    register("stub-flux", StubImageProvider)
 
     from ai_studio.providers.comfyui import ComfyUIProvider
 

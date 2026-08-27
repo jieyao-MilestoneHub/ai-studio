@@ -1,0 +1,290 @@
+{
+ "1": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "flux1-dev.safetensors",
+   "weight_dtype": "fp8_e4m3fn"
+  }
+ },
+ "2": {
+  "class_type": "DualCLIPLoader",
+  "inputs": {
+   "clip_name1": "t5xxl_fp8_e4m3fn.safetensors",
+   "clip_name2": "clip_l.safetensors",
+   "type": "flux"
+  }
+ },
+ "3": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "ae.safetensors"
+  }
+ },
+ "4": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "",
+   "clip": [
+    "2",
+    0
+   ]
+  }
+ },
+ "6": {
+  "class_type": "FluxGuidance",
+  "inputs": {
+   "conditioning": [
+    "4",
+    0
+   ],
+   "guidance": 3.5
+  }
+ },
+ "7": {
+  "class_type": "RandomNoise",
+  "inputs": {
+   "noise_seed": 0
+  }
+ },
+ "8": {
+  "class_type": "BasicGuider",
+  "inputs": {
+   "model": [
+    "14",
+    0
+   ],
+   "conditioning": [
+    "6",
+    0
+   ]
+  }
+ },
+ "9": {
+  "class_type": "KSamplerSelect",
+  "inputs": {
+   "sampler_name": "euler"
+  }
+ },
+ "10": {
+  "class_type": "BasicScheduler",
+  "inputs": {
+   "model": [
+    "14",
+    0
+   ],
+   "scheduler": "simple",
+   "steps": 28,
+   "denoise": 0.7
+  }
+ },
+ "11": {
+  "class_type": "SamplerCustomAdvanced",
+  "inputs": {
+   "noise": [
+    "7",
+    0
+   ],
+   "guider": [
+    "8",
+    0
+   ],
+   "sampler": [
+    "9",
+    0
+   ],
+   "sigmas": [
+    "10",
+    0
+   ],
+   "latent_image": [
+    "17",
+    0
+   ]
+  }
+ },
+ "12": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "11",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ]
+  }
+ },
+ "13": {
+  "class_type": "SaveImage",
+  "inputs": {
+   "images": [
+    "19",
+    0
+   ],
+   "filename_prefix": "ai_studio"
+  }
+ },
+ "14": {
+  "class_type": "LoraLoaderModelOnly",
+  "inputs": {
+   "model": [
+    "1",
+    0
+   ],
+   "lora_name": "flux_nsfw_uncensored_v1.safetensors",
+   "strength_model": 1.0
+  }
+ },
+ "15": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "",
+   "upload": "image"
+  }
+ },
+ "16": {
+  "class_type": "ImageScale",
+  "inputs": {
+   "image": [
+    "15",
+    0
+   ],
+   "upscale_method": "lanczos",
+   "width": 1024,
+   "height": 1024,
+   "crop": "center"
+  }
+ },
+ "17": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "16",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ]
+  }
+ },
+ "20": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "",
+   "clip": [
+    "2",
+    0
+   ]
+  }
+ },
+ "18": {
+  "class_type": "UltralyticsDetectorProvider",
+  "inputs": {
+   "model_name": "bbox/face_yolov8m.pt"
+  }
+ },
+ "19": {
+  "class_type": "FaceDetailer",
+  "inputs": {
+   "image": [
+    "12",
+    0
+   ],
+   "model": [
+    "14",
+    0
+   ],
+   "clip": [
+    "2",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ],
+   "guide_size": 512,
+   "guide_size_for": true,
+   "max_size": 1024,
+   "seed": 0,
+   "steps": 12,
+   "cfg": 1.0,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "positive": [
+    "6",
+    0
+   ],
+   "negative": [
+    "20",
+    0
+   ],
+   "denoise": 0.35,
+   "feather": 5,
+   "noise_mask": true,
+   "force_inpaint": true,
+   "bbox_threshold": 0.5,
+   "bbox_dilation": 10,
+   "bbox_crop_factor": 3.0,
+   "sam_detection_hint": "center-1",
+   "sam_dilation": 0,
+   "sam_threshold": 0.93,
+   "sam_bbox_expansion": 0,
+   "sam_mask_hint_threshold": 0.7,
+   "sam_mask_hint_use_negative": "False",
+   "drop_size": 10,
+   "wildcard": "",
+   "cycle": 1,
+   "bbox_detector": [
+    "18",
+    0
+   ]
+  }
+ },
+ "_ai_studio": {
+  "bindings": {
+   "prompt": [
+    "4",
+    "text"
+   ],
+   "width": [
+    "16",
+    "width"
+   ],
+   "height": [
+    "16",
+    "height"
+   ],
+   "seed": [
+    "7",
+    "noise_seed"
+   ],
+   "steps": [
+    "10",
+    "steps"
+   ],
+   "lora_strength": [
+    "14",
+    "strength_model"
+   ],
+   "filename": [
+    "13",
+    "filename_prefix"
+   ],
+   "source_image": [
+    "15",
+    "image"
+   ],
+   "denoise": [
+    "10",
+    "denoise"
+   ],
+   "face_seed": [
+    "19",
+    "seed"
+   ]
+  },
+  "comment": "Face-repair sibling of flux_dev_i2i.json for /短劇 keyframes (found by name, see Workflow.sibling; selected by FluxComfyUIProvider only when /object_info registers FaceDetailer and UltralyticsDetectorProvider). Identical to the i2i graph up to VAEDecode (12); the decoded image then passes through Impact-Pack FaceDetailer (19) -- bbox from Impact-Subpack's UltralyticsDetectorProvider (18, face_yolov8m.pt), the same LoRA-fronted model (14), positive from the FluxGuidance (6), an empty encode (20) as the negative Flux does not use, cfg 1.0, denoise 0.35 -- before SaveImage. Every number on node 19 is [speculative]: authored from the Impact-Pack node signature, not yet run on the pod. Stills only, never video (docs/drama.md)."
+ }
+}

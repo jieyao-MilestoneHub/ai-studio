@@ -54,6 +54,11 @@ untouched. 0.7 is the usual starting point for "keep the composition, change
 the content"; re-tune on the pod. Only the `flux_dev_i2i.json` sibling has a
 `denoise` binding — the text-to-image graph runs at 1.0 by construction."""
 
+FACE_REPAIR_NODES = ("FaceDetailer", "UltralyticsDetectorProvider")
+"""The Impact-Pack (+ Impact-Subpack) node classes `flux_dev_i2i_face.json`
+uses. `deploy/pod_setup.sh` installs them best-effort; if either is missing
+from `/object_info` the face sibling is never submitted."""
+
 DEFAULT_LORA_STRENGTH = 1.0
 """Weight given to `flux_nsfw_uncensored_v1.safetensors`, the value its own
 model card uses `[reported]`.
@@ -119,6 +124,15 @@ class FluxComfyUIProvider:
             workflow, "flux_dev", "flux_dev_i2i",
             required_bindings=IMAGE_REQUIRED_BINDINGS | {"source_image", "denoise"},
         )
+        # A third sibling for `/短劇` keyframes: the same i2i graph with an
+        # Impact-Pack FaceDetailer pass on the decoded image. Loaded lazily
+        # and only *used* when the pod actually registers the nodes -- see
+        # `supports_face_repair`. Absent file, absent nodes: plain i2i.
+        self._i2i_face_workflow = Workflow.sibling(
+            workflow, "flux_dev", "flux_dev_i2i_face",
+            required_bindings=IMAGE_REQUIRED_BINDINGS | {"source_image", "denoise"},
+        )
+        self._face_repair_available: bool | None = None
         self._i2i_denoise = i2i_denoise
         self.client = ComfyClient(
             base_url or settings.comfy_url, timeout_s=settings.comfy_timeout_s
@@ -152,10 +166,17 @@ class FluxComfyUIProvider:
                     "image-to-image sibling workflow"
                 )
             workflow = self._i2i_workflow
+            # `extra` is the sanctioned knob bag (core/image_provider_spec.py).
+            # `face_repair` asks for the FaceDetailer sibling; it is honoured
+            # only when the pod has the nodes, and the caller can read which
+            # graph ran back off the returned job (`raw["face_repair"]`).
+            if request.extra.get("face_repair") and await self.supports_face_repair():
+                workflow = self._i2i_face_workflow  # type: ignore[assignment]
             values["source_image"] = await upload_reference_image(
                 self.client, request.source_image_path
             )
-            values["denoise"] = self._i2i_denoise
+            denoise = request.extra.get("denoise")
+            values["denoise"] = float(denoise) if denoise is not None else self._i2i_denoise
 
         for name, value in (
             ("seed", request.seed),
@@ -181,8 +202,29 @@ class FluxComfyUIProvider:
             state=JobState.QUEUED,
             submitted_at=now,
             updated_at=now,
-            raw={"width": request.width, "height": request.height},
+            raw={
+                "width": request.width,
+                "height": request.height,
+                "face_repair": workflow is self._i2i_face_workflow and workflow is not None,
+            },
         )
+
+    async def supports_face_repair(self) -> bool:
+        """Whether this pod can run the FaceDetailer sibling: the file exists
+        next to the base workflow *and* ComfyUI registers the Impact-Pack
+        nodes it uses. Probed once per provider (per pod) and cached; a probe
+        failure counts as "no" -- degrading to plain i2i is the honest
+        answer, not an error, and the drama records which one it got."""
+        if self._face_repair_available is None:
+            if self._i2i_face_workflow is None:
+                self._face_repair_available = False
+            else:
+                try:
+                    info = await self.client.object_info()
+                except Exception:  # unreachable /object_info -> plain i2i
+                    info = {}
+                self._face_repair_available = all(n in info for n in FACE_REPAIR_NODES)
+        return self._face_repair_available
 
     # ------------------------------------------------------------------ poll
 

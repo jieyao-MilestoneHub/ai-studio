@@ -489,3 +489,18 @@ def test_renamed_flux_files_are_not_redownloaded_when_present() -> None:
         assert target in setup, target
         # the same path the rename step below produces
         assert setup.count(target.strip('"').replace("$M/", "")) >= 2
+
+
+def test_the_face_repair_block_can_never_kill_the_setup() -> None:
+    """Impact-Pack is a nice-to-have for /短劇 keyframes. A failure inside its
+    block must log and continue: H3, Flux, the understanding models and chat
+    do not depend on it, and a `die` there would take them all down."""
+    body = POD_SETUP.read_text(encoding="utf-8")
+    start = body.index("face_repair_setup() {")
+    end = body.index("face_repair_setup ||", start)
+    block = body[start:end]
+    assert "die " not in block and "die\n" not in block, "the face-repair block must not die"
+    assert "ComfyUI-Impact-Pack" in block and "ComfyUI-Impact-Subpack" in block
+    assert "face_yolov8m.pt" in block
+    assert ".venv-cu128/bin/pip" in block, "node-pack requirements go into ComfyUI's own venv"
+    assert "SETUP_VERSION=5" in body, "provisioned volumes must re-run the new step"

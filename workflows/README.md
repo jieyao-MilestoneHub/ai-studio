@@ -38,6 +38,14 @@ the provider multiplies duration by fps.
 **`flux_dev.json` is the exception**: a still image has no frame count, so it
 loads with `required_bindings=IMAGE_REQUIRED_BINDINGS` (`prompt`/`width`/
 `height` only, no `length`) via `providers.flux.FluxComfyUIProvider`.
+`flux_dev_i2i_face.json` is a third sibling for `/短劇` keyframes: the i2i
+graph plus an Impact-Pack `FaceDetailer` (bbox from Impact-Subpack's
+`UltralyticsDetectorProvider`) between `VAEDecode` and `SaveImage`.
+`providers.flux` submits it only when `/object_info` registers both nodes;
+every value on the detailer node is `[speculative]`. The turbo trap below does
+not apply to it either — it has no H3 nodes. Stills only, never video
+(`docs/drama.md`).
+
 `flux_dev_i2i.json` is its image-to-image sibling, found by name the same way
 `h3_i2va_*.json` is found next to `h3_fl2va_*.json` (`Workflow.sibling`): the
 empty latent is replaced by `LoadImage → ImageScale → VAEEncode`, and
