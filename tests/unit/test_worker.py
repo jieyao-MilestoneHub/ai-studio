@@ -1094,3 +1094,39 @@ async def test_a_dramas_real_provider_failure_still_counts_toward_max_attempts(
     actions = [(await _tick(queue, host, tmp_path))[0] for _ in range(MAX_ATTEMPTS)]
     assert actions == ["requeued"] * (MAX_ATTEMPTS - 1) + ["failed"]
     assert queue.by_id(job.id).state is JobState.FAILED
+
+
+# ------------------------------------------------------------ the trace
+
+
+@pytest.mark.asyncio
+async def test_a_completed_job_leaves_a_traceable_record(queue, tmp_path: Path, caplog) -> None:
+    """One `bind` around the render is what lets `grep token=` follow a
+    request: every line inside carries job_id, token and kind as record
+    attributes -- claimed, submitted, fetched, done, delivered -- without any
+    of those callers being told the job (📏 the first live drama left no
+    worker line at all, 2026-08-28)."""
+    import logging
+
+    from ai_studio.core.observability import configure_logging
+
+    # What every composition root does first; without it the context filter
+    # is not on the logger path and records carry no job/token (the exact
+    # production gap this work closes).
+    configure_logging(service="worker", log_dir=None, level="INFO")
+    job = _parsed(queue)
+    host = FakeHost()
+    with caplog.at_level(logging.INFO, logger="ai_studio"):
+        action, _ = await _tick(queue, host, tmp_path)
+    assert action == "completed"
+
+    traced = [r for r in caplog.records if getattr(r, "token", None) == job.token]
+    msgs = [r.getMessage() for r in traced]
+    assert msgs, "no line carried the job's token"
+    assert all(r.job_id == job.id and r.kind == "video" for r in traced)
+    assert "claimed" in msgs
+    assert any(m.startswith("submitted clip") for m in msgs)
+    assert any(m.startswith("fetched clip") for m in msgs)
+    done = next(r for r in traced if r.getMessage().startswith(f"job {job.id} done in"))
+    assert done.outcome == "completed" and done.seconds >= 0 and done.stage == "render"
+    assert "delivered" in msgs

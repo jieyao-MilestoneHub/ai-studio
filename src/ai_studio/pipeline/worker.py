@@ -37,6 +37,7 @@ from typing import Any, Protocol
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import MediaKind
 from ai_studio.core.errors import AIStudioError, DramaResume, ProviderError
+from ai_studio.core.observability import bind
 from ai_studio.pipeline.convert_worker import convert_job, needs_llm
 from ai_studio.pipeline.drain import (
     MAX_ATTEMPTS,
@@ -225,10 +226,16 @@ async def tick(
         state.affinity_run += 1
     else:
         state.affinity_run = 0
-    outcome = await _run_one(
-        queue, host, job, providers, files_dir=files_dir,
-        deadline=deadline, report=report, poll_interval_s=poll_interval_s,
-    )
+    # One bind covers every line inside the render: drain, drama stages, the
+    # model swap, the pod LLM, the push -- all run in this task.
+    with bind(job_id=job.id, token=job.token, kind=job.media_kind.value):
+        _log.info(
+            "claimed", extra={"attempts": job.attempts, "gpu_tier": job.gpu_tier, "stage": "claim"},
+        )
+        outcome = await _run_one(
+            queue, host, job, providers, files_dir=files_dir,
+            deadline=deadline, report=report, poll_interval_s=poll_interval_s,
+        )
     state.resident = job.media_kind
     return outcome
 
@@ -283,8 +290,13 @@ async def prepare(
             state.resident = MediaKind.CHAT
             state.affinity_run = 0
         for job in costly:
-            how = await convert_job(queue, job.id, llm, prompt_mode=mode)
-            _log.info("job %d prepared: %s", job.id, how)
+            with bind(job_id=job.id, token=job.token, kind=job.media_kind.value):
+                how = await convert_job(queue, job.id, llm, prompt_mode=mode)
+                _log.info(
+                    "job %d prepared: %s", job.id, how,
+                    extra={"built_by": how, "seconds": getattr(llm, "last_total_s", None),
+                           "stage": "prepare"},
+                )
             done += 1
             if how.startswith("failed"):
                 # A drama whose screenplay could not be written is FAILED
@@ -295,6 +307,8 @@ async def prepare(
         _log.info(
             "%d rewrite(s) deferred: %s still has claimable work",
             len(costly), state.resident.value if state.resident else "?",
+            extra={"deferred": len(costly), "resident": state.resident.value if state.resident else None,
+                   "stage": "prepare"},
         )
     return done
 
@@ -376,14 +390,16 @@ async def _run_one(
         # orphan the clips already paid for.
         queue.fail(job.id, f"resume: {exc}", requeue=True, uncounted=True)
         report.requeued += 1
-        _log.info("job %d paused for the next window: %s", job.id, exc)
+        _log.info("job %d paused for the next window: %s", job.id, exc,
+                  extra={"outcome": "resumed-later", "reason": str(exc)[:200]})
         report.last_action = "resumed-later"
         return "resumed-later"
     except ProviderError as exc:
         if job.attempts >= MAX_ATTEMPTS:
             queue.fail(job.id, f"provider failed {job.attempts}x: {exc}")
             report.failed += 1
-            _log.warning("job %d failed for good: %s", job.id, exc)
+            _log.warning("job %d failed for good: %s", job.id, exc,
+                         extra={"outcome": "failed", "attempts": job.attempts, "reason": str(exc)[:200]})
             await _deliver(queue, host, job.id, None, report)
             report.last_action = "failed"
             return "failed"
@@ -392,13 +408,15 @@ async def _run_one(
         # attempt for something the user does not need to know about.
         queue.fail(job.id, f"provider: {exc}", requeue=True)
         report.requeued += 1
-        _log.warning("job %d requeued (attempt %d): %s", job.id, job.attempts, exc)
+        _log.warning("job %d requeued (attempt %d): %s", job.id, job.attempts, exc,
+                     extra={"outcome": "requeued", "attempts": job.attempts, "reason": str(exc)[:200]})
         report.last_action = "requeued"
         return "requeued"
     except AIStudioError as exc:
         queue.fail(job.id, str(exc))
         report.failed += 1
-        _log.warning("job %d failed terminally: %s", job.id, exc)
+        _log.warning("job %d failed terminally: %s", job.id, exc,
+                     extra={"outcome": "failed", "reason": str(exc)[:200]})
         await _deliver(queue, host, job.id, None, report)
         report.last_action = "failed"
         return "failed"
@@ -416,7 +434,13 @@ async def _run_one(
     # Without this a long render looks like idleness and the reaper closes the
     # window out from under the next job.
     host.touch_activity(job.media_kind.value)
-    _log.info("job %d done in %.0fs -> %s", job.id, report.seconds[-1], result)
+    finished = queue.by_id(job.id)
+    _log.info(
+        "job %d done in %.0fs -> %s", job.id, report.seconds[-1], result,
+        extra={"outcome": "completed", "seconds": round(report.seconds[-1], 1),
+               "cost_usd": finished.cost_usd if finished is not None else None,
+               "stage": "render"},
+    )
     await _deliver(queue, host, job.id, asset, report)
     report.last_action = "completed"
     return "completed"
@@ -450,7 +474,8 @@ async def _deliver(
     try:
         outcome = await host.deliver(job, asset)
     except Exception as exc:  # delivery must never lose a finished render
-        _log.error("job %d could not be delivered: %s", job.id, exc)
+        _log.error("job %d could not be delivered: %s", job.id, exc,
+                   extra={"outcome": "delivery-failed", "stage": "deliver"})
         report.undelivered += 1
         return "failed"
 
@@ -463,12 +488,14 @@ async def _deliver(
         # trigger (/讓我看看, a free reply) can hand it over later -- marking
         # it delivered here would make a finished, paid-for result vanish.
         _log.warning("job %d finished but the group was told nothing (%s); held for pull",
-                     job.id, outcome)
+                     job.id, outcome,
+                     extra={"outcome": outcome, "quota_exhausted": True, "stage": "deliver"})
         report.undelivered += 1
         return outcome
 
     queue.mark_delivered(job.id)
     report.delivered += 1
+    _log.info("delivered", extra={"outcome": outcome, "stage": "deliver"})
     return outcome
 
 

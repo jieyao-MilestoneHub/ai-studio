@@ -9,9 +9,13 @@ lazily to dodge a cycle; living here, both import it at module level.
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 from ai_studio.core.enums import MediaKind
+
+_log = logging.getLogger("ai_studio.residency")
 
 
 async def make_room_for(job_kind: MediaKind, providers: dict[MediaKind, Any]) -> None:
@@ -40,5 +44,12 @@ async def make_room_for(job_kind: MediaKind, providers: dict[MediaKind, Any]) ->
         evicted.add(id(provider))
         evict = getattr(provider, "evict", None)
         if evict is not None:
+            started = time.monotonic()
             await evict()
+            # The model swap is the single most expensive thing that is not a
+            # render (📏 15-90 s per side); it was never logged before 2026-08-28.
+            _log.info(
+                "evicted %s for %s", kind.value, job_kind.value,
+                extra={"stage": "swap", "evicted": kind.value, "seconds": round(time.monotonic() - started, 1)},
+            )
 

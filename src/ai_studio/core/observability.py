@@ -230,6 +230,36 @@ class DailyJsonlHandler(logging.Handler):
         super().close()
 
 
+class _ContextFilterSingleton:
+    _instance: ContextFilter | None = None
+
+    @classmethod
+    def get(cls) -> ContextFilter:
+        if cls._instance is None:
+            cls._instance = ContextFilter()
+        return cls._instance
+
+
+class _ContextLogger(logging.Logger):
+    """A Logger whose records always pass through the context filter, so a
+    logger created after `configure_logging` is decorated too."""
+
+    def makeRecord(self, *args: Any, **kwargs: Any) -> logging.LogRecord:
+        record = super().makeRecord(*args, **kwargs)
+        _ContextFilterSingleton.get().filter(record)
+        return record
+
+
+def _install_context_filter(ctx_filter: ContextFilter) -> None:
+    logging.setLoggerClass(_ContextLogger)
+    root = logging.getLogger()
+    if ctx_filter not in root.filters:
+        root.addFilter(ctx_filter)
+    for existing in list(logging.Logger.manager.loggerDict.values()):
+        if isinstance(existing, logging.Logger) and ctx_filter not in existing.filters:
+            existing.addFilter(ctx_filter)
+
+
 # -------------------------------------------------------------- entry point
 
 
@@ -252,10 +282,19 @@ def configure_logging(
             with contextlib.suppress(Exception):
                 existing.close()
 
-    ctx_filter = ContextFilter()
+    # The context filter goes on the *loggers'* path, not on our handlers:
+    # a filter on a handler only decorates records that handler sees, so
+    # pytest's caplog (its own root handler) -- and any other sink someone
+    # attaches -- would get records with no job/token on them. Python only
+    # runs a logger's filters for records created on that logger, so the
+    # filter is installed on the root and every "ai_studio.*" logger created
+    # so far; `_ctx_logger_class` covers loggers created later.
+    ctx_filter = _ContextFilterSingleton.get()
+    _install_context_filter(ctx_filter)
+
     human = logging.StreamHandler(stream or sys.stderr)
     human.setFormatter(HumanFormatter())
-    human.addFilter(ctx_filter)
+    human.addFilter(ctx_filter)  # belt and braces: records from foreign loggers
     setattr(human, _HANDLER_TAG, True)
     root.addHandler(human)
 

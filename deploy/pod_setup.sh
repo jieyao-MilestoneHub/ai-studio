@@ -36,8 +36,8 @@ M="$CU/models"
 COMFY_TAG="v0.33.3"   # 0.26.2, which the image ships, has no native H3 support
 TURBO_REPO="https://github.com/Larryvrh/ComfyUI-MiniMax-H3-Turbo"
 
-log() { printf '[setup] %s\n' "$*"; }
-die() { printf '[setup] FATAL: %s\n' "$*" >&2; exit 1; }
+log() { printf '[setup %s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+die() { printf '[setup %s] FATAL: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; exit 1; }
 
 # ── weight set follows the card, not preference ────────────────────────────
 # A measured run peaked at 43.3GB. At 48GB the LoRA can be applied in bypass

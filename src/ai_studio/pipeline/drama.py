@@ -35,6 +35,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,6 +107,9 @@ async def render_drama(
 
     # -- cost gate: what is still to be spent, against the per-run ceiling
     still_to_render = _count_missing(state, len(screenplay.shots))
+    if any(still_to_render.values()) and (state.character or state.keyframes or state.clips):
+        _log.info("resuming drama", extra={"stage": "drama", "reason": str(still_to_render),
+                                           "cost_usd": state.spent_usd})
     estimate = (
         still_to_render["images"] * float(image_caps.cost_per_image_usd)
         + still_to_render["clips"] * float(clip_caps.estimated_cost_usd(clip_s))
@@ -136,11 +140,14 @@ async def render_drama(
             height=height,
             seed=_seed(job.id, "character", view),
         )
+        _t0 = time.monotonic()
         record, _ = await _render_image(
             image, request, run_dir / "character" / f"{view}.png", deadline, poll_interval_s
         )
         state.character[view] = record
         state.add_cost(record.cost_usd)
+        _log.info("character %s", view, extra={"stage": "character", "sha256": record.sha256[:12],
+                                               "cost_usd": record.cost_usd, "seconds": round(time.monotonic() - _t0, 1)})
         save_state(run_dir, state)
         touch()
 
@@ -150,6 +157,7 @@ async def render_drama(
         if _fresh(state.keyframes.get(key)):
             continue
         _require_time(deadline, "image")
+        _t0 = time.monotonic()
         extra: dict[str, Any] = {"denoise": settings.drama_keyframe_denoise}
         # Once this pod's face graph has failed, stop asking: a requeued drama
         # would otherwise pay the failed attempt again on every keyframe.
@@ -186,6 +194,9 @@ async def render_drama(
                 state.face_repair = "skipped: pod has no FaceDetailer nodes"
         state.keyframes[key] = record
         state.add_cost(record.cost_usd)
+        _log.info("keyframe %s/%d", key, len(screenplay.shots),
+                  extra={"stage": "keyframe", "sha256": record.sha256[:12], "cost_usd": record.cost_usd,
+                         "seconds": round(time.monotonic() - _t0, 1), "reason": state.face_repair})
         save_state(run_dir, state)
         touch()
 
@@ -198,6 +209,7 @@ async def render_drama(
         if _fresh(state.clips.get(key)):
             continue
         _require_time(deadline, "video")
+        _t0 = time.monotonic()
         prompt = h3_prompt(shot, screenplay, duration_s=clip_s).render()
         clip_request = ClipRequest(
             shot_id=f"job{job.id}_shot{key}",
@@ -215,6 +227,9 @@ async def render_drama(
         )
         state.clips[key] = record
         state.add_cost(record.cost_usd)
+        _log.info("clip %s/%d", key, len(screenplay.shots),
+                  extra={"stage": "clip", "sha256": record.sha256[:12], "cost_usd": record.cost_usd,
+                         "seconds": round(time.monotonic() - _t0, 1)})
         save_state(run_dir, state)
         touch()
 
@@ -228,6 +243,7 @@ async def render_drama(
         state.ffmpeg_argv.extend(argvs)
         state.leveled[key] = ArtifactRecord(path=str(dest), sha256=sha256_file(dest))
         save_state(run_dir, state)
+        _log.info("leveled %s", key, extra={"stage": "level", "sha256": state.leveled[key].sha256[:12]})
 
     output = Path(files_dir) / f"{job.token}.mp4"
     if not _fresh(state.output):
@@ -236,6 +252,8 @@ async def render_drama(
         state.ffmpeg_argv.append(argv)
         state.output = ArtifactRecord(path=str(output), sha256=sha256_file(output))
         save_state(run_dir, state)
+        _log.info("drama assembled", extra={"stage": "concat", "sha256": state.output.sha256[:12],
+                                            "cost_usd": state.spent_usd})
         (run_dir / "render_manifest.json").write_text(
             json.dumps({"ffmpeg": state.ffmpeg_argv}, indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -294,6 +312,8 @@ def _require_time(deadline: datetime, kind: str) -> None:
     handed back -- not failed."""
     remaining = (deadline - datetime.now(timezone.utc)).total_seconds()
     if remaining < STAGE_RESERVE_S[kind]:
+        _log.info("paused at %s: %.0fs left on the lease", kind, remaining,
+                  extra={"stage": kind, "outcome": "paused", "seconds": round(remaining)})
         raise DramaResume(
             f"lease ends in {remaining:.0f}s, under the {STAGE_RESERVE_S[kind]:.0f}s a "
             f"drama {kind} needs; resuming next window"

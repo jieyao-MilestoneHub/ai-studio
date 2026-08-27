@@ -67,6 +67,8 @@ class PodLlmClient:
             state = str(payload.get("state") or "")
             if state == "completed":
                 self.last_total_s = time.monotonic() - started
+                _log.info("rewrite done", extra={"stage": "prepare", "seconds": round(self.last_total_s, 1),
+                                                  "model": "gpt-oss-20b", "pod_job": job_id})
                 return str(payload.get("result_text") or "")
             if state == "failed":
                 raise ProviderError(f"rewrite failed on the pod: {payload.get('error') or 'unknown'}")

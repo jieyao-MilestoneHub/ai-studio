@@ -343,6 +343,7 @@ class WebhookHandler:
                 f"你今天已經送出 {limit} 個請求,"
                 "達到每日上限。明天再試。",
             )
+            _log.warning("refused: daily cap", extra={"user": user_id, "kind": media_kind.value, "reason": "daily cap"})
             return Outcome("rate_limited", detail=str(user_id))
 
         if media_kind is MediaKind.DRAMA and self._over_drama_cap():
@@ -351,6 +352,7 @@ class WebhookHandler:
                 f"今天的短劇額度({self.max_dramas_per_day} 部)已經用完,明天再來。"
                 f"其他功能({self.trigger}、{self.image_trigger}…)不受影響。",
             )
+            _log.warning("refused: drama cap", extra={"user": user_id, "kind": media_kind.value, "reason": "drama cap"})
             return Outcome("rate_limited", detail="drama cap")
 
         # Only a trigger that asked for cached media touches a cache, and only
@@ -578,6 +580,10 @@ class WebhookHandler:
         if sent:
             # So quoting the bot's own「收到」names this request too.
             self.queue.set_reply_message_id(job.id, sent[0])
+        _log.info(
+            "accepted", extra={"job_id": job.id, "token": job.token, "kind": media_kind.value,
+                               "user": user_id, "message_id": message_id, "stage": "accept"},
+        )
         return Outcome("accepted", job=job)
 
     def _accepted_line(self, job: Job) -> str:
@@ -920,6 +926,9 @@ class WebhookHandler:
             return Outcome("show", detail="reply failed")
         for job in batch:
             self.queue.mark_delivered(job.id)
+        for job in batch:
+            _log.info("pulled", extra={"job_id": job.id, "token": job.token, "kind": job.media_kind.value,
+                                       "stage": "deliver", "outcome": "pulled"})
         return Outcome("show", detail=f"{len(batch)} handed over")
 
     async def _show_one(self, group_id: str, reply_token: str, quoted_message_id: str) -> Outcome:
@@ -961,6 +970,8 @@ class WebhookHandler:
             return Outcome("show", job=job, detail="reply failed")
         if job.delivered_at is None:
             self.queue.mark_delivered(job.id)
+        _log.info("pulled", extra={"job_id": job.id, "token": job.token, "kind": job.media_kind.value,
+                                   "stage": "deliver", "outcome": "pulled"})
         return Outcome("show", job=job, detail="handed over")
 
     def _media_message(self, job: Job) -> dict[str, Any] | None:

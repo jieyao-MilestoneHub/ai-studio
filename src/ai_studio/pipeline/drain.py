@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -44,6 +45,8 @@ from ai_studio.pipeline.convert_worker import DEFAULT_DURATION_S, snap_frames
 from ai_studio.pipeline.drama import render_drama
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
 from ai_studio.pipeline.residency import make_room_for
+
+_log = logging.getLogger("ai_studio.drain")
 
 STOP_CLAIMING_BEFORE_S = 8 * 60
 """Reserve the last eight minutes of the window for finishing, not starting.
@@ -310,7 +313,10 @@ async def render_clip(
         first_frame_path=job.first_frame_path,
     )
 
+    _submitted = time.monotonic()
     clip_job = await provider.submit(request)
+    _log.info("submitted clip", extra={"stage": "render", "pod_job": getattr(clip_job, "job_id", None), "model": getattr(getattr(provider, "capabilities", lambda: None)(), "model_id", None)})
+    _polls = 0
     while not clip_job.is_terminal:
         # Past the bell there is no point continuing to pay: cancel and let the
         # request come back next window rather than losing both money and clip.
@@ -319,12 +325,14 @@ async def render_clip(
             raise ProviderError("window closed while the clip was rendering")
         await asyncio.sleep(poll_interval_s)
         clip_job = await provider.poll(clip_job)
+        _polls += 1
 
     if not clip_job.state.is_success:
         raise ProviderError(f"generation failed: {clip_job.error or clip_job.state.value}")
 
     dest = files_dir / f"{job.token}.mp4"
     await provider.fetch(clip_job, dest)
+    _log.info("fetched clip", extra={"stage": "render", "seconds": round(time.monotonic() - _submitted, 1), "polls": _polls})
     return dest
 
 
@@ -354,19 +362,24 @@ async def render_image(
         source_image_path=job.first_frame_path,
     )
 
+    _submitted = time.monotonic()
     image_job = await provider.submit(request)
+    _log.info("submitted image", extra={"stage": "render", "pod_job": getattr(image_job, "job_id", None), "model": getattr(getattr(provider, "capabilities", lambda: None)(), "model_id", None)})
+    _polls = 0
     while not image_job.is_terminal:
         if datetime.now(timezone.utc) >= window_end:
             await provider.cancel(image_job)
             raise ProviderError("window closed while the image was rendering")
         await asyncio.sleep(poll_interval_s)
         image_job = await provider.poll(image_job)
+        _polls += 1
 
     if not image_job.state.is_success:
         raise ProviderError(f"generation failed: {image_job.error or image_job.state.value}")
 
     dest = files_dir / f"{job.token}.{caps.output_format}"
     await provider.fetch(image_job, dest)
+    _log.info("fetched image", extra={"stage": "render", "seconds": round(time.monotonic() - _submitted, 1), "polls": _polls})
     return dest
 
 
@@ -400,13 +413,17 @@ async def render_understanding(
         prompt=str(question) if question else None,
     )
 
+    _submitted = time.monotonic()
     understanding_job = await provider.submit(request)
+    _log.info("submitted understanding", extra={"stage": "render", "pod_job": getattr(understanding_job, "job_id", None), "model": getattr(getattr(provider, "capabilities", lambda: None)(), "model_id", None)})
+    _polls = 0
     while not understanding_job.is_terminal:
         if datetime.now(timezone.utc) >= window_end:
             await provider.cancel(understanding_job)
             raise ProviderError("window closed while the description was running")
         await asyncio.sleep(poll_interval_s)
         understanding_job = await provider.poll(understanding_job)
+        _polls += 1
 
     if not understanding_job.state.is_success:
         raise ProviderError(
@@ -414,6 +431,7 @@ async def render_understanding(
         )
 
     asset = await provider.fetch(understanding_job)
+    _log.info("fetched understanding", extra={"stage": "render", "seconds": round(time.monotonic() - _submitted, 1), "polls": _polls, "cost_usd": getattr(asset, "cost_usd", None)})
     return str(asset.result_text)
 
 
@@ -461,18 +479,23 @@ async def render_chat(
         extra["system"] = str(system)
     request = ChatRequest(shot_id=f"job{job.id}", text=job.text, extra=extra)
 
+    _submitted = time.monotonic()
     chat_job = await provider.submit(request)
+    _log.info("submitted chat", extra={"stage": "render", "pod_job": getattr(chat_job, "job_id", None), "model": getattr(getattr(provider, "capabilities", lambda: None)(), "model_id", None)})
+    _polls = 0
     while not chat_job.is_terminal:
         if datetime.now(timezone.utc) >= window_end:
             await provider.cancel(chat_job)
             raise ProviderError("window closed while the reply was generating")
         await asyncio.sleep(poll_interval_s)
         chat_job = await provider.poll(chat_job)
+        _polls += 1
 
     if not chat_job.state.is_success:
         raise ProviderError(f"chat failed: {chat_job.error or chat_job.state.value}")
 
     asset = await provider.fetch(chat_job)
+    _log.info("fetched chat", extra={"stage": "render", "seconds": round(time.monotonic() - _submitted, 1), "polls": _polls, "cost_usd": getattr(asset, "cost_usd", None)})
     result = str(asset.result_text)
     queue.record_chat_cost(job.id, asset.cost_usd)
     if job.user_id:

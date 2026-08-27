@@ -269,6 +269,7 @@ async def deliver(
     """
     try:
         await client.push(to, messages, retry_key=retry_key)
+        _log.info("pushed", extra={"stage": "deliver", "outcome": "pushed", "to": to, "messages": len(messages)})
         return "pushed"
     except LineQuotaExhausted as exc:
         _log.warning("push quota exhausted, falling back to text: %s", exc)

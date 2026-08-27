@@ -76,7 +76,33 @@ from typing import Any, Protocol
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
-logging.basicConfig(level=logging.INFO, format="[inference] %(message)s")
+INFERENCE_LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s [%(ctx)s] %(message)s"
+"""Byte-identical to `ai_studio.core.observability.HUMAN_FORMAT` -- this file
+cannot import the package, so the format is duplicated and a unit test on the
+host pins the two together. Before 2026-08-28 lines here had no timestamp at
+all ("[inference] ..."), so a pulled inference.log could not be lined up
+against the worker's trace."""
+
+
+class _CtxFilter(logging.Filter):
+    """`ctx` = the pod-side job id while one is running, else "-"."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.ctx = getattr(record, "ctx", None) or "-"
+        return True
+
+
+class _IsoFormatter(logging.Formatter):
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        from datetime import datetime, timezone
+
+        return datetime.fromtimestamp(record.created, timezone.utc).isoformat(timespec="milliseconds")
+
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(_IsoFormatter(INFERENCE_LOG_FORMAT))
+_handler.addFilter(_CtxFilter())
+logging.basicConfig(level=logging.INFO, handlers=[_handler])
 _log = logging.getLogger("inference_server")
 
 UPLOAD_DIR = Path("/workspace/inference_uploads")
@@ -586,6 +612,8 @@ class ModelSlot:
     backend: ModelBackend | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     in_flight: int = 0
+    load_s: float = 0.0
+    """Seconds the resident backend took to load -- reported on its jobs."""
 
 
 _slot = ModelSlot()
@@ -705,7 +733,8 @@ async def _ensure_loaded(modality: str) -> ModelBackend:
                 await asyncio.to_thread(_release_vram)
                 if attempt == 2 or "out of memory" not in str(exc).lower():
                     raise
-        _log.info("loaded %s in %.0fs", backend.model_id, time.monotonic() - started)
+        _slot.load_s = time.monotonic() - started
+        _log.info("loaded %s in %.0fs", backend.model_id, _slot.load_s)
         _slot.backend = backend
         return backend
 
@@ -746,15 +775,30 @@ def _extract_track(path: Path) -> Path:
 
 async def _infer_with(modality: str, media_path: Path | None, prompt: str | None, job: Job) -> str:
     """Load `modality`'s backend (evicting whatever is resident) and run one
-    inference off the event loop, bracketed by `in_flight` -- see ModelSlot."""
+    inference off the event loop, bracketed by `in_flight` -- see ModelSlot.
+    Logs one line per inference: modality, load and infer seconds, VRAM after."""
+    was_resident = _slot.backend is not None and _slot.backend.modality == modality
     backend = await _ensure_loaded(modality)
     _slot.in_flight += 1
+    started = time.monotonic()
     try:
         return await asyncio.to_thread(
             backend.infer, media_path, prompt, history=job.history, options=job.options
         )
     finally:
         _slot.in_flight -= 1
+        infer_s = round(time.monotonic() - started, 1)
+        try:
+            import torch
+
+            vram_gb = round(torch.cuda.memory_allocated() / 2**30, 2) if torch.cuda.is_available() else None
+        except Exception:
+            vram_gb = None
+        _log.info(
+            "job done: %s load=%.0fs infer=%.1fs vram=%sGB", modality,
+            0.0 if was_resident else _slot.load_s, infer_s, vram_gb,
+            extra={"ctx": f"job={job.job_id}"},
+        )
 
 
 async def _run_job(job: Job) -> None:
@@ -901,4 +945,8 @@ async def unload() -> dict[str, Any]:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8189)
+    # log_config=None: uvicorn's dictConfig would layer its own untimestamped
+    # handlers on top of the one above and interleave two formats in
+    # inference.log (observed 2026-08-27). access_log off: every job is one
+    # line already, and the worker polls every few seconds.
+    uvicorn.run(app, host="0.0.0.0", port=8189, log_config=None, access_log=False)
