@@ -712,10 +712,11 @@ async def _ensure_loaded(modality: str) -> ModelBackend:
 
 AUDIO_TRACK_SILENT = "(這段影片沒有聲音軌)"
 VIDEO_AUDIO_QUESTION = (
-    "請只用繁體中文,條列描述這段影片的聲音,不要加開場白:\n"
-    "類型:(人聲說話 / 唱歌 / 音樂 / 環境音 / 混合)\n"
-    "內容:(若有人說話或唱歌,盡量逐字寫出;若是音樂,寫出樂器、曲風、節奏)\n"
-    "細節:(說話者人數與語氣、背景聲、音質)"
+    "請只用繁體中文(台灣用字,不要簡體字),條列描述這段影片的聲音,不要加開場白。"
+    "每一項都要填,沒有的就寫「無」:\n"
+    "類型:(人聲說話 / 唱歌 / 音樂 / 環境音或雜訊 / 電子音或提示音 / 混合 -- 選一個最接近的)\n"
+    "內容:(若有人說話或唱歌,盡量逐字寫出;若是音樂,寫出樂器、曲風、節奏;若是環境音或電子音,描述是什麼聲音、持續還是間斷)\n"
+    "細節:(說話者人數與語氣、背景聲、音量與音質)"
 )
 """What the audio model is asked about a video's track when the user gave no
 question of their own. Shorter than AUDIO_DEFAULT_QUESTION: this is half of

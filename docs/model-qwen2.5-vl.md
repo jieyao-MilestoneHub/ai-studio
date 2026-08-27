@@ -18,7 +18,9 @@ video model; that trade was made explicitly ("效果更差但可以跑").
 | loader | `Qwen2_5_VLForConditionalGeneration + AutoProcessor, qwen-vl-utils[decord] for frame sampling (fps=1, max_pixels=360*420)` — the model card's own snippet, not a guess |
 | input cap | `AI_STUDIO_MAX_VIDEO_UNDERSTAND_S` (120 s), unchanged and still `[speculative]` |
 
-📏 First live run (2026-08-27): cold load 53 s, described the ffmpeg test pattern in Traditional Chinese, then restated it in English as asked (fps=1, max_pixels=360*420 on a 4 s 640×360 clip). Not yet
+📏 First live runs (2026-08-27): cold load 53–69 s; as the picture half of
+`/說影` the full two-model answer took 105 s cold (video 69 s + audio swap
+35 s + two inferences), $0.025; described the ffmpeg test pattern in Traditional Chinese, then restated it in English as asked (fps=1, max_pixels=360*420 on a 4 s 640×360 clip). Not yet
 measured: per-call latency on real group media, and output quality beyond
 one synthetic probe. Same slot discipline as the
 other backends: one model on the card at a time, evicted by the next kind.
