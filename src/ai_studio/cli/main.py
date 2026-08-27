@@ -153,6 +153,11 @@ def gc(
             pending_tokens = {j.token for j in queue.pending()}
     except Exception:  # the queue was already reported unreadable above
         pending_tokens = set()
+    # files/index.jsonl maps every delivered file back to its request; it
+    # is a file under files/ and would be swept like any other at 7 days.
+    from ai_studio.storage.index import index_path
+
+    protected = protected | {str(index_path(settings.files_dir).resolve())}
     sweep_targets = [("files", settings.files_dir), ("incoming", settings.incoming_dir)]
     # `sweep_old_files` is deliberately flat, so each stage directory of a
     # drama is its own target (state.json and the manifest sit at the top).

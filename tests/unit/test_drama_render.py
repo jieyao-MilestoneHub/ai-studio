@@ -432,3 +432,48 @@ def test_a_corrupt_state_file_is_loud_not_a_reset(tmp_path: Path) -> None:
     (tmp_path / "state.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(AIStudioError, match="not a readable drama state"):
         drama.load_state(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_every_artifact_and_stage_is_timestamped(parsed_job, tmp_path: Path, fake_ffmpeg) -> None:
+    """A 15-30 minute multi-window render left no record of *when* anything
+    happened before 2026-08-28 -- only sha256 and cost. Now each artifact
+    carries created_at, each stage its started/finished, and the manifest
+    says when it was generated and for which request."""
+    import re
+
+    from ai_studio.pipeline import drama as mod
+
+    q, job = parsed_job
+    job = await _with_screenplay(q, job)
+    ledger = Ledger()
+    await _render(job, {MediaKind.IMAGE: FakeImageProvider(ledger), MediaKind.VIDEO: FakeClipProvider(ledger)}, tmp_path)
+
+    run_dir = tmp_path / "runs" / "drama" / job.token
+    state = mod.load_state(run_dir)
+    iso = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+00:00")
+    for bucket in (state.character, state.keyframes, state.clips, state.leveled):
+        assert bucket and all(iso.fullmatch(r.created_at) for r in bucket.values())
+    assert state.output is not None and iso.fullmatch(state.output.created_at)
+    assert iso.fullmatch(state.created_at) and iso.fullmatch(state.updated_at)
+    assert set(state.stages) == {"character", "keyframes", "clips", "level", "concat"}
+    for name, timing in state.stages.items():
+        assert iso.fullmatch(timing.started_at) and iso.fullmatch(timing.finished_at), name
+        assert timing.started_at <= timing.finished_at, name
+
+    manifest = json.loads((run_dir / "render_manifest.json").read_text(encoding="utf-8"))
+    assert iso.fullmatch(manifest["generated_at"])
+    assert manifest["token"] == job.token and manifest["job_id"] == job.id
+    assert manifest["stages"]["concat"]["finished_at"]
+    assert len(manifest["ffmpeg"]) == 6 * 2 + 1
+
+
+def test_a_state_file_from_before_timestamps_still_loads(tmp_path: Path) -> None:
+    from ai_studio.pipeline import drama as mod
+
+    (tmp_path / "state.json").write_text(
+        '{"character": {"front": {"path": "x.png", "sha256": "ab"}}, "spent_usd": 0.1}',
+        encoding="utf-8",
+    )
+    state = mod.load_state(tmp_path)
+    assert state.character["front"].created_at == "" and state.stages == {}

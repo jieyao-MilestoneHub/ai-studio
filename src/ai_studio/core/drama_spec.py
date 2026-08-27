@@ -123,6 +123,17 @@ class ArtifactRecord(BaseModel):
     sha256: str
     cost_usd: float = Field(default=0.0, ge=0)
     job_id: str = ""
+    created_at: str = ""
+    """UTC ISO-8601 of the fetch. Default "" so a state.json written before
+    2026-08-28 (which had no times at all) still loads and resumes."""
+
+
+class StageTiming(BaseModel):
+    """When one stage of a drama began and ended -- the only record of how a
+    15-30 minute, multi-window render actually spent its time."""
+
+    started_at: str = ""
+    finished_at: str = ""
 
 
 class DramaState(BaseModel):
@@ -145,6 +156,20 @@ class DramaState(BaseModel):
     spent_usd: float = Field(default=0.0, ge=0)
     ffmpeg_argv: list[list[str]] = Field(default_factory=list)
     """Every ffmpeg invocation, literally -- the render manifest."""
+
+    created_at: str = ""
+    updated_at: str = ""
+    stages: dict[str, StageTiming] = Field(default_factory=dict)
+    """`character` | `keyframes` | `clips` | `level` | `concat` -> when. A
+    stage that resumes across windows keeps its first `started_at`."""
+
+    def stage_start(self, name: str, now: str) -> None:
+        timing = self.stages.setdefault(name, StageTiming())
+        if not timing.started_at:
+            timing.started_at = now
+
+    def stage_finish(self, name: str, now: str) -> None:
+        self.stages.setdefault(name, StageTiming()).finished_at = now
 
     def add_cost(self, cost_usd: float) -> None:
         self.spent_usd = round(self.spent_usd + max(0.0, cost_usd), 6)

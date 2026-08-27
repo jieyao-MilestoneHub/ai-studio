@@ -1130,3 +1130,17 @@ async def test_a_completed_job_leaves_a_traceable_record(queue, tmp_path: Path, 
     done = next(r for r in traced if r.getMessage().startswith(f"job {job.id} done in"))
     assert done.outcome == "completed" and done.seconds >= 0 and done.stage == "render"
     assert "delivered" in msgs
+
+
+@pytest.mark.asyncio
+async def test_a_completed_render_is_indexed_under_files(queue, tmp_path: Path) -> None:
+    import json
+
+    from ai_studio.storage.index import index_path
+
+    job = _parsed(queue)
+    action, _ = await _tick(queue, FakeHost(), tmp_path)
+    assert action == "completed"
+    (line,) = [json.loads(x) for x in index_path(_files(tmp_path)).read_text(encoding="utf-8").splitlines()]
+    assert line["token"] == job.token and line["job_id"] == job.id and line["kind"] == "video"
+    assert line["path"] == queue.by_id(job.id).output_path

@@ -47,6 +47,7 @@ from ai_studio.core.drama_spec import ArtifactRecord, DramaState, Screenplay
 from ai_studio.core.enums import GenMode, MediaKind
 from ai_studio.core.errors import AIStudioError, CostCeilingExceeded, DramaResume, ProviderError
 from ai_studio.core.image_provider_spec import ImageRequest
+from ai_studio.core.observability import utc_now_iso
 from ai_studio.core.provider_spec import ClipRequest
 from ai_studio.pipeline.convert_worker import DEFAULT_DURATION_S, snap_frames
 from ai_studio.pipeline.queue import Job
@@ -127,6 +128,7 @@ async def render_drama(
     # -- stage 1 + 2: everything Flux, one checkpoint residency
     if still_to_render["images"]:
         await make_room_for(MediaKind.IMAGE, providers)
+        state.stage_start("character", utc_now_iso())
 
     for view, prompt in character_sheet_prompts(screenplay.anchor).items():
         if _fresh(state.character.get(view)):
@@ -152,6 +154,8 @@ async def render_drama(
         touch()
 
     reference = Path(state.character["front"].path)
+    state.stage_finish("character", utc_now_iso())
+    state.stage_start("keyframes", utc_now_iso())
     for shot in screenplay.shots:
         key = str(shot.index)
         if _fresh(state.keyframes.get(key)):
@@ -200,10 +204,12 @@ async def render_drama(
         save_state(run_dir, state)
         touch()
 
+    state.stage_finish("keyframes", utc_now_iso())
     # -- stage 3: everything H3, one checkpoint residency
     if still_to_render["clips"] or not all(_fresh(state.clips.get(str(s.index))) for s in screenplay.shots):
         await make_room_for(MediaKind.VIDEO, providers)
 
+    state.stage_start("clips", utc_now_iso())
     for shot in screenplay.shots:
         key = str(shot.index)
         if _fresh(state.clips.get(key)):
@@ -234,6 +240,8 @@ async def render_drama(
         touch()
 
     # -- stage 4 + 5: CPU only. No GPU-time gate; the pod may already be gone.
+    state.stage_finish("clips", utc_now_iso())
+    state.stage_start("level", utc_now_iso())
     for shot in screenplay.shots:
         key = str(shot.index)
         if _fresh(state.leveled.get(key)):
@@ -241,21 +249,36 @@ async def render_drama(
         dest = run_dir / "leveled" / f"shot_{key}.mp4"
         argvs = media.normalize_loudness(Path(state.clips[key].path), dest)
         state.ffmpeg_argv.extend(argvs)
-        state.leveled[key] = ArtifactRecord(path=str(dest), sha256=sha256_file(dest))
+        state.leveled[key] = ArtifactRecord(path=str(dest), sha256=sha256_file(dest), created_at=utc_now_iso())
         save_state(run_dir, state)
         _log.info("leveled %s", key, extra={"stage": "level", "sha256": state.leveled[key].sha256[:12]})
 
     output = Path(files_dir) / f"{job.token}.mp4"
+    state.stage_finish("level", utc_now_iso())
+    state.stage_start("concat", utc_now_iso())
     if not _fresh(state.output):
         ordered = [Path(state.leveled[str(s.index)].path) for s in screenplay.shots]
         argv = media.concat(ordered, output)
         state.ffmpeg_argv.append(argv)
-        state.output = ArtifactRecord(path=str(output), sha256=sha256_file(output))
+        state.output = ArtifactRecord(path=str(output), sha256=sha256_file(output), created_at=utc_now_iso())
         save_state(run_dir, state)
         _log.info("drama assembled", extra={"stage": "concat", "sha256": state.output.sha256[:12],
                                             "cost_usd": state.spent_usd})
+        state.stage_finish("concat", utc_now_iso())
+        save_state(run_dir, state)
         (run_dir / "render_manifest.json").write_text(
-            json.dumps({"ffmpeg": state.ffmpeg_argv}, indent=2, ensure_ascii=False),
+            json.dumps(
+                {
+                    "generated_at": utc_now_iso(),
+                    "token": job.token,
+                    "job_id": job.id,
+                    "spent_usd": state.spent_usd,
+                    "face_repair": state.face_repair,
+                    "stages": {k: v.model_dump() for k, v in state.stages.items()},
+                    "ffmpeg": state.ffmpeg_argv,
+                },
+                indent=2, ensure_ascii=False,
+            ),
             encoding="utf-8",
         )
         touch()
@@ -274,7 +297,7 @@ async def _render_image(
     # Hashed from the file on disk, not copied from the asset: `_fresh` will
     # compare against exactly this, and the file is the thing that must match.
     record = ArtifactRecord(
-        path=str(dest), sha256=sha256_file(dest), cost_usd=float(asset.cost_usd), job_id=image_job.job_id
+        path=str(dest), sha256=sha256_file(dest), created_at=utc_now_iso(), cost_usd=float(asset.cost_usd), job_id=image_job.job_id
     )
     return record, dict(getattr(image_job, "raw", {}) or {})
 
@@ -286,7 +309,7 @@ async def _render_clip(
     clip_job = await _await_terminal(provider, clip_job, deadline, poll_s, what="clip")
     asset = await provider.fetch(clip_job, dest)
     return ArtifactRecord(
-        path=str(dest), sha256=sha256_file(dest), cost_usd=float(asset.cost_usd), job_id=clip_job.job_id
+        path=str(dest), sha256=sha256_file(dest), created_at=utc_now_iso(), cost_usd=float(asset.cost_usd), job_id=clip_job.job_id
     )
 
 
@@ -344,6 +367,10 @@ def load_state(run_dir: Path) -> DramaState:
 
 
 def save_state(run_dir: Path, state: DramaState) -> None:
+    now = utc_now_iso()
+    state.updated_at = now
+    if not state.created_at:
+        state.created_at = now
     path = Path(run_dir) / "state.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")

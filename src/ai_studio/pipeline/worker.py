@@ -51,6 +51,7 @@ from ai_studio.pipeline.drain import (
 from ai_studio.pipeline.drama import render_drama
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
 from ai_studio.pipeline.residency import make_room_for
+from ai_studio.storage.index import append_delivery
 
 _log = logging.getLogger("ai_studio.worker")
 
@@ -429,6 +430,9 @@ async def _run_one(
     else:
         asset = result
         queue.complete(job.id, str(asset))
+        # The file's name is a random token; this line is the only map from
+        # it back to the request. Best-effort, never blocks the delivery.
+        append_delivery(files_dir, token=job.token, job_id=job.id, kind=job.media_kind.value, path=asset)
     report.completed += 1
     report.seconds.append(time.monotonic() - started)
     # Without this a long render looks like idleness and the reaper closes the
