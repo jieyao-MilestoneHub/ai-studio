@@ -273,6 +273,11 @@ dl_repo omni-research/Tarsier2-7b-0115
 # as a 10-minute silent stall (or an ENOSPC nobody sees) rather than as a
 # failed setup step -- exactly what the headroom check above exists for.
 dl_repo openai/gpt-oss-20b
+# The MXFP4 Triton kernels `kernels` fetches from the Hub at load time. The
+# server runs HF-offline, so without this the first /himonkey fails with
+# "Version 1 of 'kernels-community/gpt-oss-triton-kernels' is not available
+# in the local cache" (observed live 2026-08-27). Small, same cache.
+dl_repo kernels-community/gpt-oss-triton-kernels
 dl_repos_start
 
 # ── 4. wait for the weights, then restart ComfyUI ─────────────────────────
