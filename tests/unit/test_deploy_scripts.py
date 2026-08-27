@@ -8,6 +8,7 @@ pod is already running when it fails.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -504,3 +505,17 @@ def test_the_face_repair_block_can_never_kill_the_setup() -> None:
     assert "face_yolov8m.pt" in block
     assert ".venv-cu128/bin/pip" in block, "node-pack requirements go into ComfyUI's own venv"
     assert "SETUP_VERSION=5" in body, "provisioned volumes must re-run the new step"
+
+
+def test_every_service_unit_names_its_syslog_identifier() -> None:
+    """Every unit's ExecStart is `uv run ai-studio ...`, so without this
+    journald tags them all SYSLOG_IDENTIFIER=uv and `journalctl -t` cannot
+    tell the worker from the webhook (📏 2026-08-28)."""
+    for script in ("jetson_setup.sh", "vps_setup.sh"):
+        body = (REPO / "deploy" / script).read_text(encoding="utf-8")
+        blocks = re.findall(
+            r"cat > /etc/systemd/system/(ai-studio[^\s]*)\.service <<UNIT\n(.*?)^UNIT\n", body, re.S | re.M
+        )
+        assert blocks, script
+        for name, unit in blocks:
+            assert "SyslogIdentifier=ai-studio-" in unit, f"{script}: {name}"

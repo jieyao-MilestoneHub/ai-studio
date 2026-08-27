@@ -89,6 +89,9 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# journalctl -t ai-studio-webhook: without this every unit logs as SYSLOG_IDENTIFIER=uv
+# (the ExecStart binary) and only -u can tell them apart.
+SyslogIdentifier=ai-studio-webhook
 User=${APP_USER}
 WorkingDirectory=${APP_DIR}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
@@ -115,6 +118,9 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# journalctl -t ai-studio-worker: without this every unit logs as SYSLOG_IDENTIFIER=uv
+# (the ExecStart binary) and only -u can tell them apart.
+SyslogIdentifier=ai-studio-worker
 User=${APP_USER}
 WorkingDirectory=${APP_DIR}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
@@ -169,6 +175,9 @@ for phase in reap close gc; do
 Description=ai-studio window ${phase}
 
 [Service]
+# journalctl -t ai-studio-${phase}: without this every unit logs as SYSLOG_IDENTIFIER=uv
+# (the ExecStart binary) and only -u can tell them apart.
+SyslogIdentifier=ai-studio-${phase}
 Type=oneshot
 User=${APP_USER}
 WorkingDirectory=${APP_DIR}

@@ -121,6 +121,7 @@ def gc(
     always-on host that is a slow disk leak. A photo a still-live
     image-to-video job points at is protected regardless of age.
     """
+    _setup_logging("gc")
     from ai_studio.pipeline.queue import JobQueue
     from ai_studio.storage.retention import sweep_old_files
 
@@ -553,23 +554,28 @@ line_app = typer.Typer(help="LINE bot: serve the webhook, or discover a group id
 app.add_typer(line_app, name="line")
 
 
-def _run_server(host: str, port: int, reload: bool = False) -> None:
-    import logging
+def _setup_logging(service: str) -> None:
+    """The one place a process turns logging on: stderr for journald plus the
+    JSONL trace under settings.log_dir. Every command that does work calls it
+    first (worker, serve, the timers, archive); read-only commands do not,
+    so `ai-studio doctor` never creates a logs/ directory."""
+    from ai_studio.core.observability import configure_logging
 
+    settings = get_settings()
+    configure_logging(service=service, log_dir=settings.log_dir, level=settings.log_level)
+
+
+def _run_server(host: str, port: int, reload: bool = False) -> None:
     import uvicorn
 
     from ai_studio.api.main import create_app
 
     # log_config=None keeps uvicorn from calling dictConfig, which clears every
-    # existing handler and defines no root logger - so a basicConfig set up here
+    # existing handler and defines no root logger - so a config set up here
     # would be silently discarded and ai-studio's own lines would never appear.
     # Owning the config instead means our INFO lines and uvicorn's both show up,
-    # here and under journalctl on the VPS.
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    # here and under journalctl on the host.
+    _setup_logging("webhook")
     uvicorn.run(
         create_app(),
         host=host,
@@ -744,6 +750,7 @@ def session_open(
     command decides whether that's worth spending on) and a monthly budget
     guard (refuse, or shrink the window, once this month's cap is close).
     """
+    _setup_logging("session")
     from datetime import timezone
 
     from ai_studio.pipeline.queue import JobQueue
@@ -799,6 +806,7 @@ def session_close(name: str = typer.Option("ai-studio-window")) -> None:
     ledger — not this command — so `session reap`'s early closes (the common
     case: see its own docstring) are recorded too, not just this scheduled one.
     """
+    _setup_logging("close")
     from ai_studio.runtime import session as sess
 
     terminated = sess.close_session(name=name)
@@ -863,6 +871,7 @@ def session_reap(
     The grace depends on what the pod last rendered, and a pod with work
     waiting in the queue is never closed, whatever the clock says.
     """
+    _setup_logging("reap")
     from ai_studio.pipeline.queue import JobQueue
     from ai_studio.runtime import session as sess
 
@@ -898,6 +907,7 @@ def session_drain(
     A 48GB card takes the fp8 graph and applies the LoRA in bypass; a 24GB card
     takes int8 with the LoRA merged, which the node pack itself calls softer.
     """
+    _setup_logging("session")
     from ai_studio.inference.client import InferenceClient
     from ai_studio.pipeline.drain import drain_window
     from ai_studio.pipeline.pod_llm import PodLlmClient
@@ -1232,6 +1242,7 @@ def worker(
     itself. Three independent ways for a machine to stop billing, none of which
     depends on this process still being alive.
     """
+    _setup_logging("worker")
     from ai_studio.pipeline.queue import JobQueue
     from ai_studio.pipeline.worker import serve
 

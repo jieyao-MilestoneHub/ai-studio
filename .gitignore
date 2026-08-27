@@ -6,6 +6,8 @@ runs/
 out/
 files/
 incoming/
+logs/
+archive/
 *.mp4
 *.mov
 *.mkv

@@ -254,6 +254,43 @@ class Settings(BaseSettings):
         "everything (and lets the disk fill -- only for a short-lived host).",
     )
 
+    # ---------------------------------------------------------- logs / archive
+
+    log_dir: Path = Field(
+        default=Path("logs"),
+        alias="AI_STUDIO_LOG_DIR",
+        description="Where each service writes its JSONL trace (one file per local "
+        "day under <log_dir>/<service>/), plus logs/sessions/ and logs/pods/ -- "
+        "the records `ai-studio archive` compresses. See core/observability.py.",
+    )
+    log_level: str = Field(
+        default="INFO",
+        alias="AI_STUDIO_LOG_LEVEL",
+        pattern="^(DEBUG|INFO|WARNING|ERROR)$",
+        description="Root level for both sinks. DEBUG adds the per-minute reaper "
+        "decisions to the JSONL without touching journald.",
+    )
+    archive_dir: Path = Field(
+        default=Path("archive"),
+        alias="AI_STUDIO_ARCHIVE_DIR",
+        description="Where the daily `ai-studio archive` writes "
+        "<archive_dir>/YYYY-MM-DD/ai-studio-<stamp>.tar.zst + manifest.json. Same "
+        "disk by decision (2026-08-28); an off-box push only adds a destination.",
+    )
+    log_hot_days: float = Field(
+        default=30.0,
+        ge=0.0,
+        alias="AI_STUDIO_LOG_HOT_DAYS",
+        description="JSONL logs, session records and pod logs older than this are "
+        "deleted from log_dir -- only after they are inside a verified archive.",
+    )
+    archive_keep_days: float = Field(
+        default=365.0,
+        ge=0.0,
+        alias="AI_STUDIO_ARCHIVE_KEEP_DAYS",
+        description="Archives older than this are deleted. 0 keeps every archive.",
+    )
+
     line_channel_secret: SecretStr | None = Field(default=None, alias="LINE_CHANNEL_SECRET")
     line_channel_access_token: SecretStr | None = Field(
         default=None, alias="LINE_CHANNEL_ACCESS_TOKEN"
