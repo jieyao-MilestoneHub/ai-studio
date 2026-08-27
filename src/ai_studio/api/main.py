@@ -127,6 +127,9 @@ def create_app(
             content=content,
             incoming_dir=Path("incoming"),
             is_warm=_pod_is_warm,
+            # So「讓我看看」can attach the poster the worker already rendered
+            # next to the clip -- same directory drain writes to.
+            files_dir=app.state.files_dir,
         )
     app.state.handler = handler
 

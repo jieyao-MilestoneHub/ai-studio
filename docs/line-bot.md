@@ -142,6 +142,32 @@ before the reaper closes it — see [schedule.md](schedule.md).
 (`docs/model-gpt-oss-20b.md`) — the one model here whose licence *is*
 settled — but nothing about it has run on real hardware yet.
 
+## 「讓我看看」: pulling a result when push is gone
+
+LINE's free tier allows 200 push messages a month, and this bot delivers
+every finished render with one — so the quota can run out mid-month (it
+did on 2026-08-27), after which the worker finishes renders nobody is told
+about. *Replies* are not metered, so the fallback is pull-based:
+
+| shape | what happens |
+|---|---|
+| quote-reply an earlier message with「讓我看看」 | exactly that one job comes back: the clip/image as a media object (with the poster the worker already rendered), a description as text. Not done → "還沒好(生成中)"; failed → "失敗:reason"; not a request the bot took → says so. Quote either your own `/影片 …` message or the bot's「收到」answer to it |
+| bare「讓我看看」 | everything finished in this group and not yet delivered, oldest first — up to four media objects plus one summary text (LINE's five-message reply limit); the summary says how many are still waiting |
+
+A leading `/` or the IME's fullwidth solidus is tolerated, like the status
+words. **The user keeps their own clock**: a reply token lives about a
+minute after the message, so the bot cannot answer a request from before
+the render finished — it can only answer the message that asks. The
+「收到」reply says so while the quota is out (`JobQueue.
+push_quota_exhausted()`, set by the worker the first time a push fails on
+quota this month), so nobody waits for a push that will never come.
+
+Only what actually went out is marked delivered: `pipeline.worker._deliver`
+leaves a job undelivered when both the media push and its text fallback
+fail on quota (`*-and-silent`), and the pull marks it delivered on a
+successful reply — so a rejected reply is retried by asking again, and a
+restart never re-pushes what was handed over.
+
 ## Why it is shaped this way
 
 Three LINE rules decide the whole architecture.

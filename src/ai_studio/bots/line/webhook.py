@@ -74,6 +74,22 @@ DEFAULT_DESCRIBE_VIDEO_TRIGGER = "/說影"
 """Describe a video clip. Backed by Tarsier2."""
 
 DEFAULT_CHAT_TRIGGER = "/himonkey"
+DEFAULT_SHOW_TRIGGER = "讓我看看"
+"""The pull trigger: hand over finished results in a free *reply* instead of
+a metered push. Exists for the month in which the push quota is gone -- the
+worker then finishes renders nobody is told about. Since a reply token
+only lives ~1 minute after the message, the user has to ask *after* the
+work is done: they keep their own clock, and the bot says so on accept.
+
+Two shapes. Sent as a *quote-reply* to an earlier message (the request, or
+the bot's「收到」answer to it), it hands over exactly that one job -- or
+says plainly that it is still running, failed, or is not a request at all.
+Sent bare, it hands over everything finished and not yet delivered. A
+leading "/" (or the IME's fullwidth solidus, U+FF0F) is tolerated like the status
+words, not a second spelling."""
+MAX_SHOW_JOBS = 4
+"""LINE allows 5 messages per reply: up to four media objects plus one
+summary text carrying the links and any text-only results."""
 """Plain-text LLM reply, backed by gpt-oss-20b on the shared pod. Same
 one-spelling, no-aliases, silent-ignore-otherwise rule as every other
 trigger. Unlike the four generation triggers it claims no cached photo, and
@@ -108,7 +124,9 @@ asking as often as they like and it costs nothing."""
 
 
 class Replier(Protocol):
-    async def reply_text(self, reply_token: str, *texts: str) -> None: ...
+    async def reply_text(self, reply_token: str, *texts: str) -> Any: ...
+
+    async def reply_messages(self, reply_token: str, messages: list[dict[str, Any]]) -> Any: ...
 
 
 class InvalidSignature(Exception):
@@ -144,6 +162,8 @@ class WebhookHandler:
         describe_audio_trigger: str = DEFAULT_DESCRIBE_AUDIO_TRIGGER,
         describe_video_trigger: str = DEFAULT_DESCRIBE_VIDEO_TRIGGER,
         chat_trigger: str = DEFAULT_CHAT_TRIGGER,
+        show_trigger: str = DEFAULT_SHOW_TRIGGER,
+        files_dir: Path | None = None,
         max_audio_understand_s: float = MAX_AUDIO_UNDERSTAND_S,
         max_video_understand_s: float = MAX_VIDEO_UNDERSTAND_S,
         max_jobs_per_user_per_day: int = 0,
@@ -167,6 +187,8 @@ class WebhookHandler:
         self.describe_audio_trigger = describe_audio_trigger
         self.describe_video_trigger = describe_video_trigger
         self.chat_trigger = chat_trigger
+        self.show_trigger = show_trigger
+        self.files_dir = Path(files_dir) if files_dir is not None else None
         self.max_audio_understand_s = max_audio_understand_s
         self.max_video_understand_s = max_video_understand_s
         self.max_jobs_per_user_per_day = max_jobs_per_user_per_day
@@ -262,6 +284,9 @@ class WebhookHandler:
 
         if self._is_status_query(text):
             return await self._status(group_id or "", reply_token)
+        if self._is_show_request(text):
+            quoted = str(message.get("quotedMessageId") or "") or None
+            return await self._show(group_id or "", reply_token, quoted_message_id=quoted)
 
         stripped = self._strip_trigger(text)
         if stripped is None:
@@ -512,17 +537,22 @@ class WebhookHandler:
         # delivered as a *reply to that message* -- the quoted-message card a
         # person gets when someone answers them -- rather than an @-mention.
         quote_token = (event.get("message") or {}).get("quoteToken") or None
+        message_id = str((event.get("message") or {}).get("id") or "") or None
         job, created = self.queue.enqueue(
             event_id, group_id, prompt, user_id=user_id, media_kind=media_kind,
             first_frame_path=first_frame_path, quote_token=quote_token,
             requested_seconds=requested_seconds, input_media_path=input_media_path,
+            message_id=message_id,
         )
 
         if not created:
             await self._safe_reply(reply_token, self._status_line(job))
             return Outcome("duplicate", job=job)
 
-        await self._safe_reply(reply_token, self._accepted_line(job))
+        sent = await self._safe_reply(reply_token, self._accepted_line(job))
+        if sent:
+            # So quoting the bot's own「收到」names this request too.
+            self.queue.set_reply_message_id(job.id, sent[0])
         return Outcome("accepted", job=job)
 
     def _accepted_line(self, job: Job) -> str:
@@ -543,7 +573,12 @@ class WebhookHandler:
             eta = "已經在線上,幾秒內回覆" if self.is_warm() else "暖機中,第一句回覆可能要等幾分鐘"
         else:
             eta = "圖約 30 秒、影片約 2 分鐘" if self.is_warm() else "暖機中:圖約 3 分鐘、影片約 5 分鐘"
-        return f"收到,{eta},想查進度可以看{self._link(job)}"
+        line = f"收到,{eta},想查進度可以看{self._link(job)}"
+        if self.queue.push_quota_exhausted():
+            # Push is gone for the month: the result will not arrive on its
+            # own. Say so now, while there is a reply token to say it with.
+            line += f"\n本月推播額度已用完,完成後請自己說「{self.show_trigger}」來領取。"
+        return line
 
     def _over_daily_cap(self, user_id: str | None, media_kind: MediaKind) -> bool:
         """Has this user used up today's allowance?
@@ -614,7 +649,8 @@ class WebhookHandler:
                 f"「{self.i2i_trigger} …」重畫照片。也可以先傳照片/語音/影片,"
                 f"再說「{self.describe_image_trigger}」/「{self.describe_audio_trigger}」/"
                 f"「{self.describe_video_trigger}」聽聽 AI 怎麼形容。"
-                f"想聊天就用「{self.chat_trigger} …」。",
+                f"想聊天就用「{self.chat_trigger} …」。"
+                f"做好但還沒送到的成品,說「{self.show_trigger}」領取。",
             )
             return Outcome("status")
 
@@ -722,6 +758,131 @@ class WebhookHandler:
     def _is_status_query(self, text: str) -> bool:
         return any(text.startswith(w) for w in STATUS_WORDS)
 
+    def _is_show_request(self, text: str) -> bool:
+        if text[:1] in ("/", "\uff0f"):
+            text = text[1:]
+        return text.startswith(self.show_trigger)
+
+    async def _show(
+        self, group_id: str, reply_token: str, *, quoted_message_id: str | None = None
+    ) -> Outcome:
+        """「讓我看看」: hand over finished results as a reply.
+
+        A reply is free where a push is metered, so this is the delivery path
+        for the month in which the push quota is gone (`pipeline.worker.
+        _deliver` leaves such jobs undelivered on purpose).
+
+        Quoting an earlier message names one job: that one is handed over
+        whatever its delivery state (asking to see it again is free), and a
+        job that is not done says so explicitly -- still running, failed with
+        its reason, or the quoted message is not a request at all. Silence
+        here would read as a broken bot.
+
+        Bare, it hands over everything finished and not yet delivered: up to
+        four media objects and one summary text per call (LINE's five-message
+        reply limit), oldest first. Only what actually went out is marked
+        delivered, so a rejected reply is retried by asking again.
+        """
+        if quoted_message_id:
+            return await self._show_one(group_id, reply_token, quoted_message_id)
+
+        waiting = [j for j in self.queue.undelivered(50) if j.group_id == group_id]
+        if not waiting:
+            pending = [j for j in self.queue.pending() if j.group_id == group_id]
+            tail = f"還有 {len(pending)} 件在處理中,晚點再說一次。" if pending else "目前沒有在處理的工作。"
+            await self._safe_reply(reply_token, f"沒有等著給你看的成品。{tail}")
+            return Outcome("show")
+
+        batch = waiting[:MAX_SHOW_JOBS]
+        messages: list[dict[str, Any]] = []
+        lines: list[str] = []
+        for job in batch:
+            media = self._media_message(job)
+            if media is not None:
+                messages.append(media)
+            lines.append(self._show_line(job))
+        rest = len(waiting) - len(batch)
+        if rest:
+            lines.append(f"還有 {rest} 件,再說一次「{self.show_trigger}」。")
+        messages.append({"type": "text", "text": "\n".join(lines)[:5000]})
+        try:
+            await self.replier.reply_messages(reply_token, messages)
+        except Exception as exc:  # the 200 matters more; see _safe_reply
+            _log.warning("show reply failed, nothing marked delivered: %s", exc)
+            return Outcome("show", detail="reply failed")
+        for job in batch:
+            self.queue.mark_delivered(job.id)
+        return Outcome("show", detail=f"{len(batch)} handed over")
+
+    async def _show_one(self, group_id: str, reply_token: str, quoted_message_id: str) -> Outcome:
+        job = self.queue.by_quoted_message(group_id, quoted_message_id)
+        if job is None:
+            await self._safe_reply(
+                reply_token, "你引用的那則訊息不是這個 BOT 收下的請求,沒有對應的成品。"
+            )
+            return Outcome("show", detail="quoted message unknown")
+        if job.state is JobState.FAILED:
+            await self._safe_reply(
+                reply_token, f"那件失敗了:{(job.error or 'unknown')[:80]}\n{self._link(job)}"
+            )
+            return Outcome("show", job=job, detail="failed")
+        if job.state is not JobState.DONE:
+            await self._safe_reply(
+                reply_token,
+                f"那件還沒好({self._state_zh(job)}),晚點再引用一次。\n{self._link(job)}",
+            )
+            return Outcome("show", job=job, detail="not done")
+
+        messages: list[dict[str, Any]] = []
+        media = self._media_message(job)
+        if media is not None:
+            messages.append(media)
+        elif job.output_path:
+            # The file exists but nothing can preview it (no poster): say so
+            # and hand over the link, rather than a summary that hides it.
+            messages.append({
+                "type": "text",
+                "text": f"{job.text[:18]} 完成了,但預覽圖不在,直接開:{self._link(job)}",
+            })
+        if not messages or job.result_text:
+            messages.append({"type": "text", "text": self._show_line(job)[:5000]})
+        try:
+            await self.replier.reply_messages(reply_token, messages)
+        except Exception as exc:  # the 200 matters more; see _safe_reply
+            _log.warning("show reply failed for job %d: %s", job.id, exc)
+            return Outcome("show", job=job, detail="reply failed")
+        if job.delivered_at is None:
+            self.queue.mark_delivered(job.id)
+        return Outcome("show", job=job, detail="handed over")
+
+    def _media_message(self, job: Job) -> dict[str, Any] | None:
+        """The media object for a finished generation job, or None when there
+        is no file (understanding/chat/failed) or no poster to preview it with
+        -- the link in the summary text still gets it to the user."""
+        if job.state is not JobState.DONE or not job.output_path:
+            return None
+        name = Path(job.output_path).name
+        url = f"{self.base_url}/files/{name}"
+        poster = f"{Path(name).stem}_poster.jpg"
+        has_poster = self.files_dir is not None and (self.files_dir / poster).is_file()
+        if job.media_kind is MediaKind.VIDEO:
+            if not has_poster:
+                return None
+            return {"type": "video", "originalContentUrl": url,
+                    "previewImageUrl": f"{self.base_url}/files/{poster}"}
+        if job.media_kind is MediaKind.IMAGE:
+            preview = f"{self.base_url}/files/{poster}" if has_poster else url
+            return {"type": "image", "originalContentUrl": url, "previewImageUrl": preview}
+        return None
+
+    def _show_line(self, job: Job) -> str:
+        glyph = self._STATUS_GLYPH.get(job.media_kind, "🎬")
+        if job.state is JobState.FAILED:
+            return f"{glyph} {job.text[:18]} — 失敗:{(job.error or '')[:60]}"
+        if job.result_text:
+            return f"{glyph} {job.text[:18]}\n{job.result_text[:400]}"
+        return f"{glyph} {job.text[:18]} → {self._link(job)}"
+
     def _link(self, job: Job) -> str:
         return f"{self.base_url}/q/{job.token}"
 
@@ -737,7 +898,7 @@ class WebhookHandler:
             JobState.FAILED: f"失敗:{(job.error or '')[:60]}",
         }[job.state]
 
-    async def _safe_reply(self, reply_token: str, text: str) -> None:
+    async def _safe_reply(self, reply_token: str, text: str) -> list[str]:
         """Reply, swallowing failures.
 
         A reply that does not go out is a cosmetic loss; a webhook that returns
@@ -751,9 +912,10 @@ class WebhookHandler:
         reply token from a LINE outage from a real bug.
         """
         if not reply_token:
-            return
+            return []
         try:
-            await self.replier.reply_text(reply_token, text)
+            sent = await self.replier.reply_text(reply_token, text)
         except Exception as exc:  # see docstring: the 200 matters more
             _log.warning("reply failed for token %s: %s", reply_token, exc)
-            return
+            return []
+        return [str(i) for i in sent] if isinstance(sent, list | tuple) else []

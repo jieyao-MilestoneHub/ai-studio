@@ -21,8 +21,9 @@ derived from
 (MIT). A FastAPI service + LINE bot lets a group chat trigger any of them
 (`/影片` for video, `/圖片` for image, photo then `/圖影` / `/圖圖` for
 image-to-video / image-to-image, photo/audio/video then `/說圖` / `/說音` /
-`/說影` to describe it, `/himonkey` for plain-text chat via **gpt-oss-20b**;
-one spelling each, no aliases) — see
+`/說影` to describe it, `/himonkey` for plain-text chat via **gpt-oss-20b**,
+and「讓我看看」— quote-reply an earlier request to pull that one result
+back as a free reply when push quota is gone; one spelling each, no aliases) — see
 `docs/line-bot.md`.
 
 Currently built: core model, format policy, H3 prompt builder, Flux prompt

@@ -305,6 +305,19 @@ async def _deliver(
         report.undelivered += 1
         return "failed"
 
+    if outcome.startswith("quota-exhausted"):
+        # A money condition that lasts the rest of the month; the webhook
+        # reads this to tell the next requester to pull with /讓我看看.
+        queue.note_push_quota_exhausted()
+    if outcome.endswith("-and-silent"):
+        # Nothing reached the group. Leave the row undelivered so the pull
+        # trigger (/讓我看看, a free reply) can hand it over later -- marking
+        # it delivered here would make a finished, paid-for result vanish.
+        _log.warning("job %d finished but the group was told nothing (%s); held for pull",
+                     job.id, outcome)
+        report.undelivered += 1
+        return outcome
+
     queue.mark_delivered(job.id)
     report.delivered += 1
     return outcome

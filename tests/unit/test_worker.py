@@ -773,3 +773,33 @@ def test_provision_feeds_hf_token_on_stdin_not_argv(monkeypatch, tmp_path) -> No
     assert str(seen["stdin"]).startswith("hf_secret\n#!/bin/bash")
     assert not any("hf_secret" in a for a in seen["argv"])
     assert "IFS= read -r HF_TOKEN; export HF_TOKEN;" in " ".join(seen["argv"])
+
+
+@pytest.mark.asyncio
+async def test_a_silent_quota_failure_leaves_the_job_for_the_pull_trigger(queue, tmp_path: Path) -> None:
+    """Push and its text fallback both died on quota: nothing reached the
+    group. The row must stay undelivered so「讓我看看」can hand it over, and
+    the queue must remember the month is out of push quota."""
+    job = _parsed(queue)
+    host = FakeHost()
+
+    async def silent(job, asset):
+        return "quota-exhausted-and-silent"
+
+    host.deliver = silent  # type: ignore[method-assign]
+    action, report = await _tick(queue, host, tmp_path)
+
+    assert action == "completed"
+    assert queue.by_id(job.id).delivered_at is None
+    assert queue.push_quota_exhausted()
+    assert report.undelivered == 1
+
+
+def test_push_quota_marker_expires_with_the_calendar_month(queue) -> None:
+    import calendar
+    from datetime import datetime, timezone
+
+    queue.note_push_quota_exhausted(now=datetime(2026, 8, 27, tzinfo=timezone.utc).timestamp())
+    assert queue.push_quota_exhausted(now=datetime(2026, 8, 31, 23, tzinfo=timezone.utc).timestamp())
+    assert not queue.push_quota_exhausted(now=datetime(2026, 9, 1, 1, tzinfo=timezone.utc).timestamp())
+    assert calendar.monthrange(2026, 8)[1] == 31

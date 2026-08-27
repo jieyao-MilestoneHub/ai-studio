@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     media_kind  TEXT    NOT NULL DEFAULT 'video',
     first_frame_path TEXT,
     quote_token TEXT,
+    message_id  TEXT,
+    reply_message_id TEXT,
     requested_seconds REAL,
     input_media_path TEXT,
     prompt_json TEXT,
@@ -103,6 +105,11 @@ CREATE TABLE IF NOT EXISTS chat_turns (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chat_turns_user ON chat_turns(user_id, created_at);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value REAL NOT NULL
+);
 """
 
 DAY_TZ = ZoneInfo("Asia/Taipei")
@@ -140,6 +147,13 @@ class Job:
     media_kind: MediaKind
     first_frame_path: str | None
     quote_token: str | None
+    message_id: str | None
+    """LINE's id of the request message itself. A later message that *quotes*
+    it arrives with this id as `quotedMessageId`, which is how「讓我看看」
+    names one job rather than all of them."""
+    reply_message_id: str | None
+    """The id of the bot's own「收到」reply, from the Reply API's response --
+    quoting that message is the other natural way to point at a request."""
     requested_seconds: float | None
     """The clip length the user asked for (`/影片15s`), or None for the
     default. Clamped to the model's range at conversion, not here."""
@@ -210,6 +224,8 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         media_kind=MediaKind(row["media_kind"]),
         first_frame_path=row["first_frame_path"],
         quote_token=row["quote_token"],
+        message_id=row["message_id"],
+        reply_message_id=row["reply_message_id"],
         requested_seconds=row["requested_seconds"],
         input_media_path=row["input_media_path"],
         prompt_json=row["prompt_json"],
@@ -264,6 +280,10 @@ class JobQueue:
             conn.execute("ALTER TABLE jobs ADD COLUMN result_text TEXT")
         if "cost_usd" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN cost_usd REAL")
+        if "message_id" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN message_id TEXT")
+        if "reply_message_id" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN reply_message_id TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         """One connection per thread, all pointing at the same file.
@@ -323,6 +343,7 @@ class JobQueue:
         quote_token: str | None = None,
         requested_seconds: float | None = None,
         input_media_path: str | None = None,
+        message_id: str | None = None,
     ) -> tuple[Job, bool]:
         """Insert a request. Returns `(job, created)`.
 
@@ -345,12 +366,12 @@ class JobQueue:
                 "INSERT INTO jobs"
                 " (token, event_id, group_id, user_id, text, state, media_kind,"
                 "  first_frame_path, quote_token, requested_seconds, input_media_path,"
-                "  created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+                "  message_id, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
                 (
                     token, event_id, group_id, user_id, text,
                     JobState.QUEUED.value, media_kind.value, first_frame_path,
-                    quote_token, requested_seconds, input_media_path, now,
+                    quote_token, requested_seconds, input_media_path, message_id, now,
                 ),
             )
             row = cur.fetchone()
@@ -504,6 +525,51 @@ class JobQueue:
         )
         row = cur.fetchone()
         return _row_to_job(row) if row else None
+
+    def set_reply_message_id(self, job_id: int, message_id: str) -> None:
+        self._conn.execute(
+            "UPDATE jobs SET reply_message_id=? WHERE id=?", (message_id, job_id)
+        )
+        self._conn.commit()
+
+    def by_quoted_message(self, group_id: str, quoted_message_id: str) -> Job | None:
+        """The job a quoted message points at: either the request itself or
+        the bot's「收到」reply to it. Scoped to the group so an id from
+        elsewhere can never surface another group's result."""
+        row = self._conn.execute(
+            "SELECT * FROM jobs WHERE group_id=? AND (message_id=? OR reply_message_id=?)"
+            " ORDER BY created_at DESC LIMIT 1",
+            (group_id, quoted_message_id, quoted_message_id),
+        ).fetchone()
+        return _row_to_job(row) if row else None
+
+    # ------------------------------------------------------------ push quota
+
+    def note_push_quota_exhausted(self, *, now: float | None = None) -> None:
+        """Record that a push just failed on LINE's monthly quota.
+
+        Written by the worker (the only process that pushes) and read by the
+        webhook (the only process that talks to the user), through the one
+        store both already share. The condition lasts until the calendar
+        month rolls over, so a timestamp is the whole record."""
+        self._conn.execute(
+            "INSERT INTO meta(key, value) VALUES('push_quota_exhausted_at', ?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (time.time() if now is None else now,),
+        )
+        self._conn.commit()
+
+    def push_quota_exhausted(self, *, now: float | None = None) -> bool:
+        """Has a push failed on quota *this calendar month*? LINE resets the
+        free-tier quota monthly; a marker from a previous month is stale."""
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key='push_quota_exhausted_at'"
+        ).fetchone()
+        if row is None:
+            return False
+        current = datetime.fromtimestamp(time.time() if now is None else now, tz=timezone.utc)
+        marked = datetime.fromtimestamp(float(row["value"]), tz=timezone.utc)
+        return (marked.year, marked.month) == (current.year, current.month)
 
     def undelivered(self, limit: int = 50) -> list[Job]:
         """Finished work the group has not been told about.
