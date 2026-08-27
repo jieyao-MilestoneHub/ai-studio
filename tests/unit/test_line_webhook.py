@@ -992,3 +992,82 @@ async def test_every_link_sits_on_its_own_line(wired, tmp_path: Path) -> None:
     for text in texts:
         for m in re.finditer(r"https://", text):
             assert m.start() == 0 or text[m.start() - 1] == "\n", text
+
+
+# ----------------------------------------------------------------- /短劇
+
+
+@pytest.mark.asyncio
+async def test_the_drama_trigger_enqueues_a_drama_job(wired) -> None:
+    handler, _queue, replier = wired
+    body = _body([_text_event("/短劇 一個夜市老闆娘發現攤位下藏著一封信")])
+
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+
+    assert outcome.action == "accepted"
+    assert outcome.job is not None
+    assert outcome.job.media_kind is MediaKind.DRAMA
+    assert outcome.job.text == "一個夜市老闆娘發現攤位下藏著一封信"
+    assert outcome.job.first_frame_path is None and outcome.job.requested_seconds is None
+    (_, texts) = replier.sent[0]
+    assert "短劇" in texts[0] and "分鐘" in texts[0]
+
+
+@pytest.mark.asyncio
+async def test_a_fullwidth_slash_drama_trigger_still_fires(wired) -> None:
+    handler, _queue, _replier = wired
+    body = _body([_text_event("\uff0f短劇 一個故事")])  # the IME's fullwidth solidus
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+    assert outcome.action == "accepted" and outcome.job.media_kind is MediaKind.DRAMA
+
+
+@pytest.mark.asyncio
+async def test_a_drama_never_parses_a_length_suffix(wired) -> None:
+    """The length is the six shots. `15s` stays in the premise, untouched."""
+    handler, _queue, _replier = wired
+    body = _body([_text_event("/短劇15s 一個故事")])
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+    assert outcome.action == "accepted"
+    assert outcome.job.requested_seconds is None
+    assert outcome.job.text == "15s 一個故事"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_drama_premise_gets_usage(wired) -> None:
+    handler, queue, replier = wired
+    body = _body([_text_event("/短劇")])
+    (outcome,) = await handler.handle(body, sign(body, SECRET))
+    assert outcome.action == "ignored"
+    assert queue.counts() == {}
+    assert "一句故事前提" in replier.sent[0][1][0]
+
+
+@pytest.mark.asyncio
+async def test_the_group_wide_drama_cap_refuses_the_next_one(tmp_path: Path) -> None:
+    """Group-wide, not per user: two different members share the day's dramas,
+    and the third is refused with a reply that names the other triggers."""
+    queue = JobQueue(tmp_path / "q.sqlite3")
+    replier = NullReplyClient()
+    handler = WebhookHandler(
+        queue, replier, channel_secret=SECRET, allowed_group_id=GROUP,
+        base_url="https://vg.example.com/", clock=lambda: OPEN_INSTANT, max_dramas_per_day=2,
+    )
+    try:
+        for i, user in enumerate(("U" + "1" * 32, "U" + "2" * 32)):
+            body = _body([_text_event(f"/短劇 故事 {i}", event_id=f"evt-drama-{i}",
+                                      source={"type": "group", "groupId": GROUP, "userId": user})])
+            (outcome,) = await handler.handle(body, sign(body, SECRET))
+            assert outcome.action == "accepted", i
+
+        body = _body([_text_event("/短劇 故事 3", event_id="evt-drama-3")])
+        (outcome,) = await handler.handle(body, sign(body, SECRET))
+        assert outcome.action == "rate_limited" and outcome.detail == "drama cap"
+        assert "短劇額度" in replier.sent[-1][1][0]
+        assert queue.accepted_kind_today(MediaKind.DRAMA) == 2
+
+        # Other kinds are untouched by the drama cap.
+        body = _body([_text_event("/影片 一隻貓", event_id="evt-video-after-cap")])
+        (outcome,) = await handler.handle(body, sign(body, SECRET))
+        assert outcome.action == "accepted"
+    finally:
+        queue.close()

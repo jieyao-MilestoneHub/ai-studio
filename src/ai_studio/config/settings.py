@@ -201,6 +201,34 @@ class Settings(BaseSettings):
         "number.",
     )
 
+    # ---------------------------------------------------------- /短劇
+
+    max_dramas_per_day: int = Field(
+        default=3,
+        ge=0,
+        alias="AI_STUDIO_MAX_DRAMAS_PER_DAY",
+        description="How many /短劇 requests the group may have accepted in an "
+        "Asia/Taipei day, all users together. A drama is ~15-30 GPU-minutes "
+        "(six H3 clips plus eight Flux stills), so the per-user job cap alone "
+        "would let one afternoon spend the month. 0 disables the cap.",
+    )
+    drama_face_repair: bool = Field(
+        default=True,
+        alias="AI_STUDIO_DRAMA_FACE_REPAIR",
+        description="Run the Impact-Pack FaceDetailer pass on /短劇 keyframe "
+        "stills when the pod has the nodes. Never on video. Off: plain "
+        "image-to-image keyframes.",
+    )
+    drama_keyframe_denoise: float = Field(
+        default=0.55,
+        gt=0,
+        le=1.0,
+        alias="AI_STUDIO_DRAMA_KEYFRAME_DENOISE",
+        description="How much of the character sheet a /短劇 keyframe may "
+        "repaint: lower keeps the face, higher lets the scene change. "
+        "[speculative] 0.55 -- retune from the first real drama's keyframes.",
+    )
+
     ffmpeg_bin: str = Field(default="ffmpeg", alias="AI_STUDIO_FFMPEG_BIN")
     ffprobe_bin: str = Field(default="ffprobe", alias="AI_STUDIO_FFPROBE_BIN")
 

@@ -79,6 +79,12 @@ DEFAULT_EXTRACT_AUDIO_TRIGGER = "/影音"
 GPU, no pod, no queue, answered in the free reply. The first trigger that
 spends no money; that is why it is handled inline here rather than enqueued
 (the worker would open a $0.74/hr pod for an ffmpeg call)."""
+DEFAULT_DRAMA_TRIGGER = "/短劇"
+"""A one-minute, six-shot drama with one recurring lead, from a one-line
+premise. No photo, no length suffix (the length is the six shots), and a
+group-wide daily cap on top of the per-user one: a drama is 15-30
+GPU-minutes, so `max_jobs_per_user_per_day` alone would let one afternoon
+spend the month. See docs/drama.md."""
 DEFAULT_SHOW_TRIGGER = "讓我看看"
 """The pull trigger: hand over finished results in a free *reply* instead of
 a metered push. Exists for the month in which the push quota is gone -- the
@@ -167,6 +173,7 @@ class WebhookHandler:
         describe_audio_trigger: str = DEFAULT_DESCRIBE_AUDIO_TRIGGER,
         describe_video_trigger: str = DEFAULT_DESCRIBE_VIDEO_TRIGGER,
         chat_trigger: str = DEFAULT_CHAT_TRIGGER,
+        drama_trigger: str = DEFAULT_DRAMA_TRIGGER,
         show_trigger: str = DEFAULT_SHOW_TRIGGER,
         extract_audio_trigger: str = DEFAULT_EXTRACT_AUDIO_TRIGGER,
         files_dir: Path | None = None,
@@ -174,6 +181,7 @@ class WebhookHandler:
         max_video_understand_s: float = MAX_VIDEO_UNDERSTAND_S,
         max_jobs_per_user_per_day: int = 0,
         max_chat_messages_per_user_per_day: int = 0,
+        max_dramas_per_day: int = 0,
         clock: Callable[[], datetime] | None = None,
         content: ContentClient | None = None,
         incoming_dir: Path | str = Path("incoming"),
@@ -193,6 +201,7 @@ class WebhookHandler:
         self.describe_audio_trigger = describe_audio_trigger
         self.describe_video_trigger = describe_video_trigger
         self.chat_trigger = chat_trigger
+        self.drama_trigger = drama_trigger
         self.show_trigger = show_trigger
         self.extract_audio_trigger = extract_audio_trigger
         self.files_dir = Path(files_dir) if files_dir is not None else None
@@ -200,6 +209,7 @@ class WebhookHandler:
         self.max_video_understand_s = max_video_understand_s
         self.max_jobs_per_user_per_day = max_jobs_per_user_per_day
         self.max_chat_messages_per_user_per_day = max_chat_messages_per_user_per_day
+        self.max_dramas_per_day = max_dramas_per_day
         # Injected so a test can stand at 03:00 without the machine having to.
         # `bots` is L6 and `runtime` is L5, so reaching down for the business
         # calendar is allowed; reaching back up never is.
@@ -334,6 +344,14 @@ class WebhookHandler:
                 "達到每日上限。明天再試。",
             )
             return Outcome("rate_limited", detail=str(user_id))
+
+        if media_kind is MediaKind.DRAMA and self._over_drama_cap():
+            await self._safe_reply(
+                reply_token,
+                f"今天的短劇額度({self.max_dramas_per_day} 部)已經用完,明天再來。"
+                f"其他功能({self.trigger}、{self.image_trigger}…)不受影響。",
+            )
+            return Outcome("rate_limited", detail="drama cap")
 
         # Only a trigger that asked for cached media touches a cache, and only
         # the matching one: /影片 or /圖片 must never silently eat a photo
@@ -578,6 +596,10 @@ class WebhookHandler:
         """
         if job.media_kind is MediaKind.CHAT:
             eta = "已經在線上,幾秒內回覆" if self.is_warm() else "暖機中,第一句回覆可能要等幾分鐘"
+        elif job.media_kind is MediaKind.DRAMA:
+            # [speculative] until the first real drama: 3 screenwriter calls,
+            # 8 Flux stills, 6 H3 clips, then a CPU concat -- see docs/drama.md.
+            eta = "短劇要慢慢做,約 25 到 40 分鐘" + ("" if self.is_warm() else "(含暖機)") + ",完成後會貼到群組"
         elif job.media_kind.is_understanding:
             # 📏 2026-08-27: 27-65 s to load the model, seconds to answer.
             eta = "辨識約 1 到 2 分鐘(含載入模型)"
@@ -591,6 +613,13 @@ class WebhookHandler:
             # own. Say so now, while there is a reply token to say it with.
             line += f"\n本月推播額度已用完,完成後請自己說「{self.show_trigger}」來領取。"
         return line
+
+    def _over_drama_cap(self) -> bool:
+        """Has the *group* used today's dramas? Group-wide by design: the
+        cost is the pod's, not one member's. 0 disables."""
+        if not self.max_dramas_per_day:
+            return False
+        return self.queue.accepted_kind_today(MediaKind.DRAMA) >= self.max_dramas_per_day
 
     def _over_daily_cap(self, user_id: str | None, media_kind: MediaKind) -> bool:
         """Has this user used up today's allowance?
@@ -663,6 +692,7 @@ class WebhookHandler:
                 f"「{self.describe_video_trigger}」聽聽 AI 怎麼形容(後面可以加想問的話)。"
                 f"想聊天就用「{self.chat_trigger} …」。"
                 f"傳影片再說「{self.extract_audio_trigger}」可以把聲音抽成音檔。"
+                f"想看一分鐘有劇情的短劇,說「{self.drama_trigger} <一句故事前提>」(約半小時)。"
                 f"做好但還沒送到的成品,說「{self.show_trigger}」領取。",
             )
             return Outcome("status")
@@ -711,6 +741,7 @@ class WebhookHandler:
             (self.describe_audio_trigger, MediaKind.AUDIO_UNDERSTAND, "audio"),
             (self.describe_video_trigger, MediaKind.VIDEO_UNDERSTAND, "video"),
             (self.chat_trigger, MediaKind.CHAT, None),
+            (self.drama_trigger, MediaKind.DRAMA, None),
         ):
             if text.startswith(prefix):
                 rest = text[len(prefix) :]
@@ -749,6 +780,7 @@ class WebhookHandler:
         MediaKind.AUDIO_UNDERSTAND: "🔎🎧",
         MediaKind.VIDEO_UNDERSTAND: "🔎🎬",
         MediaKind.CHAT: "💬",
+        MediaKind.DRAMA: "🎭",
     }
     """`_status()`'s per-kind glyph. VIDEO falls back to `.get(..., '🎬')`."""
 
@@ -763,6 +795,8 @@ class WebhookHandler:
             )
         if media_kind is MediaKind.CHAT:
             return f"用法:{self.chat_trigger} <想說的話>"
+        if media_kind is MediaKind.DRAMA:
+            return f"用法:{self.drama_trigger} <一句故事前提>,例如「{self.drama_trigger} 一個夜市老闆娘發現攤位下藏著一封信」"
         if wants_media:
             return f"用法:先傳一張照片,再說 {self._media_trigger(media_kind, wants_media)} <想看的畫面>"
         trigger = self.trigger if media_kind is MediaKind.VIDEO else self.image_trigger

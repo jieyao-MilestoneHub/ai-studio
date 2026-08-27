@@ -599,6 +599,7 @@ IMAGE_IDLE_MINUTES = 5
 VIDEO_IDLE_MINUTES = 10
 UNDERSTANDING_IDLE_MINUTES = 5
 CHAT_IDLE_MINUTES = 15
+DRAMA_IDLE_MINUTES = 10
 """How long a quiet pod is kept after its last render, by what it rendered.
 
 Numbers differ because the reloads cost differently: Flux comes back into
@@ -622,6 +623,11 @@ conversation's ordinary pauses is both cheaper and safer for the rest of the
 service than one short enough to reopen repeatedly. `[speculative]`, same as
 `UNDERSTANDING_IDLE_MINUTES` -- retune from the reaper log once real chat
 traffic exists, not from this guess.
+
+`DRAMA_IDLE_MINUTES` equals the video grace because a drama's last GPU job is
+an H3 clip. What makes it safe for a 15-30 minute render is not the number:
+`pipeline.drama` calls `touch_activity("drama")` after *every* fetched still
+or clip, so the grace only ever measures a real gap, never a long render.
 """
 
 
@@ -631,6 +637,7 @@ def close_if_idle(
     video_idle_minutes: int = VIDEO_IDLE_MINUTES,
     understanding_idle_minutes: int = UNDERSTANDING_IDLE_MINUTES,
     chat_idle_minutes: int = CHAT_IDLE_MINUTES,
+    drama_idle_minutes: int = DRAMA_IDLE_MINUTES,
     hold: bool = False,
     name: str = "ai-studio-window",
 ) -> str:
@@ -656,6 +663,7 @@ def close_if_idle(
         "audio_understand": understanding_idle_minutes,
         "video_understand": understanding_idle_minutes,
         "chat": chat_idle_minutes,
+        "drama": drama_idle_minutes,
     }
     grace = overrides.get(str(state.get("last_media_kind") or ""), video_idle_minutes)
     if hold:

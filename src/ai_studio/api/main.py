@@ -99,6 +99,7 @@ def create_app(
             # for the last time that distinction cost this project something.
             max_jobs_per_user_per_day=settings.max_jobs_per_user_per_day,
             max_chat_messages_per_user_per_day=settings.max_chat_messages_per_user_per_day,
+            max_dramas_per_day=settings.max_dramas_per_day,
             max_audio_understand_s=settings.max_audio_understand_s,
             max_video_understand_s=settings.max_video_understand_s,
             content=content,
@@ -221,6 +222,7 @@ _RUNNING_ZH: dict[MediaKind, tuple[str, str]] = {
     MediaKind.AUDIO_UNDERSTAND: ("辨識中", "正在聽這段聲音,約 1 分鐘(含載入模型)"),
     MediaKind.VIDEO_UNDERSTAND: ("辨識中", "正在看這段影片,約 1 到 2 分鐘(含載入模型)"),
     MediaKind.CHAT: ("回覆中", "正在想怎麼回你,約 1 分鐘(含載入模型)"),
+    MediaKind.DRAMA: ("製作中", "六個鏡頭慢慢做:角色定裝、每鏡首幀、每鏡影片,約 25 到 40 分鐘"),
 }
 
 _WAITING_ZH: dict[MediaKind, tuple[str, str]] = {
@@ -230,6 +232,7 @@ _WAITING_ZH: dict[MediaKind, tuple[str, str]] = {
     MediaKind.AUDIO_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
     MediaKind.VIDEO_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
     MediaKind.CHAT: ("等待回覆", "已排入佇列,GPU 開機中或排隊中"),
+    MediaKind.DRAMA: ("等待製作", "已排入佇列;GPU 開機後先由 gpt-oss-20b 寫劇本,再開始生成"),
 }
 
 
@@ -264,6 +267,12 @@ _GENERATION_MODELS: dict[MediaKind, tuple[str, str]] = {
     # weights as black-forest-labs/FLUX.1-dev).
     MediaKind.VIDEO: ("MiniMax H3 (MiniMax-H3-fl2va)", "https://huggingface.co/Comfy-Org/MiniMax-H3"),
     MediaKind.IMAGE: ("Flux.1-dev", "https://huggingface.co/black-forest-labs/FLUX.1-dev"),
+    # A drama is all three: gpt-oss-20b writes, Flux paints the keyframes, H3
+    # animates them. The video model is the one named; the page's screenplay
+    # block says the rest.
+    MediaKind.DRAMA: (
+        "MiniMax H3 + Flux.1-dev + gpt-oss-20b", "https://huggingface.co/Comfy-Org/MiniMax-H3",
+    ),
 }
 
 
@@ -288,6 +297,51 @@ def model_for(kind: MediaKind) -> tuple[str, str]:
     else:
         raise ValueError(f"no model table entry for {kind!r}")
     return model_id, f"https://huggingface.co/{model_id}"
+
+
+def _drama_block(job: Job, plan: dict[str, Any]) -> str:
+    """The screenplay and, while it renders, per-stage progress.
+
+    Progress is read off `runs/drama/<token>/state.json`, which
+    `pipeline.drama` rewrites after every fetched artifact -- so the page
+    says「首幀 4/6」rather than「生成中」for half an hour. Absent file (not
+    started yet): screenplay only.
+    """
+    from ai_studio.core.drama_spec import SHOT_COUNT
+    from ai_studio.pipeline.drama import load_state
+
+    screenplay = plan.get("screenplay") or {}
+    parts: list[str] = []
+    if screenplay:
+        anchor = screenplay.get("anchor") or {}
+        parts.append(
+            f"<h2>{html.escape(str(screenplay.get('title', '')))}</h2>"
+            f"<p class=\"note\">{html.escape(str(screenplay.get('logline', '')))}</p>"
+            f"<p><b>主角</b> {html.escape(str(anchor.get('name', '')))} — "
+            f"{html.escape(str(anchor.get('appearance', '')))}</p>"
+        )
+    run_dir = get_settings().runs_dir / "drama" / job.token
+    if (run_dir / "state.json").is_file() and job.state is not JobState.FAILED:
+        try:
+            state = load_state(run_dir)
+        except Exception:  # a half-written state file must not 500 the page
+            state = None
+        if state is not None:
+            done = "完成" if state.output else "進行中"
+            parts.append(
+                f"<p><b>進度</b> 角色 {len(state.character)}/2 · 首幀 {len(state.keyframes)}/{SHOT_COUNT}"
+                f" · 影片 {len(state.clips)}/{SHOT_COUNT} · {done}"
+                f"<br><b>臉部修復</b> {html.escape(state.face_repair)}"
+                f" · <b>GPU 花費</b> ${state.spent_usd:.2f}</p>"
+            )
+    shots = plan.get("shots") or []
+    if shots:
+        items = "".join(
+            f"<li><b>鏡頭 {s.get('index', i + 1)}</b> {html.escape(str(s.get('description', ''))[:220])}</li>"
+            for i, s in enumerate(shots)
+        )
+        parts.append(f"<h2>分鏡</h2><ol>{items}</ol>")
+    return "".join(parts)
 
 
 def _render(job: Job, position: int | None, base_url: str) -> str:
@@ -336,7 +390,9 @@ def _render(job: Job, position: int | None, base_url: str) -> str:
     plan = job.prompt or {}
     shots = plan.get("shots") or []
     breakdown = ""
-    if shots:
+    if job.media_kind is MediaKind.DRAMA:
+        breakdown = _drama_block(job, plan)
+    elif shots:
         items = "".join(
             f"<li><b>鏡頭 {s.get('index', i + 1)}</b> {html.escape(str(s.get('description', ''))[:180])}</li>"
             for i, s in enumerate(shots)

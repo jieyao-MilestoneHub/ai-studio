@@ -198,17 +198,21 @@ def delivered_messages(
     is_video: bool,
     prompt: str,
     quote_token: str | None,
+    caption: str | None = None,
 ) -> list[dict[str, Any]]:
     """The two message objects a finished request produces: media, then text.
 
     Media first so the group sees the thing itself before the caption, and the
     quote lives on the text object because a media object cannot carry one.
+    `caption` overrides the default "<prompt> 完成了" lead -- a drama names
+    its title and logline rather than echoing the premise.
     """
     media = video_message(media_url, preview_url) if is_video else image_message(
         media_url, preview_url
     )
-    caption = text_message(f"{prompt[:60]} 完成了\n{status_url}", quote_token=quote_token)
-    return [media, caption]
+    lead = caption if caption else f"{prompt[:60]} 完成了"
+    text = text_message(f"{lead}\n{status_url}", quote_token=quote_token)
+    return [media, text]
 
 
 def understood_messages(
