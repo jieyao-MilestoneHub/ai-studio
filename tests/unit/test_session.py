@@ -21,6 +21,12 @@ from ai_studio.runtime import session as sess
 @pytest.fixture(autouse=True)
 def _isolate_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sess, "STATE_FILE", tmp_path / "session.json")
+    # close_session() writes logs/sessions/<pod>-<ts>.json and pulls pod logs
+    # into logs/pods/ (2026-08-28); un-isolated, the suite left fourteen
+    # `p-*.json` records in the operator's real logs/ -- 📏 found by the first
+    # `ai-studio archive --dry-run` listing them as members.
+    monkeypatch.setattr(sess, "SESSIONS_LOG_DIR", tmp_path / "logs" / "sessions")
+    monkeypatch.setattr(sess, "PODS_LOG_DIR", tmp_path / "logs" / "pods")
     # close_session() now also writes a SpendLedger entry on every close; without
     # isolating it too, every test that closes a session writes into the real
     # repo's runs/.spend_ledger.json instead of a throwaway one.
