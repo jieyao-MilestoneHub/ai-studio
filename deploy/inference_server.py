@@ -271,10 +271,13 @@ class Qwen25VLVideoBackend:
             ],
         }]
         text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        image_inputs, video_inputs, video_kwargs = process_vision_info(messages, return_video_kwargs=True)
+        # qwen-vl-utils 0.0.8 (the card's pin) returns two values; the
+        # `return_video_kwargs=True` form is a later release (📏 2026-08-27:
+        # "unexpected keyword argument").
+        image_inputs, video_inputs = process_vision_info(messages)
         inputs = self._processor(
             text=[text], images=image_inputs, videos=video_inputs, padding=True,
-            return_tensors="pt", **video_kwargs,
+            return_tensors="pt",
         ).to("cuda")
         out = self._model.generate(**inputs, max_new_tokens=256)
         out = out[:, inputs["input_ids"].shape[1]:]
