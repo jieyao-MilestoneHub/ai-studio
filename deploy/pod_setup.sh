@@ -404,7 +404,15 @@ sys.exit(1 if missing else 0)
 # downloaded weights do.
 log "starting the understanding-model server on :8189"
 pkill -f 'inference_server.py'; sleep 1
-nohup "$PY" /workspace/inference_server.py > /workspace/inference.log 2>&1 &
+# HF_HUB_OFFLINE=1: every weight this server can load is staged above, so it
+# must never touch the Hub. Observed live 2026-08-27, twice, when it was
+# restarted by hand without this script's environment: without HF_HOME it
+# re-downloaded 60GB of Qwen3-Omni into the 20GB container disk ("No space
+# left on device"); without HF_TOKEN a load of the gated Tarsier2 died
+# probing chat_template.jinja on the Hub. Offline, neither can happen, and
+# a missing file is a loud local error instead.
+HF_HUB_OFFLINE=1 HF_HOME=/workspace/.hf \
+  nohup "$PY" /workspace/inference_server.py > /workspace/inference.log 2>&1 &
 
 for i in $(seq 1 30); do
   sleep 2

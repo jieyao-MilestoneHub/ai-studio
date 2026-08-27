@@ -520,6 +520,15 @@ async def _run_job(job: Job) -> None:
         _log.exception("job %s failed", job.job_id)
         job.error = str(exc)
         job.state = "failed"
+    if job.state == "failed":
+        # Outside the `except` block on purpose. Observed live 2026-08-27:
+        # Qwen3-Omni OOMed half-way through load() and 23.9GB stayed
+        # allocated until the process was restarted, even though
+        # _ensure_loaded had called _release_vram() -- inside an `except`,
+        # the in-flight exception's traceback still references load()'s
+        # frames, and those hold the half-built model, so gc cannot free
+        # it. Here the exception has been dropped and the sweep can work.
+        _release_vram()
 
 
 # --------------------------------------------------------------------- app
