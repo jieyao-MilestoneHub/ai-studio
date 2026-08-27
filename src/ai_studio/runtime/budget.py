@@ -15,12 +15,15 @@ no queue, no pod, no network.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from ai_studio.core.errors import AIStudioError, CostCeilingExceeded
+
+_log = logging.getLogger("ai_studio.budget")
 
 LEDGER_TZ = ZoneInfo("Asia/Taipei")
 """The cap is a human/billing concept tied to the same timezone the service
@@ -45,6 +48,17 @@ class SpendLedger:
         when = (when or datetime.now(timezone.utc)).astimezone(LEDGER_TZ)
         return when.strftime("%Y-%m")
 
+    def _retire(self, data: dict[str, Any]) -> None:
+        """Write a finished month to `spend-<YYYY-MM>.json` beside the ledger,
+        once; never raises (a failure here must not block a session close)."""
+        try:
+            dest = self.path.with_name(f"spend-{data['month']}.json")
+            if not dest.exists():
+                dest.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+                _log.info("ledger month retired", extra={"reason": str(data["month"])})
+        except Exception as exc:
+            _log.warning("could not retire ledger month %s: %s", data.get("month"), exc)
+
     def _read(self) -> dict[str, Any]:
         fresh: dict[str, Any] = {"month": self._month_key(), "sessions": []}
         if not self.path.is_file():
@@ -68,7 +82,12 @@ class SpendLedger:
                 f"'month' key) — refusing to silently reset the monthly spend budget."
             )
         if data["month"] != fresh["month"]:
-            # A genuine rollover to a new month — spend legitimately resets.
+            # A genuine rollover to a new month — spend legitimately resets,
+            # but the old month is not thrown away any more (it was, before
+            # 2026-08-28): it goes to a sibling file the archive picks up,
+            # and `history` names every month that has one.
+            self._retire(data)
+            fresh["history"] = sorted({*data.get("history", []), str(data["month"])})
             return fresh
         data.setdefault("sessions", [])
         return data
@@ -138,6 +157,8 @@ class MonthlyBudgetGuard:
         worst_hourly = max(c.usd_per_hr for c in candidates)
         minimal_cost = worst_hourly * MIN_SESSION_MINUTES / 60.0
         if remaining < minimal_cost:
+            _log.warning("budget refused", extra={"reason": "month cannot cover a minimal session",
+                                                   "spent": round(self.ledger.spent_this_month_usd(), 2), "cap": self.cap_usd})
             raise CostCeilingExceeded(
                 f"${remaining:.2f} left this month (cap ${self.cap_usd:.2f}, VPS reserves "
                 f"${self.vps_monthly_usd:.2f}) — not enough to safely cover even a "

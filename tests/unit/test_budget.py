@@ -7,6 +7,7 @@ these tests are that enforcement's own safety net.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -160,3 +161,27 @@ def test_throttle_with_no_budget_left_collapses_to_the_open_instant(ledger: Spen
     throttled = guard.throttle(requested_end, opened_at, worst_case_hourly_usd=1.004)
 
     assert throttled == opened_at
+
+
+def test_a_rollover_retires_the_old_month_instead_of_discarding_it(tmp_path: Path) -> None:
+    """Before 2026-08-28 the 1st of the month destroyed the previous month's
+    sessions. Now they go to spend-<YYYY-MM>.json beside the ledger, once,
+    and `history` names every retired month."""
+    path = tmp_path / "ledger.json"
+    path.write_text(
+        '{"month": "2020-01", "sessions": [{"date": "2020-01-01T00:00:00+08:00", '
+        '"cost_usd": 9.5, "tier_label": "x", "minutes": 60}]}',
+        encoding="utf-8",
+    )
+    ledger = SpendLedger(path)
+    assert ledger.spent_this_month_usd() == 0.0
+
+    retired = tmp_path / "spend-2020-01.json"
+    assert retired.exists()
+    assert json.loads(retired.read_text(encoding="utf-8"))["sessions"][0]["cost_usd"] == 9.5
+    ledger.record_session(1.0, tier_label="y", minutes=5)
+    assert json.loads(path.read_text(encoding="utf-8"))["history"] == ["2020-01"]
+    # reading again must not overwrite the retired file
+    before = retired.read_text(encoding="utf-8")
+    SpendLedger(path).spent_this_month_usd()
+    assert retired.read_text(encoding="utf-8") == before

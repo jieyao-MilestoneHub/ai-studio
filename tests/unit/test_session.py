@@ -6,6 +6,7 @@ running, never queue for capacity, and always terminate rather than stop.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -444,3 +445,90 @@ def test_placement_without_a_volume_is_the_plain_ladder(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(sess, "get_settings", lambda: SimpleNamespace(network_volume_id=None))
     assert sess.placement() == (sess.CANDIDATES, None)
+
+
+# ------------------------------------------------- what a close leaves behind
+
+
+def _live(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, provisioned: bool = True) -> None:
+    monkeypatch.setattr(sess, "SESSIONS_LOG_DIR", tmp_path / "logs" / "sessions")
+    monkeypatch.setattr(sess, "PODS_LOG_DIR", tmp_path / "logs" / "pods")
+    state = {
+        "pod_id": "p1", "gpu": "NVIDIA GeForce RTX 4090", "datacenter": "EUR-IS-1", "cloud": "SECURE",
+        "cost_per_hr": 0.74, "opened_at": "2026-08-27T16:21:13.347564+00:00",
+        "window_end": "2026-08-27T18:18:35.260828+00:00", "tier_label": "RTX 4090/SECURE",
+        "vram_gb": 24, "low_vram": True, "quantisation": "int8", "ssh": {}, "provisioned": provisioned,
+        "last_media_kind": "drama", "last_activity_at": "2026-08-27T16:35:22.569573+00:00",
+    }
+    sess.STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    sess.STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
+
+
+def test_close_writes_the_session_record_before_unlinking_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`.session.json` is unlinked at close; until 2026-08-28 the tier,
+    quantisation and why-it-closed of every session were lost with it."""
+    _live(monkeypatch, tmp_path, provisioned=False)
+    _, fake = _calls_recorder([{"id": "p1"}, {}])
+    monkeypatch.setattr(sess, "_runpodctl", fake)
+    monkeypatch.setattr(sess, "list_pods", lambda: [])
+
+    assert sess.close_session(name="w", reason="idle") == ["p1"]
+
+    (record,) = list((tmp_path / "logs" / "sessions").glob("p1-*.json"))
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    assert payload["reason"] == "idle" and payload["terminated"] == ["p1"]
+    assert payload["quantisation"] == "int8" and payload["tier_label"] == "RTX 4090/SECURE"
+    assert payload["closed_at"].endswith("+00:00") and payload["minutes"] > 0
+    assert not sess.STATE_FILE.exists()
+
+
+def test_a_failed_pod_log_pull_never_blocks_the_delete(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Money first: the pull is best-effort and runs before the delete, so it
+    must not be able to stop it."""
+    _live(monkeypatch, tmp_path, provisioned=True)
+    calls: list[tuple[str, ...]] = []
+
+    def runpodctl(*args: str, timeout_s: float = 180.0) -> dict:
+        calls.append(args)
+        if args[:2] == ("ssh", "info"):
+            raise sess.PodError("ssh info unavailable")
+        return {"id": "p1"}
+
+    monkeypatch.setattr(sess, "_runpodctl", runpodctl)
+    monkeypatch.setattr(sess, "list_pods", lambda: [])
+
+    assert sess.close_session(name="w", reason="window over") == ["p1"]
+    assert ("pod", "delete", "p1") in calls
+    assert not (tmp_path / "logs" / "pods").exists()
+
+
+def test_pull_pod_logs_splits_one_ssh_reply_into_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import subprocess
+
+    monkeypatch.setattr(sess, "_runpodctl", lambda *a, **k: {"ip": "1.2.3.4", "port": "22"})
+    reply = "== setup\n[setup 2026-08-28T00:00:00Z] hi\n== inference\nINFO x\n== comfy\n== dl-logs\nok\n"
+    monkeypatch.setattr(
+        sess, "_ssh",
+        lambda argv, *, stdin, timeout_s: subprocess.CompletedProcess(argv, 0, stdout=reply, stderr=""),
+    )
+    live = sess.Session.__new__(sess.Session)
+    live.__dict__.update(pod_id="p9", provisioned=True)
+    written = sess.pull_pod_logs(live, tmp_path / "p9")
+    names = sorted(p.name for p in written)
+    assert names == ["dl-logs.log", "inference.log", "setup.log"], "an empty section writes no file"
+    assert (tmp_path / "p9" / "setup.log").read_text(encoding="utf-8").startswith("[setup ")
+    assert (tmp_path / "p9" / "pulled_at.txt").exists()
+
+
+def test_the_reaper_decision_is_still_the_old_string_with_fields(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _live(monkeypatch, tmp_path, provisioned=False)
+    # the fixture's last_media_kind is "drama", so the drama grace applies
+    decision = sess.close_if_idle(drama_idle_minutes=10_000, name="w", hold=True)
+    assert "held: work pending" in decision  # the contract every caller relies on
+    assert decision.action == "held" and decision.pod_id == "p1" and decision.grace == 10_000

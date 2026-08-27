@@ -809,7 +809,7 @@ def session_close(name: str = typer.Option("ai-studio-window")) -> None:
     _setup_logging("close")
     from ai_studio.runtime import session as sess
 
-    terminated = sess.close_session(name=name)
+    terminated = sess.close_session(name=name, reason="scheduled close")
     if not terminated:
         console.print("nothing to close. [dim]Nothing is billing.[/dim]")
         return
@@ -877,18 +877,52 @@ def session_reap(
 
     with JobQueue() as queue:
         hold = bool(queue.pending())
-    console.print(
-        sess.close_if_idle(
-            image_idle_minutes=image_idle_minutes or sess.IMAGE_IDLE_MINUTES,
-            video_idle_minutes=video_idle_minutes or sess.VIDEO_IDLE_MINUTES,
-            understanding_idle_minutes=(
-                understanding_idle_minutes or sess.UNDERSTANDING_IDLE_MINUTES
-            ),
-            chat_idle_minutes=chat_idle_minutes or sess.CHAT_IDLE_MINUTES,
-            drama_idle_minutes=drama_idle_minutes or sess.DRAMA_IDLE_MINUTES,
-            hold=hold,
-        )
+    decision = sess.close_if_idle(
+        image_idle_minutes=image_idle_minutes or sess.IMAGE_IDLE_MINUTES,
+        video_idle_minutes=video_idle_minutes or sess.VIDEO_IDLE_MINUTES,
+        understanding_idle_minutes=(
+            understanding_idle_minutes or sess.UNDERSTANDING_IDLE_MINUTES
+        ),
+        chat_idle_minutes=chat_idle_minutes or sess.CHAT_IDLE_MINUTES,
+        drama_idle_minutes=drama_idle_minutes or sess.DRAMA_IDLE_MINUTES,
+        hold=hold,
     )
+    console.print(str(decision))
+    _log_reap(decision)
+
+
+_REAP_LAST = Path("runs/.reap_last.json")
+
+
+def _log_reap(decision: Any) -> None:
+    """DEBUG every minute (JSONL only), INFO only when the action changes.
+
+    The reaper fires every minute and used to be ~65 % of ai-studio's journald
+    volume saying `held: work pending` (📏 2026-08-28); the transitions are
+    the information, the repeats are not."""
+    import json
+    import logging
+
+    log = logging.getLogger("ai_studio.reap")
+    fields = {
+        "action": getattr(decision, "action", None), "idle_min": round(getattr(decision, "idle_min", 0.0), 1),
+        "grace": getattr(decision, "grace", None), "spent": round(getattr(decision, "spent_usd", 0.0), 2),
+        "pod_id": getattr(decision, "pod_id", None),
+    }
+    previous = None
+    try:
+        previous = json.loads(_REAP_LAST.read_text(encoding="utf-8")).get("action")
+    except Exception:
+        previous = None
+    if fields["action"] != previous:
+        log.info("reap: %s", decision, extra=fields)
+        try:
+            _REAP_LAST.parent.mkdir(parents=True, exist_ok=True)
+            _REAP_LAST.write_text(json.dumps({"action": fields["action"]}), encoding="utf-8")
+        except OSError:
+            pass
+    else:
+        log.debug("reap: %s", decision, extra=fields)
 
 
 @session_app.command("drain")

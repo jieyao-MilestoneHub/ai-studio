@@ -27,6 +27,7 @@ against the live API yet.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -38,6 +39,7 @@ import httpx
 
 from ai_studio.config.settings import get_settings
 from ai_studio.core.errors import CostCeilingExceeded, PodError
+from ai_studio.core.observability import utc_now_iso
 from ai_studio.pipeline.queue import JobQueue
 from ai_studio.runtime import hours
 from ai_studio.runtime.budget import MonthlyBudgetGuard, SpendLedger
@@ -181,7 +183,19 @@ leaving a request with RunPod: an order that fills when capacity appears would
 start billing unattended, including overnight.
 """
 
+_log = logging.getLogger("ai_studio.session")
+
 STATE_FILE = Path("runs/.session.json")
+SESSIONS_LOG_DIR = Path("logs/sessions")
+"""Where every closed session's state lands (pod, tier, quantisation, opened/
+closed, cost, why it closed). `.session.json` is unlinked at close, so before
+2026-08-28 nothing but the pod id in `pod_opens` and the cost in the ledger
+survived a session. Monkeypatched in tests like STATE_FILE."""
+PODS_LOG_DIR = Path("logs/pods")
+"""Where a pod's own logs (setup.log, inference.log, comfy.log tail, dl-logs)
+are pulled to over ssh before the pod is terminated -- they die with it."""
+POD_LOG_PULL_TIMEOUT_S = 30.0
+POD_LOG_TAIL_BYTES = 5_000_000
 
 
 @dataclass(frozen=True)
@@ -424,6 +438,7 @@ def ensure_pod(
     limit = settings.max_pod_opens_per_day if max_opens_per_day is None else max_opens_per_day
     opened = queue.opens_today(since=hours.day_start(now).timestamp())
     if limit and opened >= limit:
+        _log.warning("refused to open pod", extra={"reason": "daily opens cap", "opened_today": opened, "cap": limit})
         raise CostCeilingExceeded(
             f"{opened} pod(s) already opened today, cap is {limit} "
             "(AI_STUDIO_MAX_POD_OPENS_PER_DAY). Nothing was created and nothing "
@@ -442,12 +457,21 @@ def ensure_pod(
         max(tier.usd_per_hr for tier in candidates),
     )
 
+    _log.info(
+        "opening pod", extra={"reason": "queue has work", "opened_today": opened,
+                              "tier": candidates[0].label if candidates else None},
+    )
     session = open_session(
         window_end, name=name, candidates=candidates, network_volume_id=network_volume_id
     )
     # Recorded before the caller does anything else with the session: a pod
     # that exists but was never counted is one the daily cap cannot see.
     queue.record_pod_open(session.pod_id)
+    _log.info(
+        "pod opened", extra={"pod_id": session.pod_id, "tier": session.tier_label,
+                             "usd_per_hr": session.cost_per_hr, "window_end": session.window_end,
+                             "datacenter": session.datacenter},
+    )
     return session
 
 
@@ -553,7 +577,7 @@ def wait_understanding_ready(
 # ----------------------------------------------------------------------- close
 
 
-def close_session(*, name: str = "ai-studio-window") -> list[str]:
+def close_session(*, name: str = "ai-studio-window", reason: str = "manual") -> list[str]:
     """Terminate the window's pod. Idempotent, and safe with no state file.
 
     Terminates rather than stops: a stopped pod keeps its disk and keeps
@@ -576,23 +600,104 @@ def close_session(*, name: str = "ai-studio-window") -> list[str]:
     targets = {session.pod_id} if session else set()
     targets |= {str(p["id"]) for p in list_pods() if p.get("name") == name and p.get("id")}
 
+    if session is not None and session.provisioned:
+        # The pod's own logs die with it. Pull them first, bounded, and never
+        # let a failure here delay the delete below -- money first.
+        try:
+            pulled = pull_pod_logs(session, PODS_LOG_DIR / session.pod_id)
+            _log.info("pod logs pulled", extra={"pod_id": session.pod_id, "messages": len(pulled)})
+        except Exception as exc:  # any ssh/runpodctl trouble; the pod still gets deleted
+            _log.warning("pod log pull failed: %s", exc, extra={"pod_id": session.pod_id})
+
     for pod_id in sorted(targets):
         try:
             _runpodctl("pod", "delete", pod_id)
             terminated.append(pod_id)
+            _log.info("pod closed", extra={"pod_id": pod_id, "reason": reason})
         except PodError as exc:
             # Keep going: one stuck pod must not stop us terminating the rest.
             terminated.append(f"{pod_id} (FAILED: {exc})")
+            _log.warning("pod delete FAILED: %s", exc, extra={"pod_id": pod_id, "reason": reason})
 
     if session is not None:
-        SpendLedger().record_session(
-            session.spent_usd(),
-            tier_label=session.tier_label,
-            minutes=session.elapsed_hours() * 60,
+        cost = session.spent_usd()
+        minutes = session.elapsed_hours() * 60
+        SpendLedger().record_session(cost, tier_label=session.tier_label, minutes=minutes)
+        _archive_session(session, reason=reason, terminated=terminated, cost_usd=cost, minutes=minutes)
+        _log.info(
+            "session closed", extra={"pod_id": session.pod_id, "reason": reason, "minutes": round(minutes, 1),
+                                     "cost_usd": round(cost, 4), "tier": session.tier_label},
         )
 
     clear_state()
     return terminated
+
+
+def _archive_session(
+    session: Session, *, reason: str, terminated: list[str], cost_usd: float, minutes: float
+) -> Path | None:
+    """Write the session's full state to `SESSIONS_LOG_DIR` before it is
+    unlinked. Best-effort: a failure is logged, never raised into the close."""
+    try:
+        SESSIONS_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = session.opened_at.replace(":", "").replace("-", "")[:15]
+        dest = SESSIONS_LOG_DIR / f"{session.pod_id}-{stamp}.json"
+        payload = _read_state_raw() | {
+            "closed_at": utc_now_iso(), "reason": reason, "terminated": terminated,
+            "minutes": round(minutes, 2), "cost_usd": round(cost_usd, 4),
+        }
+        tmp = dest.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(dest)
+        return dest
+    except Exception as exc:
+        _log.warning("session record not written: %s", exc, extra={"pod_id": session.pod_id})
+        return None
+
+
+POD_LOG_FILES = ("setup", "inference", "comfy")
+
+
+def pull_pod_logs(session: Session, dest: Path, *, timeout_s: float = POD_LOG_PULL_TIMEOUT_S) -> list[Path]:
+    """Copy the tail of the pod's logs into `dest` over one ssh call.
+
+    One command, one round trip, bounded by `timeout_s` and `POD_LOG_TAIL_BYTES`
+    per file: this runs on the close path, where every second is billed and
+    nothing may block the delete. Returns the files written."""
+    info = _runpodctl("ssh", "info", session.pod_id)
+    host, port = str(info.get("ip") or ""), str(info.get("port") or "")
+    if not host or not port:
+        raise PodError(f"{session.pod_id}: no ssh endpoint in {info}")
+    script = "; ".join(
+        [f'echo "== {name}"; tail -c {POD_LOG_TAIL_BYTES} /workspace/{name}.log 2>/dev/null' for name in POD_LOG_FILES]
+        + ['echo "== dl-logs"; tail -n 200 /workspace/dl-logs/* 2>/dev/null']
+    )
+    argv = [
+        "ssh", "-i", str(SSH_KEY), "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-p", port, f"root@{host}", script,
+    ]
+    proc = _ssh(argv, stdin="", timeout_s=timeout_s)
+    if proc.returncode != 0 and not proc.stdout:
+        raise PodError(f"pod log pull exited {proc.returncode}: {(proc.stderr or '')[-200:]}")
+    dest.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    current: str | None = None
+    chunks: dict[str, list[str]] = {}
+    for line in proc.stdout.splitlines(keepends=True):
+        if line.startswith("== "):
+            current = line[3:].strip()
+            chunks.setdefault(current, [])
+            continue
+        if current is not None:
+            chunks[current].append(line)
+    for name, lines in chunks.items():
+        if not lines:
+            continue
+        path = dest / f"{name}.log"
+        path.write_text("".join(lines), encoding="utf-8")
+        written.append(path)
+    (dest / "pulled_at.txt").write_text(utc_now_iso() + "\n", encoding="utf-8")
+    return written
 
 
 IMAGE_IDLE_MINUTES = 5
@@ -631,6 +736,27 @@ or clip, so the grace only ever measures a real gap, never a long render.
 """
 
 
+class ReapDecision(str):
+    """What the reaper decided, as the same string it always returned (tests
+    and the CLI compare with `in`), plus fields for the JSONL line and for
+    the CLI to log only on a *transition* -- the per-minute `held:` text
+    was ~65 % of ai-studio's journald volume (📏 2026-08-28)."""
+
+    action: str
+    idle_min: float
+    grace: float
+    spent_usd: float
+    pod_id: str | None
+
+    def __new__(
+        cls, text: str, *, action: str, idle_min: float = 0.0, grace: float = 0.0,
+        spent_usd: float = 0.0, pod_id: str | None = None,
+    ) -> ReapDecision:
+        obj = super().__new__(cls, text)
+        obj.action, obj.idle_min, obj.grace, obj.spent_usd, obj.pod_id = action, idle_min, grace, spent_usd, pod_id
+        return obj
+
+
 def close_if_idle(
     *,
     image_idle_minutes: int = IMAGE_IDLE_MINUTES,
@@ -640,7 +766,7 @@ def close_if_idle(
     drama_idle_minutes: int = DRAMA_IDLE_MINUTES,
     hold: bool = False,
     name: str = "ai-studio-window",
-) -> str:
+) -> ReapDecision:
     """Close the pod when it has gone quiet; the grace depends on what it
     last rendered. `hold=True` (work is waiting in the queue) never closes:
     a pod with a job about to land on it is not idle, whatever the clock says
@@ -648,10 +774,13 @@ def close_if_idle(
     """
     session = load_state()
     if session is None:
-        return "no session"
+        return ReapDecision("no session", action="none")
 
     if session.past_window():
-        return f"window over; {close_session(name=name)}"
+        return ReapDecision(
+            f"window over; {close_session(name=name, reason='window over')}",
+            action="closed", pod_id=session.pod_id, spent_usd=session.spent_usd(),
+        )
 
     state = _read_state_raw()
     last = state.get("last_activity_at") or session.opened_at
@@ -667,10 +796,19 @@ def close_if_idle(
     }
     grace = overrides.get(str(state.get("last_media_kind") or ""), video_idle_minutes)
     if hold:
-        return f"held: work pending ({idle:.0f}min idle, spent ${session.spent_usd():.2f})"
+        return ReapDecision(
+            f"held: work pending ({idle:.0f}min idle, spent ${session.spent_usd():.2f})",
+            action="held", idle_min=idle, grace=grace, spent_usd=session.spent_usd(), pod_id=session.pod_id,
+        )
     if idle >= grace:
-        return f"idle {idle:.0f}min >= {grace}; {close_session(name=name)}"
-    return f"active ({idle:.0f}min idle of {grace}, spent ${session.spent_usd():.2f})"
+        return ReapDecision(
+            f"idle {idle:.0f}min >= {grace}; {close_session(name=name, reason='idle')}",
+            action="closed", idle_min=idle, grace=grace, spent_usd=session.spent_usd(), pod_id=session.pod_id,
+        )
+    return ReapDecision(
+        f"active ({idle:.0f}min idle of {grace}, spent ${session.spent_usd():.2f})",
+        action="active", idle_min=idle, grace=grace, spent_usd=session.spent_usd(), pod_id=session.pod_id,
+    )
 
 
 # ------------------------------------------------------------------ provision
