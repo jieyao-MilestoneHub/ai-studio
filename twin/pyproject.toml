@@ -5,9 +5,14 @@ description = "Personal digital-twin agent framework — spec at twin/reference/
 readme = "README.md"
 license = { file = "LICENSE" }
 # Not copying ai-studio's 3.13 pin: that pin exists because of runpod-flash,
-# which twin doesn't depend on. Revisit once Phase 4 picks TRL/Accelerate/
-# torch versions — those may have their own floor/ceiling.
-requires-python = ">=3.11,<3.14"
+# which twin doesn't depend on. Floor raised from >=3.11 to >=3.12 on
+# 2026-08-27 while landing the Phase 4 training stack: numpy>=2.3 (pulled in
+# transitively by torch/transformers) itself declares requires-python>=3.12
+# on PyPI — checked live, not assumed — so >=3.11 was no longer an honest
+# claim once those deps were added; `uv sync` would simply fail to resolve on
+# a real 3.11 interpreter. Modal/Kaggle base images may impose their own
+# tighter floor; that's a launch/*.sh concern, not this file's.
+requires-python = ">=3.12,<3.14"
 
 dependencies = [
     "typer>=0.12",
@@ -15,7 +20,31 @@ dependencies = [
     "google-genai>=2.20.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
-    "fsspec>=2026.7.0",
+    # Lowered from the earlier >=2026.7.0 floor (2026-08-27): that pin was
+    # simply "latest at Phase 0 time", not a feature twin's own fsspec.open()
+    # usage needs. Adding the Phase 4 training stack below made it
+    # unsatisfiable — checked live against PyPI (2026-08-27): fsspec's own
+    # latest release is 2026.7.0, but `datasets` (latest 5.0.1, a direct
+    # dependency of `trl`) caps its own fsspec requirement at <=2026.6.0 and
+    # hasn't caught up yet. This is a real, narrow, current ecosystem gap
+    # (fsspec ships monthly calendar versions; datasets lags by one), not a
+    # guess — resolve by relaxing this floor, not by pinning datasets/trl to
+    # something stale.
+    "fsspec>=2024.6.1",
+    # Phase 4 (twin/PLAN.md) training stack. Versions pinned to what's
+    # current as of 2026-08 verification, not guessed from older tutorials:
+    # transformers>=5.0 (2026-01) dropped TF/Flax and needs Python>=3.10 /
+    # torch>=2.4, so torch's own floor follows from that, not vice versa.
+    "torch>=2.4",
+    "transformers>=5.16",
+    "trl>=1.12",
+    "peft>=0.20",
+    "accelerate>=1.14",
+    "bitsandbytes>=0.50",
+    "datasets>=3.0",
+    # SPEC.md §8: adapters are personal data ("可反推行為特徵") and MUST be
+    # stored encrypted — see core/encryption.py.
+    "cryptography>=44.0",
 ]
 
 [project.scripts]
@@ -40,7 +69,7 @@ packages = ["src/twin"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -56,7 +85,7 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 "src/twin/cli/*.py" = ["B008"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"  # matches the requires-python floor raised above
 strict = true
 files = ["src/twin"]
 plugins = ["pydantic.mypy"]
@@ -64,6 +93,19 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = "fsspec.*"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# datasets ships no py.typed marker / stubs as of the pinned version.
+module = "datasets.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# trl's top-level __init__ uses a lazy-import (_LazyModule) pattern rather than
+# explicit `from .x import Y as Y` re-exports, which strict mode's
+# no_implicit_reexport otherwise flags on `from trl import SFTTrainer` even
+# though it's trl's own documented public API.
+module = "trl"
+implicit_reexport = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -131,6 +173,16 @@ name = "train.py stays cloud-agnostic"
 type = "forbidden"
 source_modules = ["twin.train"]
 forbidden_modules = ["modal", "kaggle", "lightning_sdk", "boto3", "runpod"]
+
+# Phase 4: trl and bitsandbytes are unambiguously training-SFT-specific with
+# no legitimate inference-time use, unlike torch/transformers/peft (Phase 11's
+# agent will legitimately need those to load a trained adapter and run
+# inference) — so only these two get confined to twin.train specifically.
+[[tool.importlinter.contracts]]
+name = "Training-loop-specific deps confined to twin.train"
+type = "forbidden"
+source_modules = ["twin.core", "twin.config", "twin.teacher", "twin.ingest", "twin.memory", "twin.agent", "twin.harness", "twin.cli"]
+forbidden_modules = ["trl", "bitsandbytes"]
 
 # The eval harness is a leaf, same reasoning as ai-studio's api/bots: the real
 # production path must not depend on the eval plumbing.

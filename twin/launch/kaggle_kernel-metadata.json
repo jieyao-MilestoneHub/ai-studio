@@ -1,0 +1,13 @@
+{
+  "id": "REPLACE_WITH_KAGGLE_USERNAME/twin-train",
+  "title": "twin-train",
+  "code_file": "kaggle_kernel.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": []
+}

@@ -129,21 +129,47 @@ failures that don't surface until much later, if ever.
 | `data-hygiene` agent | after touching L1/L2, and after every data re-ingest — checks time leakage, split contamination, negative quality, exposure capture |
 | `eval-judge` agent | invoked by the `eval-harness` skill, not directly — one fresh instance per shard, never reused across shards |
 
-## Infrastructure (as specified — no code exists yet to verify any of this)
+## Infrastructure
+
+**Training code landed 2026-08-27 (PLAN.md Phase 4 — `train/{formatting,model,checkpoint,reproducibility,run}.py`, root `train.py`, `launch/*`); everything below is now backed by real, tested code, not just spec.** The one item still genuinely spec-only is the LINE surface adapter (Phase 11).
 
 - Training: Modal Starter ($30/mo credits, idle doesn't bill) for the primary
   loop, Kaggle (T4×2, ~30h/week) for long runs, Lightning AI as backup.
+  `launch/modal.sh`+`modal_app.py`, `launch/kaggle.sh`+`kaggle_kernel.py`,
+  `launch/lightning.sh` exist; only `modal_app.py`'s shape has been checked
+  against live Modal docs — Kaggle/Lightning need verification before a real
+  run (see twin/PLAN.md's Phase 4 "已知偏離" notes).
 - Cross-cloud hub: Cloudflare R2 (zero egress, 10GB free tier) — fragments,
   trajectories, and adapters only; raw media never leaves local storage
-  (`SPEC.md` §7.2, §4.2).
-- Base model: open-weight, permissive license, 8B class (a spec-decided
-  default, not a hard requirement — see `SPEC.md` §11 item G), shared across
-  every twin; individual differences live only in the LoRA adapter.
-- Provider coupling is deliberately confined to two files: `launch/*.sh` and
-  `teacher.py` (`SPEC.md` §7.1, D12) — `train.py` must never know about a
-  specific cloud SDK.
-- Training framework: TRL + Accelerate or equivalent. `SPEC.md` §7.6
-  explicitly forbids a hand-rolled trainer, because checkpoint-resume
+  (`SPEC.md` §7.2, §4.2). `train/checkpoint.py`'s sync logic is tested against
+  `file://` URIs only — no real R2 bucket exists yet (Phase 0's account
+  sign-up is still an open manual step). Adapter weights (both intermediate
+  checkpoints and the final adapter) are encrypted before upload (`SPEC.md`
+  §8: "Adapter 為個資...MUST 加密儲存") — see `core/encryption.py` and
+  `Settings.adapter_encryption_key` (`TWIN_ADAPTER_ENCRYPTION_KEY`, no
+  default; generate one with `examples/generate_adapter_encryption_key.py`).
+- Base model: **Qwen/Qwen3-8B** (dense, Apache-2.0) — decided 2026-08-27 after
+  comparing current 8B-class, Apache-2.0-or-equivalent, Traditional-Chinese-
+  capable candidates (see `twin/PLAN.md`'s Phase 4 section for the comparison
+  and rejected alternatives). Shared across every twin; individual
+  differences live only in the LoRA adapter (`twin/src/twin/train/model.py`).
+- Provider coupling is deliberately confined to `launch/*` and `teacher.py`
+  (`SPEC.md` §7.1, D12) — `train.py` itself never imports a cloud SDK
+  (enforced by an import-linter contract). `launch/modal_app.py` and
+  `launch/kaggle_kernel.py` are the actual vendor-coupled files (Modal/Kaggle
+  both require a real code artifact, not pure CLI flags) — they live outside
+  `src/twin/` so import-linter's `root_package="twin"` scan never reaches
+  them, but this is a documented deviation from `PLAN.md` §3.1's literal
+  "launch/ 只放 shell" tree comment, not a silent one.
+- Training framework: TRL (`trl>=1.12`) + PEFT (`>=0.20`) + Accelerate
+  (`>=1.14`) + bitsandbytes (`>=0.50`), current-as-of-2026-08 pins. `SPEC.md`
+  §7.6 explicitly forbids a hand-rolled trainer, because checkpoint-resume
   correctness (§7.4: adapter weights, optimizer state, LR schedule, RNG
   state, global step, dataloader cursor) is easy to get subtly wrong, and
-  wrong in a way that produces a fake convergence curve rather than an error.
+  wrong in a way that produces a fake convergence curve rather than an
+  error — `tests/unit/test_train_checkpoint_kill_resume.py` verifies this
+  with a real `SIGKILL` against a real (toy) subprocess, not a mock.
+  Unsloth is deliberately NOT used for the production/checkpoint-critical
+  training loop (undocumented resume guarantees, a recurring history of
+  resume-related GitHub issues) — only plain TRL+PEFT+bitsandbytes, whose
+  checkpoint contract is documented and tested.
