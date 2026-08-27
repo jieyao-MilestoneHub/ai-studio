@@ -152,6 +152,29 @@ slot, evicted by the next generation job and evicting ComfyUI's checkpoint
 in turn. A pod whose last job was chat is held `CHAT_IDLE_MINUTES` (15)
 before the reaper closes it — see [schedule.md](schedule.md).
 
+## A ninth trigger: a one-minute drama
+
+| trigger | produces | model |
+|---|---|---|
+| `/短劇 <一句故事前提>` | a ~60 s six-shot story with one recurring lead, as one video message | gpt-oss-20b writes → Flux.1-dev keyframes → MiniMax H3 image-to-video ×6 → ffmpeg |
+
+`/短劇` takes no photo and no length suffix — the length *is* the six shots
+of 10.1 s. It is refused with a usage line when bare. The acknowledgement
+says 25–40 minutes (`[speculative]`); the status page shows per-stage
+progress (「角色 2/2 · 首幀 4/6 · 影片 1/6」) read off the drama's own state
+file, and the finished caption is 「🎭《title》logline」rather than the premise.
+
+**Its own cap, group-wide.** `AI_STUDIO_MAX_DRAMAS_PER_DAY` (default 3) counts
+the whole group's dramas for the day, on top of the per-user job cap: one
+drama is 15–30 GPU-minutes. The per-run ceiling `AI_STUDIO_MAX_COST_USD` is
+also checked before the first GPU stage — the first LINE path to use it.
+
+**Always the screenwriter, never raw.** `AI_STUDIO_PROMPT_MODE=raw` still
+applies to `/影片` and `/圖片`; a drama has nothing to be raw from, and there
+is no template fallback: a screenplay the model cannot produce fails the job
+and tells the group. See [drama.md](drama.md) for the pipeline, the resume
+contract, and what to measure first.
+
 ⚠️ gpt-oss-20b's licence is Apache 2.0 with no geographic restriction
 (`docs/model-gpt-oss-20b.md`) — the one model here whose licence *is*
 settled — but nothing about it has run on real hardware yet.
