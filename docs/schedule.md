@@ -4,7 +4,7 @@ One pod, one window a day. The window exists because a session's fixed cost is
 ~20 minutes (boot, 51GB weight download, node install) while a clip is ~5
 minutes — so opening a pod per request would spend 80% of the money on setup.
 
-Since the LINE bot's image trigger (`/圖片`, see [line-bot.md](line-bot.md))
+Since the LINE bot's image trigger (`/圖片`, see [line-bot.md](../fun_workflow/docs/line-bot.md))
 shares this same pod, both model sets — H3 and Flux.1-dev — download on every
 open. See [runpod.md](runpod.md) for the updated download math (~72–78GB
 combined, up from H3's ~54.7GB alone).
@@ -19,7 +19,7 @@ combined, up from H3's ~54.7GB alone).
 | Capacity | ~100 usable minutes ÷ ~5 min = **~20 clips/day**, ~600/month |
 
 One FIFO queue serves both the video trigger (`/影片`, and `/圖影` for image-to-video) and the image
-trigger (`/圖片`, see [line-bot.md](line-bot.md)) — `ai-studio worker`
+trigger (`/圖片`, see [line-bot.md](../fun_workflow/docs/line-bot.md)) — `funapp worker`
 dispatches each claimed job to the H3 or Flux provider by `media_kind`. An
 image job's generation time is `[speculative]` but expected in the 15–40s
 range, negligible against a clip's 2–6 minutes, so mixing images in barely
@@ -119,10 +119,10 @@ people wait until eleven. What protects money now is the monthly budget
 guard, the per-day open cap (15, since pods are short-lived), and the three
 closers below.
 
-`ai-studio worker` is the loop. It runs as a service, always:
+`funapp worker` (in `fun_workflow/`) is the loop. It runs as a service, always:
 
 ```bash
-ai-studio worker
+uv run --project fun_workflow funapp worker
 ```
 
 - With nothing queued it checks every 10 seconds and does nothing else.
@@ -149,7 +149,7 @@ functions by protocol and `cli.main` injects them.
 
 | timer | `OnCalendar` | does |
 |---|---|---|
-| `ai-studio-reap` | every minute | `session reap` — close a quiet pod after its per-kind grace; never with work queued. Logs to journald only on a transition, DEBUG to JSONL each minute |
+| `ai-studio-reap` | every minute | `funapp reap` — close a quiet pod after its per-kind grace; never with work queued. Logs to journald only on a transition, DEBUG to JSONL each minute |
 | `ai-studio-gc` | `02:30 Asia/Taipei` | `gc` — sweep delivered media and received photos past `AI_STUDIO_FILES_RETENTION_DAYS` |
 | `ai-studio-archive` | `03:00 Asia/Taipei` | `archive` — snapshot the queue db, tar+zstd the JSONL traces / session and pod records / drama state / ledger, verify, then prune (docs/observability.md) |
 | `ai-studio-close` | `04:05 Asia/Taipei` | `session close` — the daily hard close, a backstop behind the reaper and `--terminate-after` |
@@ -168,7 +168,7 @@ independent ways for a machine to stop billing, and only the last needs no
 process alive.
 
 **The reaper is now per-render-kind, and it never closes a pod with work
-waiting.** `session reap` runs every minute; it closes a quiet pod after
+waiting.** `funapp reap` runs every minute; it closes a quiet pod after
 `IMAGE_IDLE_MINUTES` (5) if the last render was an image, `VIDEO_IDLE_MINUTES`
 (10) if it was a clip, `UNDERSTANDING_IDLE_MINUTES` (5) if the last thing
 this pod did was a `/說圖`/`/說音`/`/說影` job, `DRAMA_IDLE_MINUTES` (10, and
@@ -296,12 +296,13 @@ schtasks /Create /TN "ai-studio-close" /SC DAILY /ST 13:00 /F `
   /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session close"
 ```
 
-`ai-studio worker` is not a scheduled task — it is a service that stays up. On
+`funapp worker` is not a scheduled task — it is a service that stays up. On
 Windows that means a console you leave running, or NSSM; on the VPS it is
 `ai-studio-worker.service` with `Restart=always` (see
-[`deploy/vps_setup.sh`](../deploy/vps_setup.sh)); on the Jetson it is the same
-unit written by [`deploy/jetson_setup.sh`](../deploy/jetson_setup.sh), which
-also masks the systemd sleep targets so the box cannot suspend under it.
+[`fun_workflow/deploy/vps_setup.sh`](../fun_workflow/deploy/vps_setup.sh)); on
+the Jetson it is the same unit written by
+[`fun_workflow/deploy/jetson_setup.sh`](../fun_workflow/deploy/jetson_setup.sh),
+which also masks the systemd sleep targets so the box cannot suspend under it.
 
 ⚠️ Task Scheduler does not run while the machine is asleep, and neither does
 the worker. `--terminate-after` guarantees a pod gets *closed*, never that one

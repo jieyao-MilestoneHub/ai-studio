@@ -37,7 +37,7 @@ replies with what to do, naming the trigger that was used — the user asked for
 
 Both enqueue into the same SQLite `jobs` table (tagged `media_kind`), both wait
 for the same on-demand pod, and both render on it —
-`ai-studio worker` picks the H3 or Flux ComfyUI provider per job by
+`funapp worker` picks the H3 or Flux ComfyUI provider per job by
 `media_kind`, not by a second queue or a second pod. See
 [schedule.md](schedule.md) for how the pod is now opened by the day's first
 request rather than by a timer, and [runpod.md](runpod.md) for what
@@ -328,7 +328,7 @@ cp .env.example .env
 groups it belongs to, so the id has to be read off a live event.
 
 ```bash
-uv run ai-studio line capture-group
+uv run funapp line capture-group
 ```
 
 With `LINE_ALLOWED_GROUP_ID` empty the bot runs in **capture mode**: it answers
@@ -353,7 +353,7 @@ LINE_ALLOWED_USER_IDS=Uabc...,Udef...
 Empty means *any member of the group*. That is a legitimate choice for a group
 whose roster you trust, and it is the default because requiring a user list up
 front would make the bot unusable before anyone had ever spoken to it. But it is
-a choice, so `ai-studio line serve` prints it in yellow at startup rather than
+a choice, so `funapp line serve` prints it in yellow at startup rather than
 letting it pass as a default.
 
 With the list set, the gate **fails closed**: LINE does not always include
@@ -410,7 +410,7 @@ unasserted for a while.
 ### 5. Serve
 
 ```bash
-uv run ai-studio line serve --port 8000
+uv run funapp line serve --port 8000
 ```
 
 ## Public HTTPS
@@ -611,8 +611,9 @@ moondream3, 繁體中文 structured for the two Qwen models).
 
 ## Historical: the serverless conversion endpoint (retired 2026-08-27)
 
-Kept for the numbers; nothing calls it any more (`llm/endpoint.py` remains
-only for `ScriptedLlmClient` in tests).
+Kept for the numbers; nothing calls it any more (its client, `llm/endpoint.py`,
+was deleted on 2026-08-28; the offline `ScriptedLlmClient` it also carried
+now lives in `ai_studio/llm/scripted.py`).
 
 
 Deployed as `runpod-workers/worker-vllm` on `ADA_24` with

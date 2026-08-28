@@ -18,14 +18,19 @@ Everything below is arranged to preserve it.
 
 ```
 L0  core                     data model only; imports nothing internal
-L1  config · prompts · editing   settings, H3 + Flux prompt schemas, editing rules
-L2  media · storage          ffmpeg invocation, artifact stores
-L3  gates · providers · comfy    rule checks, clip/image/understanding backends,
+L1  config · benchmark ·     settings; render records, the monthly report and live
+    prompts · editing        rates; H3 + Flux prompt schemas; editing rules
+L2  media · storage          ffmpeg invocation, artifact stores, the daily archive
+L3  gates · providers · comfy    rule checks, clip/image/understanding/chat backends,
     inference · llm · planner ·   ComfyUI + the pod-side inference-server client +
-    render                        LLM protocols
-L4  pipeline                 request queue, drain loop, stage graph, run/resume
-L5  runtime · cli            pod lifecycle, command line
-L6  api · bots               FastAPI service + LINE bot — nothing imports these
+    render                        the offline scripted LLM
+L4  pipeline                 model residency hand-off, the pod-side prompt rewriter
+L5  runtime · cli            pod lifecycle, budget, open ledger, command line
+
+fun_workflow/ (own package)  api · bots · pipeline(queue, worker, drain, drama)
+                             · prompts(drama, chat) · storage(index, gc) · cli —
+                             installs ai-studio editable; only its `cli` may
+                             import `ai_studio.runtime`
 ```
 
 Enforced by `import-linter` in `pyproject.toml`, run in CI:
@@ -35,7 +40,12 @@ Enforced by `import-linter` in `pyproject.toml`, run in CI:
 | `editing` ⊬ `providers`, `render`, `runtime`, `storage`, `media` | the editing rules must be readable and testable with zero infrastructure |
 | `gates` ⊬ `providers`, `render`, `runtime` | preserves the invariant above |
 | `render` ⊬ `providers` | swapping the model cannot touch editing |
-| nothing ⊬ `api`, `bots` | phase 2 stays a leaf, so adding it is additive |
+| `prompts` ⊬ `llm`, `providers`, `comfy`, `pipeline`, `runtime`, `storage` | prompt building does no I/O |
+
+The former "nothing imports `api`/`bots`" contract is now a package boundary:
+those modules live in `fun_workflow/`, which depends on ai-studio and never
+the reverse. Its own guardrail (`fun_workflow/tests/unit/test_layering.py`)
+keeps `ai_studio.runtime` reachable only from its composition root.
 
 ### The dependency inversion that makes it work
 
@@ -170,17 +180,18 @@ generation is a receipt, not a check.
 |---|---|
 | `core` | built — models, capabilities, ids, timecode, errors |
 | `config` | built |
-| `prompts` | built — MiniMax H3 structured schema, the Flux.1-dev prompt builder, and the `/短劇` screenwriter (`prompts/drama.py`) |
+| `prompts` | built — MiniMax H3 structured schema, the Flux.1-dev prompt builder, the understanding models' questions (the `/短劇` screenwriter is `fun_workflow/prompts/drama.py`) |
+| `benchmark` | built — `records` (the log line a render emits), `report` (`runs/benchmark/<month>.json`, folded daily by `archive`), `rates` (live GPU rate + per-tier means) |
 | `editing` | `format_policy` built; the grammar is **specified, not implemented** |
 | `media` | built — ffmpeg/ffprobe invocation, still-image probing for Flux, two-pass `loudnorm` and concat for `/短劇` |
 | `storage` | `local` built; `s3` pending |
 | `comfy` | built — client, graph binding, turbo validation |
 | `inference` | built — `InferenceClient`, the HTTP surface for `deploy/inference_server.py`'s three understanding models |
-| `llm` | built — endpoint client that converts a chat message into a structured prompt |
+| `llm` | `scripted.py` only — the offline `LlmClient` for tests and dry runs; the production rewriter is `pipeline.pod_llm` |
 | `providers` | `stub`/`stub-understanding` and `comfyui` (clip, MiniMax H3) built; `flux` (image, Flux.1-dev) built; `understand-{image,audio,video}` (moondream3/Qwen3-Omni-Captioner/Tarsier2) built; `chat` (gpt-oss-20b) built |
 | `gates` | shell built; no rules yet |
 | `planner`, `render` | not started |
-| `pipeline` | built — SQLite request queue, drain loop, worker with a prepare phase (batched prompt rewriting on the pod via `pod_llm.PodLlmClient`), a bounded model-affinity claim, and the resumable `/短劇` stage machine (`pipeline/drama.py`, state in `runs/drama/<token>/`) |
-| `runtime` | `pod`, `session`, and `budget` built against the live REST v2 schema |
-| `cli` | `doctor`, `format`, `generate`, `pod {capacity,up,status,down}`, `session {open,close,status,reap,drain}`, `line` |
-| `api`, `bots` | built — FastAPI webhook/status/file service and the LINE bot |
+| `pipeline` | `residency` (one-card model hand-off) and `pod_llm` (gpt-oss-20b on the pod as an `LlmClient`). The request queue, worker with its prepare phase, drain loop and the resumable `/短劇` stage machine are `fun_workflow/pipeline/` |
+| `runtime` | `pod`, `session`, `budget` and `opens` (the daily pod-open ledger) built against the live REST v2 schema |
+| `cli` | `doctor`, `bench`, `archive`, `preflight`, `format`, `generate`, `understand`, `rewrite`, `pod {capacity,placement,up,status,down}`, `session {open,close,status,reap}` |
+| `fun_workflow/` | built — FastAPI webhook/status/file service, the LINE bot, queue, worker, drain, `/短劇`; console script `funapp` |

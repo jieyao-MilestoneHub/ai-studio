@@ -18,13 +18,24 @@
       "Bash(git diff:*)",
       "Bash(git log:*)",
       "Bash(git show:*)",
-      "Bash(git branch:*)"
+      "Bash(git branch:*)",
+      "Bash(uv run ai-studio bench:*)",
+      "Bash(uv run ai-studio preflight --skip-suite)",
+      "Bash(uv run --project fun_workflow pytest:*)",
+      "Bash(uv run --project fun_workflow ruff:*)",
+      "Bash(uv run --project fun_workflow lint-imports)",
+      "Bash(uv run --project fun_workflow mypy:*)",
+      "Bash(uv run --project fun_workflow funapp drama-dryrun:*)"
     ],
     "ask": [
       "Bash(uv run ai-studio pod up:*)",
       "Bash(uv run ai-studio pod down:*)",
       "Bash(uv run ai-studio generate:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(uv run --project fun_workflow funapp worker:*)",
+      "Bash(uv run --project fun_workflow funapp drain:*)",
+      "Bash(uv run --project fun_workflow funapp line serve:*)",
+      "Bash(uv run ai-studio session open:*)"
     ]
   }
 }

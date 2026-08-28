@@ -76,12 +76,14 @@ the per-minute `held:` line was ~65 % of journald volume before.
 | `runs/drama/<token>/render_manifest.json` | assembly | `generated_at`, token, job id, spend, face-repair verdict, stage timings, every ffmpeg argv |
 | `files/index.jsonl` | the worker, on completion | `{ts, token, job_id, kind, path, bytes, sha256}` — the only map from a random filename back to its request |
 | `runs/spend-<YYYY-MM>.json` | the ledger, on month rollover | the retired month (it used to be discarded on the 1st) |
-| `runs/benchmark/<YYYY-MM>.json` | `ai-studio archive`, daily | per-`(kind, gpu_tier)` count and mean seconds/VRAM/cost/frames-per-s, folded from every real `/影片`/`/圖片` job's "fetched clip"/"fetched image" line — see below |
+| `runs/benchmark/<YYYY-MM>.json` | `ai-studio archive` (via `funapp archive`), daily | per-`(kind, gpu_tier)` count and mean seconds/VRAM/cost/frames-per-s, folded from every real `/影片`/`/圖片` job's "fetched clip"/"fetched image" line — see below |
 | pod `setup.log` / `inference.log` | `pod_setup.sh`, `inference_server.py` | UTC ISO timestamps on every line since 2026-08-28 |
 
-## Backup: `ai-studio archive`
+## Backup: `funapp archive` (wrapping `ai-studio archive`)
 
-Daily at **03:00 Asia/Taipei** (`ai-studio-archive.timer`, after `gc` at
+Daily at **03:00 Asia/Taipei** (`ai-studio-archive.timer` runs `funapp archive`, which
+hands ai-studio's `run_archive` the queue to snapshot and the drama state and
+delivery index to keep, then prunes `chat_turns` and empty drama dirs; after `gc` at
 02:30). Same disk by decision — one NVMe, no NAS — an off-box copy later only
 needs a destination added (rclone/rsync the `archive/` tree).
 

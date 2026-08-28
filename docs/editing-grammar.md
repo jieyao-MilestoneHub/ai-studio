@@ -237,7 +237,7 @@ upstream needed for recorded narration. What remains is mixing and delivery.
 | | |
 |---|---|
 | **Rule** | Measure every generated clip's loudness independently and align before concatenation. |
-| **Lands in** | `editing/audio.py`. **Implemented for `/短劇`** as stage 4 of `pipeline/drama.py`: every clip through `media.normalize_loudness` before `media.concat` |
+| **Lands in** | `editing/audio.py`. **Implemented for `/短劇`** as stage 4 of `fun_workflow/pipeline/drama.py`: every clip through `media.normalize_loudness` before `media.concat` |
 | **Mechanism** | Upstream had one continuous recorded narration bed, so this problem did not exist. We have N independently generated clips whose native audio levels have no reason to match, and a level jump at a cut is far more noticeable than a picture jump. |
 | **Source** | Ours `[speculative]` — needs measuring on real H3 output |
 

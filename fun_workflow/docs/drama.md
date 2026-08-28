@@ -75,7 +75,7 @@ An artifact counts only if the file exists **and still hashes right**. A lease
 end, a requeue or a worker restart re-renders exactly what is missing or
 corrupt: a drama that dies after clip 4 costs clips 5 and 6 on the next
 attempt. A finished drama re-invoked renders nothing. The state file is
-`runs/drama/<token>/state.json`; `ai-studio gc` sweeps these directories on the
+`runs/drama/<token>/state.json`; `funapp gc` sweeps these directories on the
 same retention clock as `files/`, never one whose job is still pending.
 
 ## Money and time
