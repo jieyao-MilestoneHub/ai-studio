@@ -47,7 +47,7 @@ Deliberately blunt, and worth knowing exactly what it is and is not protecting:
 - CLIP-L, one of Flux's two text encoders, reads only the first **77 tokens**
   and silently ignores the rest. T5-XXL reads far more (512 in the usual
   ComfyUI configuration).
-- So this ceiling protects the *request* (a pathological 50KB LINE message
+- So this ceiling protects the *request* (a pathological 50KB chat message
   should not be submitted), not the *quality*. Nothing here can stop CLIP-L
   from ignoring the tail, because nothing can.
 - What follows from that is the ordering in `render()`: the subject goes first,

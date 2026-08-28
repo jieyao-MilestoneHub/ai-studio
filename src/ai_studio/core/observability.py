@@ -108,7 +108,7 @@ def current_context() -> dict[str, Any]:
 
 def utc_now_iso() -> str:
     """`2026-08-28T03:14:15.123+00:00` -- the `ts` field, and the value the
-    output records (drama state, manifests, sessions) stamp themselves with."""
+    output records (per-request state, manifests, sessions) stamp themselves with."""
     return _iso(datetime.now(timezone.utc))
 
 

@@ -222,7 +222,7 @@ class FluxComfyUIProvider:
         next to the base workflow *and* ComfyUI registers the Impact-Pack
         nodes it uses. Probed once per provider (per pod) and cached; a probe
         failure counts as "no" -- degrading to plain i2i is the honest
-        answer, not an error, and the drama records which one it got."""
+        answer, not an error, and the caller records which one it got."""
         if self._face_repair_available is None:
             if self._i2i_face_workflow is None:
                 self._face_repair_available = False

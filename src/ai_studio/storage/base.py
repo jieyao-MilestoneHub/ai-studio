@@ -2,7 +2,7 @@
 
 One protocol, several backends. `LocalStore` is enough for development and for
 the whole generation milestone; `S3Store` arrives when the finished mp4 has to
-be served to LINE, which hard-requires a public HTTPS host that supports HTTP
+be served to a chat platform, which hard-requires a public HTTPS host that supports HTTP
 range requests.
 
 `presign_put` is the reason the protocol has that method at all: it lets an
@@ -52,7 +52,7 @@ class ArtifactStore(Protocol):
         """A publicly fetchable HTTPS URL, or None if this store cannot serve one.
 
         `None` is the honest answer for local disk, and callers that need a
-        public URL (LINE delivery) must treat it as a hard failure rather than
+        public URL (delivery) must treat it as a hard failure rather than
         substituting something that will not resolve.
         """
         ...

@@ -560,7 +560,7 @@ def wait_understanding_ready(
 
     A different readiness signal from `wait_ready`'s, deliberately: that
     server has no node-pack concept and does not need one loaded to be
-    "ready" -- moondream3/Qwen3-Omni-Captioner/Tarsier2 load lazily per
+    "ready" -- the understanding and chat models load lazily per
     request, not at startup. A plain `/healthz` is the whole check, so this
     is expected to resolve well inside the shorter default timeout above.
     """
@@ -878,7 +878,7 @@ def provision(
     # and is read into the environment `nohup` inherits: it never lands on
     # the pod's disk (the script file is the *rest* of stdin) nor in argv
     # (visible in `ps` on both ends). Empty line when unset -- pod_setup.sh
-    # itself decides whether that is fatal (it is, while Tarsier2 is gated
+    # itself decides whether that is fatal (it was, while Tarsier2 was gated
     # and not yet cached).
     token = get_settings().hf_token
     body = (token.get_secret_value() if token else "") + "\n" + script.read_text(encoding="utf-8")

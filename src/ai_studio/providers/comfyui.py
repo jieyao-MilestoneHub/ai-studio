@@ -46,7 +46,7 @@ machines that can be pre-empted without warning.
 # likely a first-run warm-up artifact. Re-measure before trusting it.
 #
 # `runs/benchmark/<YYYY-MM>.json` (storage.archive.update_benchmark_report)
-# accumulates real per-canvas timing from actual /影片 traffic -- the natural
+# accumulates real per-canvas timing from actual video traffic -- the natural
 # source for re-measuring these, once a person has looked at it and decided
 # a number is worth promoting (see CLAUDE.md, "Number honesty").
 MEASURED_LATENCY_S: dict[tuple[int, int], float] = {

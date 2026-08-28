@@ -125,7 +125,7 @@ log "installing the understanding-model stack (transformers/accelerate/bitsandby
 # Form parameters) raises at import time, before the process ever binds a
 # port. Confirmed by reproducing the identical `RuntimeError: Form data
 # requires "python-multipart" to be installed` locally; this line was missing
-# it before /himonkey's chat modality made the /submit route's Form/File
+# it before the chat modality made the /submit route's Form/File
 # fields something a test actually tried to import and exercise.
 
 log "installing the turbo node pack"

@@ -25,7 +25,7 @@ from ai_studio.config.settings import get_settings
 
 
 def check_poster() -> CheckResult:
-    """7. A poster comes out of ffmpeg under LINE's 1MB preview ceiling.
+    """2. A poster comes out of ffmpeg under the default 1MB preview ceiling.
 
     Run for real on the host that will do it: the VPS is a 1 GB box, and the
     question is not whether the code is right but whether that machine can

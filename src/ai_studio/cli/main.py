@@ -28,7 +28,7 @@ app = typer.Typer(
     add_completion=False,
     help=(
         "Generate video (MiniMax H3) and images (Flux.1-dev) on RunPod, and run "
-        "the LINE bot that triggers them."
+        "the request side (fun_workflow) that drives them."
     ),
 )
 console = Console()
@@ -128,7 +128,7 @@ def archive(
     performance aggregate (see docs/observability.md). Idempotent: a second
     run the same day only prunes and has nothing new to fold.
 
-    The request-taking side has more to keep (its queue, drama state,
+    The request-taking side has more to keep (its queue, per-request state,
     delivery index): `funapp archive` runs this with those added, and is
     what the daily timer calls on a host that serves the group.
     """

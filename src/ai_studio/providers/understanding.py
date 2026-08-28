@@ -69,7 +69,7 @@ _MODALITY_WIRE_NAME = {
 
 
 def understanding_capabilities(
-    modality: MediaKind, *, hourly_usd: float = DEFAULT_HOURLY_USD
+    modality: MediaKind, *, hourly_usd: float = DEFAULT_HOURLY_USD, max_output_chars: int | None = None
 ) -> UnderstandingCapabilities:
     """Capabilities for one of the three understanding modalities.
 
@@ -82,6 +82,8 @@ def understanding_capabilities(
     except KeyError:
         raise ProviderSubmitError(f"not an understanding modality: {modality!r}") from None
     cost = round(hourly_usd * defaults["expected_latency_s"] / 3600.0, 6)
+    if max_output_chars is not None:
+        defaults = {**defaults, "max_output_chars": max_output_chars}
     return UnderstandingCapabilities(modality=modality, cost_per_call_usd=cost, **defaults)
 
 
@@ -103,6 +105,7 @@ class UnderstandingProvider:
         modality: MediaKind,
         base_url: str | None = None,
         hourly_usd: float = DEFAULT_HOURLY_USD,
+        max_output_chars: int | None = None,
         **_: Any,
     ) -> None:
         settings = get_settings()
@@ -111,7 +114,9 @@ class UnderstandingProvider:
             base_url or settings.inference_url, timeout_s=settings.inference_timeout_s
         )
         self._hourly_usd = hourly_usd
-        self._caps = understanding_capabilities(modality, hourly_usd=hourly_usd)
+        self._caps = understanding_capabilities(
+            modality, hourly_usd=hourly_usd, max_output_chars=max_output_chars
+        )
 
     def capabilities(self) -> UnderstandingCapabilities:
         return self._caps

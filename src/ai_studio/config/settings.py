@@ -50,12 +50,10 @@ class Settings(BaseSettings):
     hf_token: SecretStr | None = Field(
         default=None,
         alias="HF_TOKEN",
-        description="A Hugging Face read token. Needed because "
-        "omni-research/Tarsier2-7b-0115 (/說影) is a gated repo: accept its "
-        "terms on huggingface.co once, and any token of that account reads it. "
-        "Fed to deploy/pod_setup.sh on stdin by runtime.session.provision, never "
-        "written to the pod's disk. The other three understanding/chat repos "
-        "are ungated and download without it.",
+        description="A Hugging Face read token, for any gated model repo the pod "
+        "downloads. Fed to deploy/pod_setup.sh on stdin by runtime.session.provision, "
+        "never written to the pod's disk. Every model currently served is ungated "
+        "(Tarsier2, which was, is retired), so it is optional.",
     )
     network_volume_id: str | None = Field(
         default=None,
@@ -95,7 +93,7 @@ class Settings(BaseSettings):
         alias="AI_STUDIO_INFERENCE_URL",
         description=(
             "Base URL of deploy/inference_server.py, the pod-side process "
-            "serving moondream3/Qwen3-Omni-Captioner/Tarsier2. On RunPod this "
+            "serving the understanding and chat models. On RunPod this "
             "is the pod proxy https://<pod-id>-8189.proxy.runpod.net -- same "
             "~100s proxy-timeout caveat as AI_STUDIO_COMFY_URL."
         ),
@@ -112,18 +110,17 @@ class Settings(BaseSettings):
         default=30.0,
         gt=0,
         alias="AI_STUDIO_MAX_AUDIO_UNDERSTAND_S",
-        description="Longest /說音 audio clip accepted, matching "
-        "Qwen3-Omni-Captioner's own stated ceiling. Checked against LINE's "
-        "own reported message duration before the file is even downloaded.",
+        description="Longest audio clip the understanding backend accepts; a "
+        "caller checks it before downloading the file.",
     )
     max_video_understand_s: float = Field(
         default=120.0,
         gt=0,
         alias="AI_STUDIO_MAX_VIDEO_UNDERSTAND_S",
-        description="[speculative] longest /說影 clip accepted -- nothing has "
-        "measured what Tarsier2 actually tolerates or costs per second of "
-        "dense video understanding on this hardware yet. Generous rather "
-        "than tight until benchmarked; tune once measured.",
+        description="[speculative] longest video clip the understanding backend "
+        "accepts -- nothing has measured what Qwen2.5-VL tolerates or costs per "
+        "second of dense video understanding on this hardware yet. Generous "
+        "rather than tight until benchmarked; tune once measured.",
     )
 
     # ---------------------------------------------------------- storage

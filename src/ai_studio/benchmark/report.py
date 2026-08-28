@@ -29,8 +29,8 @@ def collect_benchmark_records(log_dir: Path, *, today: date) -> dict[str, list[d
     day files not yet archived (`day < today` -- the same boundary
     `collect_members` uses; a day still being written must not be read
     here either). Real generation jobs only: a `stage="render"` "fetched
-    clip"/"fetched image" line, which `pipeline.drain.render_clip`/
-    `render_image` emit for every actual /影片 or /圖片 job that completes --
+    clip"/"fetched image" line (`benchmark.records.render_record`), which a
+    caller emits for every actual video or image render that completes --
     never a synthetic run, per this project's own "not a benchmark dataset"
     requirement.
     """

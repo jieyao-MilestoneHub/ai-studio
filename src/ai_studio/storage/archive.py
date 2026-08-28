@@ -7,7 +7,7 @@ What the always-on host accumulates and where it would otherwise go:
 - the spend ledger and its retired months, the session, reap and pod-open
   records under `runs/`;
 - whatever the caller adds (`extra_members`): the request side keeps its
-  drama state and delivery index here, and hands in its live WAL queue as
+  per-request state and delivery index here, and hands in its live WAL queue as
   `sqlite` -- `sqlite3` the CLI is not installed, so `cp` would be
   undefined behaviour, and a snapshot is the only honest copy.
 
@@ -22,7 +22,7 @@ One run, every day at 03:00 Asia/Taipei (`funapp archive`, which wraps
    `zstd` is not on PATH -- the tests take that path), and list it back;
 3. write `manifest.json` next to it: when, host, git sha, every member with
    size and sha256, bytes before/after;
-4. fold any real /影片 or /圖片 render since the last run into
+4. fold any real video or image render since the last run into
    `runs/benchmark/<YYYY-MM>.json` (`update_benchmark_report`) -- a small
    durable aggregate of what this project's own GPU actually does, by
    `(kind, gpu_tier)`, read off the same JSONL this run just collected for

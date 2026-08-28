@@ -845,9 +845,11 @@ class WebhookHandler:
 
         from ai_studio.media import FFmpegError, extract_audio
 
+        from fun_workflow.bots.line.limits import AUDIO_MESSAGE_MAX_BYTES
+
         dest = self.files_dir / f"{Path(path).stem}_audio.m4a"
         try:
-            out, duration_ms = extract_audio(Path(path), dest)
+            out, duration_ms = extract_audio(Path(path), dest, max_bytes=AUDIO_MESSAGE_MAX_BYTES)
         except FFmpegError as exc:
             reason = "這段影片沒有聲音軌" if "no audio track" in str(exc) else f"轉檔失敗:{str(exc)[:80]}"
             await self._safe_reply(reply_token, f"{reason}\n(影片本身不會被保存)")

@@ -193,8 +193,8 @@ STUB_IMAGE_CAPABILITIES = ImageProviderCapabilities(
 
 
 class StubImageProvider:
-    """Offline synthetic still provider -- the Flux stand-in `drama-dryrun`
-    uses so the whole `/短劇` stage machine runs with no GPU.
+    """Offline synthetic still provider -- the Flux stand-in an offline dry
+    run uses so a whole multi-stage pipeline runs with no GPU.
 
     One `testsrc2` frame, hue-shifted per seed like the clip stub, at the
     requested size. Image-to-image is honoured only in shape: the source is

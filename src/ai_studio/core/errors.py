@@ -84,7 +84,7 @@ class ProviderSubmitError(ProviderError):
 class DramaResume(ProviderError):
     """A drama stopped on purpose -- the lease is about to end -- and will
     pick up from its state file next window. Not a failure: the worker
-    requeues it without spending one of its `MAX_ATTEMPTS`, so a drama that
+    requeues it without spending one of its attempts, so a multi-stage job that
     honestly needs three short windows is not thrown away on the third."""
 
 

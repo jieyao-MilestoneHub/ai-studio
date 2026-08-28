@@ -169,11 +169,11 @@ def probe_image(path: Path) -> ImageInfo:
 
 
 POSTER_MAX_BYTES = 1_000_000
-"""LINE's ceiling for `previewImageUrl`, minus a little room.
-
-The documented limit is 1 MB. A poster that goes over it does not degrade —
-the whole message object is rejected, and the user gets nothing at all.
-"""
+"""Default ceiling for a poster: small enough for any chat platform's
+preview-image limit (they cluster around 1 MB). A delivery channel with a
+different number passes `max_bytes`; a poster over the channel's limit does
+not degrade there -- the whole message is rejected -- so the size is
+enforced here, and loudly."""
 
 _POSTER_LADDER: tuple[tuple[int, int], ...] = (
     (1024, 4),
@@ -193,7 +193,7 @@ def poster(
     src: Path, dest: Path, *, max_bytes: int = POSTER_MAX_BYTES
 ) -> Path:
     """Write a JPEG preview of `src` — first frame of a video, or a thumbnail
-    of an image — small enough for LINE to accept it.
+    of an image — no larger than `max_bytes`.
 
     One code path for both kinds because ffmpeg needs none: `-frames:v 1`
     takes the first frame of a clip and the only frame of a still.
@@ -202,8 +202,8 @@ def poster(
     PNGs, which routinely clear 1 MB on their own; and a video has no image to
     reuse in the first place.
 
-    Aspect ratio is preserved throughout — LINE requires the preview's ratio to
-    match the media's, and `scale` here only ever shrinks (`min(iw,W)`) so a
+    Aspect ratio is preserved throughout — a preview must look like the media
+    it stands for, and `scale` here only ever shrinks (`min(iw,W)`) so a
     small source is never blown up to meet a width.
 
     Raises rather than returning an oversized file: a poster that is over the
@@ -263,23 +263,19 @@ def probe_duration_s(path: Path) -> float:
     return _first_float(payload.get("format", {}).get("duration"), default=0.0)
 
 
-AUDIO_MAX_BYTES = 200 * 1024 * 1024
-"""LINE's ceiling for an audio message object (`[reported]`, Messaging API
-reference). An AAC track at 128 kbps is ~1 MB/min, so a phone clip never
-comes close; the check is here so the failure is ours, not LINE's."""
-
-
-def extract_audio(src: Path, dest: Path, *, bitrate: str = "128k") -> tuple[Path, int]:
+def extract_audio(
+    src: Path, dest: Path, *, bitrate: str = "128k", max_bytes: int | None = None
+) -> tuple[Path, int]:
     """Write the audio track of `src` as an M4A (AAC) at `dest`. Returns the
-    path and the track's duration in **milliseconds** -- what LINE's audio
-    message object wants.
+    path and the track's duration in **milliseconds**.
 
-    `/影音`'s one job. Pure ffmpeg, no GPU, no pod: the only trigger that
-    costs nothing but the host's CPU. Re-encodes rather than `-c:a copy`
-    because LINE plays M4A/AAC and a phone clip's track may be anything;
+    Pure ffmpeg, no GPU, no pod. Re-encodes rather than `-c:a copy` because
+    M4A/AAC plays everywhere and a phone clip's track may be anything;
     `-vn` drops the picture. Raises `FFmpegError` when the clip has no audio
     stream at all -- an empty file "succeeding" is how a user waits on a
-    message that never plays.
+    message that never plays -- and when the result exceeds `max_bytes`
+    (the delivery channel's ceiling, if it has one): the failure should be
+    ours, not the channel's.
     """
     src, dest = Path(src), Path(dest)
     info = probe(src)
@@ -292,8 +288,8 @@ def extract_audio(src: Path, dest: Path, *, bitrate: str = "128k") -> tuple[Path
         "-vn", "-c:a", "aac", "-b:a", bitrate, "-movflags", "+faststart",
         str(dest),
     ])
-    if dest.stat().st_size > AUDIO_MAX_BYTES:
-        raise FFmpegError(f"{dest.name} is {dest.stat().st_size} bytes; LINE's limit is {AUDIO_MAX_BYTES}")
+    if max_bytes is not None and dest.stat().st_size > max_bytes:
+        raise FFmpegError(f"{dest.name} is {dest.stat().st_size} bytes, over the {max_bytes}-byte ceiling")
     return dest, round(probe_duration_s(dest) * 1000)
 
 LOUDNORM_TARGET = "I=-14:TP=-1.5:LRA=11"
@@ -369,7 +365,7 @@ def concat(clips: list[Path], dest: Path, *, timeout_s: float = 900.0) -> list[s
     plays with frozen frames or no audio after the first cut, discovered
     after delivery. A single `libx264 -crf 18` pass over a minute of 864x480
     is seconds of CPU and removes that class of bug. Even dimensions are kept
-    by the source; `+faststart` because LINE streams the file.
+    by the source; `+faststart` because the file is streamed, not downloaded.
     """
     if not clips:
         raise FFmpegError("nothing to concatenate")

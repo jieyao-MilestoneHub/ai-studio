@@ -5,7 +5,7 @@ constant and changing only the prompt moved the quality score from 26.0 (free
 prose) to 367.6 (the official structured schema). Holding the prose constant and
 rendering at five times the pixels changed nothing. [reported]
 
-So a LINE user's "一隻橘毛走在下雨天的路上" has to become a schema-conformant
+So a chat user's "一隻橘毛走在下雨天的路上" has to become a schema-conformant
 prompt before it is worth spending a GPU-minute on.
 
 **The LLM never produces the final string.** It produces JSON, which is validated

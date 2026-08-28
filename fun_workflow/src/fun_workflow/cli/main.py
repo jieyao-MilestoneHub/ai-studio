@@ -24,6 +24,7 @@ from rich.console import Console
 from rich.table import Table
 
 from fun_workflow import paths as fun_paths
+from fun_workflow.bots.line.limits import PREVIEW_IMAGE_MAX_BYTES, UNDERSTANDING_MAX_OUTPUT_CHARS
 from fun_workflow.config.settings import get_fun_settings
 from fun_workflow.core.kinds import JobKind
 
@@ -256,7 +257,10 @@ def drain(
     # Understanding and chat jobs share this pod's one FIFO queue -- a manual
     # drain that omitted them would KeyError the moment one was claimed.
     understand_backends = {
-        kind: get_provider(name, base_url=session.inference_url, hourly_usd=session.cost_per_hr)
+        kind: get_provider(
+            name, base_url=session.inference_url, hourly_usd=session.cost_per_hr,
+            max_output_chars=UNDERSTANDING_MAX_OUTPUT_CHARS,
+        )
         for kind, name in (
             (MediaKind.IMAGE_UNDERSTAND, "understand-image"),
             (MediaKind.AUDIO_UNDERSTAND, "understand-audio"),
@@ -403,18 +407,18 @@ class _RuntimeHost:
                 hourly_usd=live.cost_per_hr,
                 i2i_face_workflow=fun_paths.workflow("flux_dev_i2i_face.json"),
             ),
-            MediaKind.IMAGE_UNDERSTAND: get_provider(
-                "understand-image", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
-            ),
-            MediaKind.AUDIO_UNDERSTAND: get_provider(
-                "understand-audio", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
-            ),
-            MediaKind.VIDEO_UNDERSTAND: get_provider(
-                "understand-video", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
-            ),
-            MediaKind.CHAT: get_provider(
-                "chat", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
-            ),
+            **{
+                kind: get_provider(
+                    name, base_url=live.inference_url, hourly_usd=live.cost_per_hr,
+                    max_output_chars=UNDERSTANDING_MAX_OUTPUT_CHARS,
+                )
+                for kind, name in (
+                    (MediaKind.IMAGE_UNDERSTAND, "understand-image"),
+                    (MediaKind.AUDIO_UNDERSTAND, "understand-audio"),
+                    (MediaKind.VIDEO_UNDERSTAND, "understand-video"),
+                    (MediaKind.CHAT, "chat"),
+                )
+            },
         }
         self._providers = {live.pod_id: built}
         return built
@@ -479,7 +483,10 @@ class _RuntimeHost:
         else:
             messages = []
             try:
-                preview = media.poster(asset, self.files_dir / f"{asset.stem}_poster.jpg")
+                preview = media.poster(
+                    asset, self.files_dir / f"{asset.stem}_poster.jpg",
+                    max_bytes=PREVIEW_IMAGE_MAX_BYTES,
+                )
             except AIStudioError as exc:
                 console.print(f"[yellow]no poster for {asset.name}:[/yellow] {exc}")
             else:

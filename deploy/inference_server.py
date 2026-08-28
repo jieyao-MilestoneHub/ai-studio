@@ -1,5 +1,5 @@
 """The pod-side understanding + chat server: describes a photo/audio/video
-clip, or answers a /himonkey chat message.
+clip, or answers a chat message.
 
 Runs ON the pod, alongside ComfyUI, as a second always-resident process on a
 second port (8189). Deposited and started by `deploy/pod_setup.sh` via
@@ -16,7 +16,7 @@ model (nor, for gpt-oss-20b specifically, with H3 itself: H3 alone measures
 never room regardless of gpt-oss-20b's ~16GB native-MXFP4 footprint). `POST
 /submit` evicts whatever is currently loaded (if it is not what this request
 needs) before loading the requested model; `POST /unload` is called by the
-pipeline's pull-based GPU hand-off (`pipeline.drain.make_room_for`) right
+caller's pull-based GPU hand-off (`ai_studio.pipeline.residency`) right
 before a ComfyUI generation job runs.
 
 **Concurrency is 1, inherited rather than enforced here.** The shared FIFO
@@ -278,7 +278,7 @@ class Qwen2AudioBackend:
             conversation, add_generation_prompt=True, tokenize=False
         )
         sr = self._processor.feature_extractor.sampling_rate
-        # LINE audio is .m4a; librosa 1.0 has no audioread fallback, so
+        # Phone audio is usually .m4a; librosa 1.0 has no audioread fallback, so
         # soundfile fails with "Format not recognised" (📏 2026-08-27).
         # Transcode with the pod's ffmpeg to a mono WAV at the model's rate.
         wav = media_path.with_suffix(".16k.wav")
@@ -373,7 +373,7 @@ class Qwen25VLVideoBackend:
 
 
 class GptOssChatBackend:
-    """openai/gpt-oss-20b -- plain-text /himonkey chat, native MXFP4.
+    """openai/gpt-oss-20b -- plain-text chat, native MXFP4.
 
     `[speculative]` loader, same status as the three backends above: nothing
     here has run against real weights on this project's own hardware yet.
@@ -383,7 +383,7 @@ class GptOssChatBackend:
     separate analysis/commentary/final channels -- even with zero tool
     calling in play. `infer()` returns only the final channel via
     `_final_channel()`; a naive decode-and-return would leak the model's
-    internal chain-of-thought into the LINE reply. `apply_chat_template()`
+    internal chain-of-thought into the reply. `apply_chat_template()`
     renders the harmony-formatted prompt for us, which is why nothing here
     needs the separate `openai-harmony` pip package.
     """
@@ -395,7 +395,7 @@ class GptOssChatBackend:
     MAX_NEW_TOKENS = 512
     """The primary defense against an unbounded generation (see this file's
     module docstring on why `/unload` racing a still-running `infer()` call
-    is the single highest-severity risk `/himonkey` introduces). Sized well
+    is the single highest-severity risk the chat modality introduces). Sized well
     above `MAX_OUTPUT_CHARS`'s character budget in tokens, with headroom --
     tune down once a real token-to-character ratio is measured on this
     model. A wall-clock `StoppingCriteria` cutoff would be a good second,
@@ -439,7 +439,7 @@ class GptOssChatBackend:
             messages.append({"role": "system", "content": opts.system})
         if history:
             # (role, content) pairs, oldest first -- see
-            # `ai_studio.pipeline.queue.JobQueue.recent_chat_turns`, the
+            # the caller's rolling chat history, the
             # host-side store this was fetched from.
             for role, content in json.loads(history):
                 messages.append({"role": role, "content": content})
@@ -596,7 +596,7 @@ class ModelSlot:
     Without `in_flight`, eviction could unload a model while a background
     thread is still inside a live CUDA kernel using it -- see this file's
     module docstring for why that is the single highest-severity risk
-    `/himonkey` introduces, and `_wait_for_idle()` for the wait this field
+    the chat modality introduces, and `_wait_for_idle()` for the wait this field
     backs.
     """
 
@@ -928,13 +928,13 @@ async def cancel(job_id: str) -> dict[str, Any]:
 @app.post("/unload")
 async def unload() -> dict[str, Any]:
     """Evict the resident model so a ComfyUI generation job can use the same
-    card. Called by `pipeline.drain.make_room_for` before every generation
+    card. Called by `ai_studio.pipeline.residency.make_room_for` before every generation
     submit -- see that function's docstring for the pull-based hand-off.
 
     Waits for any in-flight `infer()` call to clear first -- see
     `ModelSlot`'s docstring and this file's module docstring on why unloading
     out from under a still-running generation is the single highest-severity
-    risk `/himonkey` introduces.
+    risk the chat modality introduces.
     """
     async with _slot.lock:
         current = _slot.backend

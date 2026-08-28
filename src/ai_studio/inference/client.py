@@ -1,5 +1,5 @@
 """HTTP client for `deploy/inference_server.py`, the pod-side process that
-lazily loads/unloads moondream3, Qwen3-Omni-Captioner, and Tarsier2.
+lazily loads/unloads moondream3, Qwen2-Audio, Qwen2.5-VL and gpt-oss-20b.
 
 Same submit/poll/cancel discipline as `comfy.client.ComfyClient`, and for the
 same reason: this also runs behind RunPod's pod proxy, severed by Cloudflare

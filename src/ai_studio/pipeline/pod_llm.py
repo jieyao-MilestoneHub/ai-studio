@@ -1,7 +1,7 @@
 """gpt-oss-20b on the pod, presented as the `LlmClient` the prompt builders take.
 
 `prompts.convert.convert`, `prompts.flux.convert` and
-`prompts.understanding.convert_question` all rewrite a request through one
+a caller's question rewriter all rewrite a request through one
 protocol: `complete(system, user, *, max_tokens) -> str`. The rewriter is
 the same gpt-oss-20b the pod already serves for chat, reached through the
 inference server's chat modality with a `system` instruction block and

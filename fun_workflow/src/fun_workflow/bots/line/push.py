@@ -39,9 +39,11 @@ from typing import Any, Protocol
 
 import httpx
 
+from fun_workflow.bots.line.limits import MAX_TEXT_CHARS
+
 PUSH_ENDPOINT = "https://api.line.me/v2/bot/message/push"
 
-MAX_TEXT_CHARS = 5000
+
 MAX_MESSAGES_PER_PUSH = 5
 
 """Delivery replies to the request instead of @-mentioning the requester.
