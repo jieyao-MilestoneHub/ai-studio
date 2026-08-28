@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_studio import media
+from ai_studio.config.fun_settings import get_fun_settings
 from ai_studio.config.settings import get_settings
 from ai_studio.core.drama_spec import ArtifactRecord, DramaState, Screenplay
 from ai_studio.core.enums import GenMode, MediaKind
@@ -100,6 +101,7 @@ async def render_drama(
     run_dir.mkdir(parents=True, exist_ok=True)
     state = load_state(run_dir)
     settings = get_settings()
+    fun = get_fun_settings()
 
     width, height = clip_caps.native_width, clip_caps.native_height
     fps = clip_caps.native_fps
@@ -162,10 +164,10 @@ async def render_drama(
             continue
         _require_time(deadline, "image")
         _t0 = time.monotonic()
-        extra: dict[str, Any] = {"denoise": settings.drama_keyframe_denoise}
+        extra: dict[str, Any] = {"denoise": fun.drama_keyframe_denoise}
         # Once this pod's face graph has failed, stop asking: a requeued drama
         # would otherwise pay the failed attempt again on every keyframe.
-        if settings.drama_face_repair and not state.face_repair.startswith("failed"):
+        if fun.drama_face_repair and not state.face_repair.startswith("failed"):
             extra["face_repair"] = True
         request = ImageRequest(
             shot_id=f"job{job.id}_kf{key}",
@@ -190,7 +192,7 @@ async def render_drama(
             record, raw = await _render_image(image, plain, dest, deadline, poll_interval_s)
             state.face_repair = f"failed: {str(exc)[:120]}"
         else:
-            if not settings.drama_face_repair:
+            if not fun.drama_face_repair:
                 state.face_repair = "off: AI_STUDIO_DRAMA_FACE_REPAIR=false"
             elif raw.get("face_repair"):
                 state.face_repair = "applied"

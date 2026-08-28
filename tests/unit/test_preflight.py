@@ -20,6 +20,8 @@ from typer.testing import CliRunner
 from ai_studio.cli import preflight
 from ai_studio.cli.main import app
 from ai_studio.cli.preflight import CheckResult, Status, run_all, stamp, summarise
+from ai_studio.config import settings as settings_mod
+from ai_studio.config.fun_settings import get_fun_settings
 from ai_studio.config.settings import get_settings
 
 runner = CliRunner()
@@ -44,9 +46,13 @@ def _no_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     # `.env` is read by pydantic-settings on construction, so point it at a
     # file that does not exist rather than trusting the repo not to have one.
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(settings_mod, "ENV_FILE", tmp_path / ".env")
     get_settings(refresh=True)
+    get_fun_settings(refresh=True)
     yield
+    monkeypatch.undo()
     get_settings(refresh=True)
+    get_fun_settings(refresh=True)
 
 
 # ------------------------------------------------------- the checklist's honesty
@@ -129,16 +135,6 @@ def test_the_graphs_check_loads_every_workflow(monkeypatch: pytest.MonkeyPatch) 
 
     assert result.status is Status.PASS
     assert "flux_dev.json" in result.detail
-
-
-def test_the_graphs_check_skips_rather_than_failing_outside_the_repo() -> None:
-    """`workflows/` is resolved relative to the cwd. Not being in the repo is
-    an operator mistake, not a broken graph, and reporting it as a broken graph
-    would send someone looking in the wrong place."""
-    result = preflight.check_graphs()
-
-    assert result.status is Status.SKIP
-    assert "repo root" in result.detail
 
 
 def test_the_range_check_proves_206_end_to_end() -> None:

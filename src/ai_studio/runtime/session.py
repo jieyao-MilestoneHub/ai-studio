@@ -37,6 +37,7 @@ from typing import Any
 
 import httpx
 
+from ai_studio import paths
 from ai_studio.config.settings import get_settings
 from ai_studio.core.errors import CostCeilingExceeded, PodError
 from ai_studio.core.observability import utc_now_iso
@@ -821,8 +822,8 @@ def close_if_idle(
 # ------------------------------------------------------------------ provision
 
 SSH_KEY = Path.home() / ".runpod" / "ssh" / "runpodctl-ssh-key"
-SETUP_SCRIPT = Path("deploy/pod_setup.sh")
-INFERENCE_SERVER_SCRIPT = Path("deploy/inference_server.py")
+SETUP_SCRIPT = paths.deploy_script("pod_setup.sh")
+INFERENCE_SERVER_SCRIPT = paths.deploy_script("inference_server.py")
 PROVISION_WAIT_S = 600.0
 PROVISION_RETRY_S = 15.0
 

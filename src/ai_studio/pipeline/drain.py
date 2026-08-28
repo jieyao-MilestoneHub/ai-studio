@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ai_studio.benchmark.records import msg_for, render_record
+from ai_studio.config.fun_settings import get_fun_settings
 from ai_studio.config.settings import get_settings
 from ai_studio.core.chat_spec import ChatRequest
 from ai_studio.core.enums import GenMode, MediaKind
@@ -475,7 +476,7 @@ async def render_chat(
     shared $/month ceiling regardless, and the user is told plainly rather
     than watching the request vanish into an unclaimable backlog.
     """
-    settings = get_settings()
+    settings = get_fun_settings()
     if settings.max_chat_month_usd and queue.chat_spent_this_month_usd() >= settings.max_chat_month_usd:
         raise AIStudioError(
             f"本月 /himonkey 用量已達上限(${settings.max_chat_month_usd:.2f}),"

@@ -290,8 +290,9 @@ FACE_WORKFLOW = Path("workflows/flux_dev_i2i_face.json")
 
 
 def test_the_face_sibling_is_the_i2i_graph_plus_a_detailer_before_save() -> None:
-    """`Workflow.sibling` finds it by name; it must load with the i2i bindings
-    and differ from `flux_dev_i2i.json` only downstream of the decode."""
+    """Passed to `FluxComfyUIProvider(i2i_face_workflow=...)` by the caller
+    that wants face repair; it must load with the i2i bindings and differ
+    from `flux_dev_i2i.json` only downstream of the decode."""
     face = Workflow.load(
         FACE_WORKFLOW, required_bindings=IMAGE_REQUIRED_BINDINGS | {"source_image", "denoise"}
     )

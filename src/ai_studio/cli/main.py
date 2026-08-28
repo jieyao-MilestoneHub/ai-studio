@@ -14,7 +14,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from ai_studio import media
+from ai_studio import media, paths
+from ai_studio.config.fun_settings import get_fun_settings
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import GenMode, MediaKind
 from ai_studio.core.errors import AIStudioError
@@ -41,6 +42,7 @@ MAX_PYTHON = (3, 14)
 def doctor() -> None:
     """Check the local environment before anything expensive happens."""
     settings = get_settings()
+    fun = get_fun_settings()
     table = Table(title="ai-studio doctor", show_lines=False)
     table.add_column("check")
     table.add_column("result")
@@ -88,13 +90,13 @@ def doctor() -> None:
 
     import shutil as _shutil
 
-    usage = _shutil.disk_usage(settings.files_dir if settings.files_dir.exists() else ".")
+    usage = _shutil.disk_usage(fun.files_dir if fun.files_dir.exists() else ".")
     free_gb = usage.free / 1_073_741_824
     table.add_row(
         "disk free",
         _mark(free_gb >= 5.0, warn_only=True),
         f"{free_gb:.0f} GB free of {usage.total / 1_073_741_824:.0f} GB "
-        f"(retention {settings.files_retention_days:.0f}d, `ai-studio gc`)",
+        f"(retention {fun.files_retention_days:.0f}d, `ai-studio gc`)",
     )
     log_dir, archive_dir = settings.log_dir, settings.archive_dir
     log_bytes = sum(p.stat().st_size for p in log_dir.rglob("*") if p.is_file()) if log_dir.is_dir() else 0
@@ -142,7 +144,8 @@ def gc(
     from ai_studio.storage.retention import sweep_old_files
 
     settings = get_settings()
-    max_age = settings.files_retention_days if days is None else days
+    fun = get_fun_settings()
+    max_age = fun.files_retention_days if days is None else days
     if max_age <= 0:
         console.print("retention is 0 (disabled); nothing pruned. [dim]The disk will fill.[/dim]")
         return
@@ -173,8 +176,8 @@ def gc(
     # is a file under files/ and would be swept like any other at 7 days.
     from ai_studio.storage.index import index_path
 
-    protected = protected | {str(index_path(settings.files_dir).resolve())}
-    sweep_targets = [("files", settings.files_dir), ("incoming", settings.incoming_dir)]
+    protected = protected | {str(index_path(fun.files_dir).resolve())}
+    sweep_targets = [("files", fun.files_dir), ("incoming", fun.incoming_dir)]
     # `sweep_old_files` is deliberately flat, so each stage directory of a
     # drama is its own target (state.json and the manifest sit at the top).
     for d in drama_dirs:
@@ -219,11 +222,12 @@ def archive(
     from ai_studio.storage.archive import run_archive
 
     settings = get_settings()
+    fun = get_fun_settings()
     result = run_archive(
         root=Path.cwd(),
         log_dir=settings.log_dir,
         runs_dir=settings.runs_dir,
-        files_dir=settings.files_dir,
+        files_dir=fun.files_dir,
         out_dir=Path("out"),
         archive_dir=settings.archive_dir,
         hot_days=settings.log_hot_days,
@@ -703,7 +707,7 @@ def line_serve(
     port: int = typer.Option(8000),
 ) -> None:
     """Run the always-on service: webhook, status pages, file downloads."""
-    settings = get_settings()
+    settings = get_fun_settings()
     if settings.line_channel_secret is None:
         console.print("[red]LINE_CHANNEL_SECRET is unset.[/red] Every webhook will 400.")
         raise typer.Exit(1)
@@ -744,7 +748,7 @@ def line_capture_group(
     has to be read off a live webhook event. This runs the service in capture
     mode: it answers the trigger word with the group id and accepts no work.
     """
-    settings = get_settings()
+    settings = get_fun_settings()
     if settings.line_allowed_group_id:
         console.print(
             f"[yellow]LINE_ALLOWED_GROUP_ID is already set[/yellow] "
@@ -1057,6 +1061,7 @@ def session_drain(
     from ai_studio.runtime import session as sess
 
     settings = get_settings()
+    fun = get_fun_settings()
     session = sess.load_state()
     if session is None:
         console.print("no window is open; nothing to drain")
@@ -1065,17 +1070,8 @@ def session_drain(
         console.print("the window has already ended; not claiming new work")
         return
 
-    workflow = Path("workflows") / (
-        "h3_fl2va_turbo.json" if session.low_vram else "h3_fl2va_turbo_fp8.json"
-    )
-    flux_workflow = Path("workflows") / "flux_dev.json"
-    if not workflow.is_file():
-        console.print(f"[red]missing workflow {workflow}[/red] (run from the repo root)")
-        raise typer.Exit(1)
-    if not flux_workflow.is_file():
-        console.print(f"[red]missing workflow {flux_workflow}[/red] (run from the repo root)")
-        raise typer.Exit(1)
-
+    workflow = paths.workflow("h3_fl2va_turbo.json" if session.low_vram else "h3_fl2va_turbo_fp8.json")
+    flux_workflow = paths.workflow("flux_dev.json")
     console.print(
         f"draining on {session.tier_label} ({session.vram_gb}GB, {session.quantisation}, "
         f"lora={'merged' if session.low_vram else 'bypass'}) until {session.window_end}"
@@ -1094,6 +1090,7 @@ def session_drain(
         workflow=flux_workflow,
         base_url=session.comfy_url,
         hourly_usd=session.cost_per_hr,
+        i2i_face_workflow=paths.workflow("flux_dev_i2i_face.json"),
     )
     # Understanding and chat jobs share this pod's one FIFO queue -- a manual
     # drain that omitted them would KeyError the moment one was claimed.
@@ -1113,7 +1110,7 @@ def session_drain(
                 queue,
                 {MediaKind.VIDEO: h3_backend, MediaKind.IMAGE: flux_backend, **understand_backends},
                 window_end=datetime.fromisoformat(session.window_end),
-                files_dir=settings.files_dir,
+                files_dir=fun.files_dir,
                 gpu_tier=session.tier_label,
                 gpu_usd_per_hr=session.cost_per_hr,
                 poll_interval_s=poll_seconds,
@@ -1152,7 +1149,7 @@ class _RuntimeHost:
         self._providers: dict[str, dict[MediaKind, object]] = {}
         self._llms: dict[str, object] = {}
 
-        settings = get_settings()
+        settings = get_fun_settings()
         self.files_dir = Path(settings.files_dir)
         self.base_url = settings.public_base_url.rstrip("/")
         token = settings.line_channel_access_token
@@ -1233,13 +1230,8 @@ class _RuntimeHost:
         if live.pod_id in self._providers:
             return self._providers[live.pod_id]
 
-        workflow = Path("workflows") / (
-            "h3_fl2va_turbo.json" if live.low_vram else "h3_fl2va_turbo_fp8.json"
-        )
-        flux_workflow = Path("workflows") / "flux_dev.json"
-        for path in (workflow, flux_workflow):
-            if not path.is_file():
-                raise AIStudioError(f"missing workflow {path} (run from the repo root)")
+        workflow = paths.workflow("h3_fl2va_turbo.json" if live.low_vram else "h3_fl2va_turbo_fp8.json")
+        flux_workflow = paths.workflow("flux_dev.json")
 
         built: dict[MediaKind, object] = {
             MediaKind.VIDEO: get_provider(
@@ -1249,6 +1241,7 @@ class _RuntimeHost:
             MediaKind.IMAGE: get_provider(
                 "flux", workflow=flux_workflow, base_url=live.comfy_url,
                 hourly_usd=live.cost_per_hr,
+                i2i_face_workflow=paths.workflow("flux_dev_i2i_face.json"),
             ),
             MediaKind.IMAGE_UNDERSTAND: get_provider(
                 "understand-image", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
@@ -1388,7 +1381,7 @@ def worker(
     from ai_studio.pipeline.queue import JobQueue
     from ai_studio.pipeline.worker import serve
 
-    settings = get_settings()
+    settings = get_fun_settings()
     host = _RuntimeHost(name=name, poll_seconds=poll_seconds)
     queue = JobQueue()
     console.print(

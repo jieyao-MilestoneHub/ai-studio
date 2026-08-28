@@ -38,6 +38,7 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from ai_studio.bots.line.content import LineContentClient
 from ai_studio.bots.line.reply import LineReplyClient, NullReplyClient
 from ai_studio.bots.line.webhook import InvalidSignature, WebhookHandler
+from ai_studio.config.fun_settings import get_fun_settings
 from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import MediaKind
 from ai_studio.pipeline.queue import Job, JobQueue, JobState
@@ -60,7 +61,7 @@ def create_app(
     files_dir: Path | None = None,
 ) -> FastAPI:
     """Build the app. Dependencies are injectable so tests need no credentials."""
-    settings = get_settings()
+    settings = get_fun_settings()
     app = FastAPI(title="ai-studio", docs_url=None, redoc_url=None)
 
     app.state.queue = queue or JobQueue()
@@ -100,10 +101,10 @@ def create_app(
             max_jobs_per_user_per_day=settings.max_jobs_per_user_per_day,
             max_chat_messages_per_user_per_day=settings.max_chat_messages_per_user_per_day,
             max_dramas_per_day=settings.max_dramas_per_day,
-            max_audio_understand_s=settings.max_audio_understand_s,
-            max_video_understand_s=settings.max_video_understand_s,
+            max_audio_understand_s=settings.studio.max_audio_understand_s,
+            max_video_understand_s=settings.studio.max_video_understand_s,
             content=content,
-            incoming_dir=Path("incoming"),
+            incoming_dir=settings.incoming_dir,
             is_warm=_pod_is_warm,
             # So「讓我看看」can attach the poster the worker already rendered
             # next to the clip -- same directory drain writes to.
@@ -164,7 +165,7 @@ def create_app(
         if job is None:
             raise HTTPException(status_code=404, detail="unknown request")
         position = app.state.queue.position(token)
-        return HTMLResponse(_render(job, position, settings.public_base_url))
+        return HTMLResponse(_render(job, position, get_fun_settings().public_base_url))
 
     @app.get("/files/{name}")
     async def download(name: str) -> FileResponse:

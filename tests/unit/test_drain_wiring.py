@@ -16,6 +16,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ai_studio.cli.main import app
+from ai_studio.config.fun_settings import get_fun_settings
 from ai_studio.config.settings import get_settings
 
 REPO = Path(__file__).resolve().parents[2]
@@ -54,12 +55,15 @@ def test_the_api_serves_the_directory_drain_writes_to(
     target = tmp_path / "elsewhere"
     monkeypatch.setenv("AI_STUDIO_FILES_DIR", str(target))
     get_settings(refresh=True)
+    get_fun_settings(refresh=True)
     try:
         app_ = create_app(queue=None, handler=None)
         assert Path(app_.state.files_dir) == target
     finally:
         monkeypatch.delenv("AI_STUDIO_FILES_DIR", raising=False)
         get_settings(refresh=True)
+        get_fun_settings(refresh=True)
+    get_fun_settings(refresh=True)
 
 
 def test_session_drain_constructs_both_the_video_and_image_provider(
@@ -68,17 +72,12 @@ def test_session_drain_constructs_both_the_video_and_image_provider(
     """`drain.py` was rewritten to dispatch by media_kind, but a queue that only
     ever gets a `comfyui` provider silently drops every image job forever — the
     same class of "wired but not actually wired" bug this file exists to catch."""
-    import shutil
     from datetime import datetime, timedelta, timezone
 
     from ai_studio.runtime import session as sess
 
-    # Isolated cwd: session_drain's default JobQueue() and its relative
-    # workflows/ lookup both resolve off the cwd, and this must not touch the
-    # real repo's runs/queue.sqlite3.
-    (tmp_path / "workflows").mkdir()
-    for name in ("h3_fl2va_turbo.json", "h3_fl2va_turbo_fp8.json", "flux_dev.json"):
-        shutil.copy(REPO / "workflows" / name, tmp_path / "workflows" / name)
+    # Isolated cwd: session_drain's default JobQueue() resolves off the cwd,
+    # and this must not touch the real repo's runs/queue.sqlite3.
     monkeypatch.chdir(tmp_path)
 
     requested: list[str] = []
@@ -160,6 +159,7 @@ def test_the_claim_deadline_is_the_live_pods_lease_or_a_fresh_one(
 
     monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "")
     get_settings(refresh=True)
+    get_fun_settings(refresh=True)
     host = _RuntimeHost(name="t", poll_seconds=1.0)
     evening = datetime(2026, 8, 26, 14, 30, tzinfo=timezone.utc)  # 22:30 Taipei
 
@@ -174,3 +174,4 @@ def test_the_claim_deadline_is_the_live_pods_lease_or_a_fresh_one(
         "a pod past its lease is not the deadline; a fresh lease is"
     )
     get_settings(refresh=True)
+    get_fun_settings(refresh=True)

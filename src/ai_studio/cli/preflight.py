@@ -39,6 +39,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from ai_studio import paths
+from ai_studio.config.fun_settings import get_fun_settings
 from ai_studio.config.settings import Settings, get_settings
 
 
@@ -108,7 +110,7 @@ def _handler(queue: Any, *, secret: str, clock: Any = None) -> Any:
     from ai_studio.bots.line.reply import NullReplyClient
     from ai_studio.bots.line.webhook import WebhookHandler
 
-    settings = get_settings()
+    settings = get_fun_settings()
     return WebhookHandler(
         queue,
         NullReplyClient(),
@@ -178,7 +180,7 @@ def check_signature_and_dedupe() -> CheckResult:
     queue at all.
     """
     name = "webhook signature and event dedupe"
-    settings = get_settings()
+    settings = get_fun_settings()
     secret = settings.line_channel_secret
     if secret is None:
         return _skip(2, name, "LINE_CHANNEL_SECRET is not set")
@@ -277,7 +279,7 @@ def check_out_of_hours() -> CheckResult:
     from ai_studio.runtime import session as sess
 
     try:
-        settings = get_settings()
+        settings = get_fun_settings()
         group = settings.line_allowed_group_id or "Cpreflight"
         night = datetime(2026, 1, 1, 3, 0, tzinfo=timezone.utc)
         state_before = sess.load_state()
@@ -320,7 +322,7 @@ def check_push(*, send: bool = False) -> CheckResult:
     many messages it consumes — that number is the open input in PLAN.md §4.
     """
     name = "push into the real group (with mention)"
-    settings = get_settings()
+    settings = get_fun_settings()
     if not send:
         return _skip(5, name, "not attempted; pass --push to send a real message")
     token = settings.line_channel_access_token
@@ -425,17 +427,16 @@ def check_graphs() -> CheckResult:
     from ai_studio.comfy.graph import IMAGE_REQUIRED_BINDINGS, REQUIRED_BINDINGS, Workflow
 
     targets = [
-        (Path("workflows/h3_fl2va_turbo.json"), REQUIRED_BINDINGS),
-        (Path("workflows/h3_fl2va_turbo_fp8.json"), REQUIRED_BINDINGS),
-        (Path("workflows/h3_i2va_turbo.json"), REQUIRED_BINDINGS),
-        (Path("workflows/h3_i2va_turbo_fp8.json"), REQUIRED_BINDINGS),
-        (Path("workflows/flux_dev.json"), IMAGE_REQUIRED_BINDINGS),
-        (Path("workflows/flux_dev_i2i.json"), IMAGE_REQUIRED_BINDINGS | {"source_image", "denoise"}),
+        ("h3_fl2va_turbo.json", REQUIRED_BINDINGS),
+        ("h3_fl2va_turbo_fp8.json", REQUIRED_BINDINGS),
+        ("h3_i2va_turbo.json", REQUIRED_BINDINGS),
+        ("h3_i2va_turbo_fp8.json", REQUIRED_BINDINGS),
+        ("flux_dev.json", IMAGE_REQUIRED_BINDINGS),
+        ("flux_dev_i2i.json", IMAGE_REQUIRED_BINDINGS | {"source_image", "denoise"}),
     ]
     loaded: list[str] = []
-    for path, required in targets:
-        if not path.is_file():
-            return _skip(8, name, f"{path} not found (run from the repo root)")
+    for filename, required in targets:
+        path = paths.workflow(filename)
         try:
             workflow = Workflow.load(path, required_bindings=required)
         except Exception as exc:

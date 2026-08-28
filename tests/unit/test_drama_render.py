@@ -398,9 +398,9 @@ async def test_a_failing_face_graph_falls_back_to_plain_i2i_once(parsed_job, tmp
 
 
 async def test_face_repair_off_by_setting_never_asks_for_it(parsed_job, tmp_path: Path, fake_ffmpeg, monkeypatch) -> None:
-    from ai_studio.config import settings as settings_mod
+    from ai_studio.config import fun_settings
 
-    monkeypatch.setattr(settings_mod.get_settings(), "drama_face_repair", False)
+    monkeypatch.setattr(fun_settings.get_fun_settings(), "drama_face_repair", False)
     q, job = parsed_job
     job = await _with_screenplay(q, job)
     ledger = Ledger()
