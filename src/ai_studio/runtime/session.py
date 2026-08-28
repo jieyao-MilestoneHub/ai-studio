@@ -93,6 +93,7 @@ class Tier:
 
     @property
     def label(self) -> str:
+        """`<GPU>/<cloud>` as it appears in the ledger, the logs and the status page."""
         short = self.gpu.replace("NVIDIA GeForce ", "").replace("NVIDIA ", "")
         return f"{short}/{self.cloud}"
 
@@ -230,6 +231,9 @@ class Session:
 
     @property
     def comfy_url(self) -> str:
+        """ComfyUI through RunPod's proxy (port 8188). Requests through it are cut
+        at ~100 s, which is why every provider polls instead of blocking.
+        """
         return f"https://{self.pod_id}-8188.proxy.runpod.net"
 
     @property
@@ -239,14 +243,19 @@ class Session:
         return f"https://{self.pod_id}-8189.proxy.runpod.net"
 
     def elapsed_hours(self, now: datetime | None = None) -> float:
+        """Hours since the pod opened, for the running cost."""
         started = datetime.fromisoformat(self.opened_at)
         now = now or datetime.now(timezone.utc)
         return max(0.0, (now - started).total_seconds() / 3600)
 
     def spent_usd(self, now: datetime | None = None) -> float:
+        """What this session has cost so far at its tier's hourly rate."""
         return round(self.cost_per_hr * self.elapsed_hours(now), 4)
 
     def past_window(self, now: datetime | None = None) -> bool:
+        """True once the lease has ended: the pod is about to terminate itself and
+        must not be handed new work.
+        """
         now = now or datetime.now(timezone.utc)
         return now >= datetime.fromisoformat(self.window_end)
 
@@ -287,6 +296,7 @@ def _runpodctl(*args: str, timeout_s: float = 180.0) -> dict[str, Any]:
 
 
 def list_pods() -> list[dict[str, Any]]:
+    """Every pod on the account, as RunPod reports them."""
     result = _runpodctl("pod", "list")
     items = result.get("items", result)
     return items if isinstance(items, list) else []
@@ -913,6 +923,7 @@ def provision(
 
 
 def find_existing(name: str) -> dict[str, Any] | None:
+    """The running pod called `name`, if any -- what stops two windows opening."""
     return next((p for p in list_pods() if p.get("name") == name), None)
 
 
@@ -920,12 +931,16 @@ def find_existing(name: str) -> dict[str, Any] | None:
 
 
 def save_state(session: Session) -> None:
+    """Write `runs/.session.json`: the one record of which pod is ours."""
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = session.__dict__ | {"last_activity_at": session.opened_at}
     STATE_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def load_state() -> Session | None:
+    """The open session from `runs/.session.json`, or None. Unknown keys in the
+    file (written by an older version) are ignored, not an error.
+    """
     raw = _read_state_raw()
     if not raw:
         return None
@@ -948,6 +963,9 @@ def touch_activity(label: str | None = None, *, grace_minutes: float | None = No
 
 
 def mark_provisioned() -> None:
+    """Record that `pod_setup.sh` has been started on this pod, so a restarted
+    worker waits for it instead of starting it twice.
+    """
     raw = _read_state_raw()
     if raw:
         raw["provisioned"] = True
@@ -955,6 +973,7 @@ def mark_provisioned() -> None:
 
 
 def clear_state() -> None:
+    """Forget the session file. Called after the pod is confirmed gone."""
     STATE_FILE.unlink(missing_ok=True)
 
 

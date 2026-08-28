@@ -116,6 +116,11 @@ class SpendLedger:
         )
         self._write(data)
 
+    def sessions(self) -> list[dict[str, Any]]:
+        """This month's recorded sessions (`date`, `cost_usd`, `tier_label`,
+        `minutes`), oldest first. Read-only; what `ai-studio metrics` exports."""
+        return [dict(s) for s in self._read()["sessions"]]
+
     def spent_this_month_usd(self) -> float:
         data = self._read()
         return round(sum(float(s["cost_usd"]) for s in data["sessions"]), 4)

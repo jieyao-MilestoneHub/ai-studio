@@ -1,0 +1,249 @@
+{
+  "generated_at": "2026-08-28T16:49:09+00:00",
+  "kind": "measured",
+  "note": "Figures measured on this project's own hardware (the 📏 rows in docs/). Nothing reported by others, nothing inferred.",
+  "data": {
+    "rows": [
+      {
+        "model": "MiniMax H3",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "clip 5.17 s (124 frames): submit to mp4",
+        "value": 79,
+        "unit": "s",
+        "measured_on": "2026-08-26",
+        "source": "docs/model-h3.md, Clip length",
+        "note": "79-100 s across seven production jobs; lower bound listed"
+      },
+      {
+        "model": "MiniMax H3",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "clip 10.1 s (243 frames): submit to mp4",
+        "value": 79,
+        "unit": "s",
+        "measured_on": "2026-08-26",
+        "source": "docs/model-h3.md, Clip length",
+        "note": ""
+      },
+      {
+        "model": "MiniMax H3",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "clip 10.1 s (243 frames): VRAM peak",
+        "value": 22.1,
+        "unit": "GB",
+        "measured_on": "2026-08-26",
+        "source": "docs/model-h3.md, Clip length",
+        "note": "nvidia-smi at 500 ms"
+      },
+      {
+        "model": "MiniMax H3",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "clip 8.0 s (192 frames): submit to mp4",
+        "value": 170,
+        "unit": "s",
+        "measured_on": "2026-08-26",
+        "source": "docs/model-h3.md, Clip length",
+        "note": "includes ~60 s model reload after a RAM-pressure eviction"
+      },
+      {
+        "model": "MiniMax H3",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "clip 8.0 s (192 frames): VRAM peak",
+        "value": 23.5,
+        "unit": "GB",
+        "measured_on": "2026-08-26",
+        "source": "docs/model-h3.md, Clip length",
+        "note": "during the reload"
+      },
+      {
+        "model": "MiniMax H3",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "clip 12.25 s (294 frames): submit to mp4",
+        "value": 215,
+        "unit": "s",
+        "measured_on": "2026-08-26",
+        "source": "docs/model-h3.md, Clip length",
+        "note": "a reload is likely inside this figure"
+      },
+      {
+        "model": "MiniMax H3",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "clip 12.25 s (294 frames): VRAM peak",
+        "value": 23.0,
+        "unit": "GB",
+        "measured_on": "2026-08-26",
+        "source": "docs/model-h3.md, Clip length",
+        "note": ""
+      },
+      {
+        "model": "MiniMax H3",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "text-encoder reload after a swap",
+        "value": 60,
+        "unit": "s",
+        "measured_on": "2026-08",
+        "source": "docs/schedule.md, reaper grace",
+        "note": "60-90 s; lower bound listed"
+      },
+      {
+        "model": "MiniMax H3",
+        "gpu": "A40 48 GB",
+        "metric": "clip 5.17 s (124 frames): VRAM peak",
+        "value": 43.3,
+        "unit": "GB",
+        "measured_on": "2026-08",
+        "source": "docs/model-h3.md, Measured on our own account",
+        "note": "int8 + LoRA bypass; why sub-48 GB rungs merge the LoRA"
+      },
+      {
+        "model": "MiniMax H3",
+        "gpu": "A40 48 GB",
+        "metric": "clip 5.17 s (124 frames): sampling, 6-step turbo",
+        "value": 125,
+        "unit": "s",
+        "measured_on": "2026-08",
+        "source": "docs/model-h3.md, Measured on our own account",
+        "note": "87 -> 40 -> 25 -> 18 s/iter; the first step carries the warm-up"
+      },
+      {
+        "model": "MiniMax H3",
+        "gpu": "A40 48 GB",
+        "metric": "clip 5.17 s (124 frames): submit to mp4",
+        "value": 300,
+        "unit": "s",
+        "measured_on": "2026-08",
+        "source": "docs/model-h3.md, Measured on our own account",
+        "note": ""
+      },
+      {
+        "model": "MiniMax H3",
+        "gpu": "any",
+        "metric": "weight set on disk, int8 path",
+        "value": 54.7,
+        "unit": "GB",
+        "measured_on": "2026-08",
+        "source": "docs/model-h3.md, Measured on our own account",
+        "note": "five files"
+      },
+      {
+        "model": "Flux.1-dev",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "checkpoint reload after a swap",
+        "value": 15,
+        "unit": "s",
+        "measured_on": "2026-08",
+        "source": "docs/schedule.md, reaper grace",
+        "note": ""
+      },
+      {
+        "model": "Flux.1-dev NSFW LoRA",
+        "gpu": "any",
+        "metric": "adapter on disk",
+        "value": 0.69,
+        "unit": "GB",
+        "measured_on": "2026-08",
+        "source": "docs/model-flux.md, weights",
+        "note": "687,476,088 bytes per the HF blobs API"
+      },
+      {
+        "model": "Qwen2-Audio-7B-Instruct",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "VRAM resident, fp16",
+        "value": 17.2,
+        "unit": "GB",
+        "measured_on": "2026-08-27",
+        "source": "docs/model-qwen2-audio.md",
+        "note": ""
+      },
+      {
+        "model": "Qwen2-Audio-7B-Instruct",
+        "gpu": "any",
+        "metric": "repo on disk",
+        "value": 16.8,
+        "unit": "GB",
+        "measured_on": "2026-08-27",
+        "source": "docs/model-qwen2-audio.md",
+        "note": ""
+      },
+      {
+        "model": "Qwen2-Audio-7B-Instruct",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "cold load",
+        "value": 27,
+        "unit": "s",
+        "measured_on": "2026-08-27",
+        "source": "docs/model-qwen2-audio.md, first live run",
+        "note": ""
+      },
+      {
+        "model": "Qwen2.5-VL-7B-Instruct",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "VRAM resident, fp16",
+        "value": 17.0,
+        "unit": "GB",
+        "measured_on": "2026-08-27",
+        "source": "docs/model-qwen2.5-vl.md",
+        "note": ""
+      },
+      {
+        "model": "Qwen2.5-VL-7B-Instruct",
+        "gpu": "any",
+        "metric": "repo on disk",
+        "value": 16.6,
+        "unit": "GB",
+        "measured_on": "2026-08-27",
+        "source": "docs/model-qwen2.5-vl.md",
+        "note": ""
+      },
+      {
+        "model": "Qwen2.5-VL-7B-Instruct",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "cold load",
+        "value": 53,
+        "unit": "s",
+        "measured_on": "2026-08-27",
+        "source": "docs/model-qwen2.5-vl.md, first live runs",
+        "note": "53-69 s across runs; lower bound listed"
+      },
+      {
+        "model": "Qwen2.5-VL + Qwen2-Audio",
+        "gpu": "RTX 4090 24 GB",
+        "metric": "video description, both models, cold",
+        "value": 105,
+        "unit": "s",
+        "measured_on": "2026-08-27",
+        "source": "docs/model-qwen2.5-vl.md, first live runs",
+        "note": "video 69 s + audio swap 35 s + two inferences; $0.025 at $0.74/hr"
+      },
+      {
+        "model": "moondream3-preview",
+        "gpu": "any",
+        "metric": "repo on disk",
+        "value": 47.6,
+        "unit": "GB",
+        "measured_on": "2026-08",
+        "source": "docs/model-moondream3.md",
+        "note": "four modelv2-* shards are the 18.5 GB actually loaded"
+      },
+      {
+        "model": "gpt-oss-20b",
+        "gpu": "any",
+        "metric": "repo on disk",
+        "value": 41.3,
+        "unit": "GB",
+        "measured_on": "2026-08-27",
+        "source": "docs/model-gpt-oss-20b.md",
+        "note": "13.8 GB of safetensors shards are what transformers reads"
+      },
+      {
+        "model": "RunPod pod",
+        "gpu": "any",
+        "metric": "disk overhead, 80 GB volume + 20 GB container",
+        "value": 0.014,
+        "unit": "USD/hr",
+        "measured_on": "2026-08",
+        "source": "docs/model-h3.md, Measured on our own account",
+        "note": "a $0.74/hr pod bills $0.754"
+      }
+    ]
+  }
+}

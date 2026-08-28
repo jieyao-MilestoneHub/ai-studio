@@ -77,6 +77,10 @@ of the window's money instead of grinding through the whole queue failing.
 """
 
 
+# The four *Like protocols below mirror `ai_studio.providers.base` member for
+# member. They are restated here so this package's tests can stand in a fake
+# with no ai-studio import, and so mypy checks the exact surface drain uses;
+# see the originals for what each method means.
 class ClipProviderLike(Protocol):
     def capabilities(self) -> Any: ...
     async def submit(self, request: ClipRequest) -> Any: ...

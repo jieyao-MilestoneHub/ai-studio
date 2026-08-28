@@ -1,4 +1,21 @@
-"""ai-studio command line."""
+"""`ai-studio`: the GPU side's command line, and its composition root.
+
+Groups of commands, cheapest first:
+
+- offline, free: `doctor`, `generate --provider stub`, `understand`,
+  `format`, `bench`, `metrics export|readme`, `preflight --skip-suite`;
+- read the account, spend nothing: `pod capacity|placement|status`,
+  `session status`, `preflight`;
+- spend money: `session open`, `pod up`, `rewrite` and `generate` against a
+  live pod -- every one of them goes through the budget guards in
+  `runtime.session.ensure_pod` / `runtime.budget`;
+- stop spending: `session close`, `session reap`, `pod down` (terminates;
+  a stopped pod still bills for its disk).
+
+The request side has its own command, `funapp` (fun_workflow/). This module
+is the only place in ai-studio that wires layers together; nothing below
+`cli` imports it.
+"""
 
 from __future__ import annotations
 
@@ -202,6 +219,61 @@ def bench(
 
 def _fmt(value: object, places: int) -> str:
     return "-" if not isinstance(value, int | float) else f"{value:.{places}f}"
+
+
+metrics_app = typer.Typer(help="GPU measurements for the repo: timestamped snapshots under assets/metrics/, and README's table.")
+app.add_typer(metrics_app, name="metrics")
+
+
+@metrics_app.command("export")
+def metrics_export(
+    out: Path = typer.Option(Path("assets/metrics"), "--out", help="Where the snapshots go."),
+) -> None:
+    """Write `<kind>-<UTC stamp>Z.json` snapshots: this month's pod sessions,
+    the figures measured on our own hardware, and the per-render benchmark
+    when any day has been folded. De-identified; nothing here is a request.
+    """
+    from datetime import timezone
+
+    from ai_studio.benchmark.export import write_snapshots
+    from ai_studio.runtime.budget import SpendLedger
+    from ai_studio.runtime.session import SESSIONS_LOG_DIR
+
+    settings = get_settings()
+    records = [
+        json.loads(p.read_text(encoding="utf-8"))
+        for p in sorted(SESSIONS_LOG_DIR.glob("*.json"))
+    ] if SESSIONS_LOG_DIR.is_dir() else []
+    written = write_snapshots(
+        out, when=datetime.now(timezone.utc),
+        ledger_sessions=SpendLedger().sessions(), session_records=records,
+        runs_dir=Path(settings.runs_dir),
+    )
+    for path in written:
+        console.print(f"wrote {path}")
+    if not any(p.name.startswith("benchmark-") for p in written):
+        console.print("[dim]no benchmark snapshot: nothing has been folded into runs/benchmark yet[/dim]")
+
+
+@metrics_app.command("readme")
+def metrics_readme(
+    readme: Path = typer.Option(Path("README.md"), "--readme"),
+    metrics: Path = typer.Option(Path("assets/metrics"), "--metrics", help="Snapshot directory."),
+) -> None:
+    """Re-render README's `<!-- metrics:start -->` block from the latest
+    snapshot of each kind. Only that block changes."""
+    from ai_studio.benchmark.export import latest, render_markdown, update_readme
+
+    snapshots = latest(metrics)
+    if not snapshots:
+        raise AIStudioError(f"no snapshots under {metrics}; run `ai-studio metrics export` first")
+    text = readme.read_text(encoding="utf-8")
+    new = update_readme(text, render_markdown(snapshots, metrics_dir=metrics.as_posix()))
+    if new == text:
+        console.print(f"{readme}: metrics block already current")
+        return
+    readme.write_text(new, encoding="utf-8")
+    console.print(f"{readme}: metrics block updated from {', '.join(sorted(snapshots))}")
 
 
 @app.command("preflight")

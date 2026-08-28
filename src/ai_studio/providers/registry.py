@@ -24,10 +24,14 @@ _REGISTRY: dict[str, ProviderFactory] = {}
 
 
 def register(name: str, factory: ProviderFactory) -> None:
+    """Make `name` resolvable by `get_provider`. The built-ins register themselves
+    on first lookup; a third-party backend registers here at import time.
+    """
     _REGISTRY[name] = factory
 
 
 def available() -> list[str]:
+    """Every registered name, sorted -- what `--provider` accepts."""
     _ensure_builtins()
     return sorted(_REGISTRY)
 
@@ -35,6 +39,11 @@ def available() -> list[str]:
 def get_provider(
     name: str, **kwargs: Any
 ) -> ClipProvider | ImageProvider | UnderstandingProvider | ChatProvider:
+    """Construct the provider registered under `name` with `**kwargs`.
+
+    Raises `UnknownProviderError` on a name nobody registered; never falls
+    back to `stub` (see the module docstring).
+    """
     _ensure_builtins()
     try:
         factory = _REGISTRY[name]

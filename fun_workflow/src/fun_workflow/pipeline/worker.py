@@ -145,6 +145,7 @@ class WorkerReport:
     stopped_early: str | None = None
 
     def summary(self) -> str:
+        """One line for the log at shutdown."""
         parts = [
             f"ticks={self.ticks}",
             f"completed={self.completed}",

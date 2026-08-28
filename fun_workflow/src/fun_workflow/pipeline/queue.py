@@ -133,6 +133,7 @@ class JobState(str, Enum):
 
     @property
     def is_terminal(self) -> bool:
+        """DONE or FAILED: nothing will change this row's state again."""
         return self in (JobState.DONE, JobState.FAILED)
 
 
@@ -198,10 +199,14 @@ class Job:
 
     @property
     def prompt(self) -> dict[str, Any] | None:
+        """The converted prompt (`prompt_json` parsed), or None while still `queued`.
+        Its keys depend on the kind; `_built_by` is always there once parsed.
+        """
         return json.loads(self.prompt_json) if self.prompt_json else None
 
     @property
     def waited_s(self) -> float:
+        """Seconds from acceptance to the start of rendering (or to now)."""
         return max(0.0, (self.started_at or time.time()) - self.created_at)
 
 
@@ -328,6 +333,7 @@ class JobQueue:
         return self._connect()
 
     def close(self) -> None:
+        """Close this thread's connection. Safe to call twice."""
         with self._lock:
             connections, self._connections = self._connections, []
         for conn in connections:
@@ -445,6 +451,9 @@ class JobQueue:
         return _row_to_job(row) if row else None
 
     def complete(self, job_id: int, output_path: str) -> Job | None:
+        """Mark a file-producing job DONE with where the file landed. The
+        counterpart for text results is `complete_text`.
+        """
         cur = self._conn.execute(
             "UPDATE jobs SET state=?, output_path=?, finished_at=? WHERE id=? RETURNING *",
             (JobState.DONE.value, output_path, time.time(), job_id),
@@ -501,10 +510,12 @@ class JobQueue:
         return _row_to_job(row) if row else None
 
     def by_token(self, token: str) -> Job | None:
+        """The job behind a status-page URL, or None."""
         row = self._conn.execute("SELECT * FROM jobs WHERE token=?", (token,)).fetchone()
         return _row_to_job(row) if row else None
 
     def by_event_id(self, event_id: str) -> Job | None:
+        """The job a LINE webhook event created, or None -- the dedupe lookup."""
         row = self._conn.execute("SELECT * FROM jobs WHERE event_id=?", (event_id,)).fetchone()
         return _row_to_job(row) if row else None
 
@@ -525,6 +536,9 @@ class JobQueue:
         return int(row["n"]) + 1
 
     def pending(self) -> list[Job]:
+        """Every row that is not finished (`queued`, `parsed`, `running`), oldest
+        first. What the reaper's `hold` and the worker's idle check look at.
+        """
         rows = self._conn.execute(
             "SELECT * FROM jobs WHERE state IN (?, ?, ?) ORDER BY created_at",
             (JobState.QUEUED.value, JobState.PARSED.value, JobState.RUNNING.value),
@@ -532,10 +546,12 @@ class JobQueue:
         return [_row_to_job(r) for r in rows]
 
     def counts(self) -> dict[str, int]:
+        """Rows per state, for `/healthz` and the status page."""
         rows = self._conn.execute("SELECT state, COUNT(*) AS n FROM jobs GROUP BY state")
         return {r["state"]: int(r["n"]) for r in rows}
 
     def recent(self, limit: int = 20) -> list[Job]:
+        """The newest rows, for an operator's glance."""
         rows = self._conn.execute(
             "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
@@ -568,6 +584,9 @@ class JobQueue:
         return _row_to_job(row) if row else None
 
     def set_reply_message_id(self, job_id: int, message_id: str) -> None:
+        """Remember the id of the acknowledgement LINE sent, so a later quote-reply
+        can find this job (`by_quoted_message`).
+        """
         self._conn.execute(
             "UPDATE jobs SET reply_message_id=? WHERE id=?", (message_id, job_id)
         )
