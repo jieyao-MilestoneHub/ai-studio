@@ -39,3 +39,20 @@ def test_extract_audio_refuses_a_clip_with_no_audio_track(tmp_path: Path) -> Non
     ])
     with pytest.raises(media.FFmpegError, match="no audio track"):
         media.extract_audio(src, tmp_path / "x.m4a")
+
+
+@pytest.mark.ffmpeg
+def test_extract_audio_enforces_the_callers_ceiling(tmp_path: Path) -> None:
+    """The delivery channel's limit is the caller's number; over it, the
+    failure must be ours and loud, not the channel's and silent."""
+    from ai_studio import media
+
+    src = tmp_path / "clip.mp4"
+    media.run([
+        media.get_settings().ffmpeg_bin, "-v", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(src),
+    ])
+    with pytest.raises(media.FFmpegError, match="ceiling"):
+        media.extract_audio(src, tmp_path / "tiny.m4a", max_bytes=10)

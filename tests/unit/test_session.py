@@ -233,7 +233,7 @@ def test_reap_closing_a_quiet_window_also_records_to_the_ledger(
 
     _, fake2 = _calls_recorder([{"items": []}, {"deleted": True}])
     monkeypatch.setattr(sess, "_runpodctl", fake2)
-    assert "idle 45min" in sess.close_if_idle(video_idle_minutes=20, name="w")
+    assert "idle 45min" in sess.close_if_idle(default_grace_minutes=20, name="w")
 
     assert sess.SpendLedger().spent_this_month_usd() == pytest.approx(0.354, abs=0.05)
 
@@ -264,49 +264,51 @@ def test_reap_closes_a_quiet_window(monkeypatch: pytest.MonkeyPatch) -> None:
 
     _, fake2 = _calls_recorder([{"items": []}, {"deleted": True}])
     monkeypatch.setattr(sess, "_runpodctl", fake2)
-    assert "idle 45min" in sess.close_if_idle(video_idle_minutes=20, name="w")
+    assert "idle 45min" in sess.close_if_idle(default_grace_minutes=20, name="w")
 
 
 def test_reap_leaves_a_busy_window_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     _, fake = _calls_recorder([{"items": []}, {"id": "p", "costPerHr": 0.34}])
     monkeypatch.setattr(sess, "_runpodctl", fake)
     sess.open_session(_end(120), name="w")
-    sess.touch_activity("video")
+    sess.touch_activity("video", grace_minutes=20)
 
-    assert "active" in sess.close_if_idle(video_idle_minutes=20, name="w")
+    assert "active" in sess.close_if_idle(name="w")
 
 
-def _backdate_activity(minutes: int, kind: str) -> None:
+def _backdate_activity(minutes: int, grace: float | None) -> None:
     import json
 
     raw = sess._read_state_raw()
     raw["last_activity_at"] = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
-    raw["last_media_kind"] = kind
+    if grace is not None:
+        raw["grace_minutes"] = grace
     sess.STATE_FILE.write_text(json.dumps(raw), encoding="utf-8")
 
 
-def test_an_image_pod_gets_the_shorter_grace(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Flux reloads in ~15 s; H3's text encoder in ~90 s. Seven idle minutes
-    after an image is over the image grace and under the video one."""
+def test_the_grace_the_last_touch_recorded_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The caller knows what it rendered (Flux reloads in ~15 s, H3's text
+    encoder in ~90 s); this side only keeps the clock. Seven idle minutes is
+    over a recorded grace of 5 and under one of 10."""
     _, fake = _calls_recorder([{"items": []}, {"id": "p", "costPerHr": 0.34}])
     monkeypatch.setattr(sess, "_runpodctl", fake)
     sess.open_session(_end(120), name="w")
 
-    _backdate_activity(7, "image")
+    _backdate_activity(7, 5)
     _, fake2 = _calls_recorder([{"items": []}, {"deleted": True}])
     monkeypatch.setattr(sess, "_runpodctl", fake2)
-    assert "idle 7min >= 5" in sess.close_if_idle(
-        image_idle_minutes=5, video_idle_minutes=10, name="w"
-    )
+    assert "idle 7min >= 5" in sess.close_if_idle(default_grace_minutes=60, name="w")
 
 
-def test_a_video_pod_keeps_the_longer_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_no_recorded_grace_falls_back_to_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
     _, fake = _calls_recorder([{"items": []}, {"id": "p", "costPerHr": 0.34}])
     monkeypatch.setattr(sess, "_runpodctl", fake)
     sess.open_session(_end(120), name="w")
 
-    _backdate_activity(7, "video")
-    assert "active" in sess.close_if_idle(image_idle_minutes=5, video_idle_minutes=10, name="w")
+    _backdate_activity(7, None)
+    assert "active" in sess.close_if_idle(default_grace_minutes=10, name="w")
+    _backdate_activity(7, 10)
+    assert "active" in sess.close_if_idle(default_grace_minutes=1, name="w")
 
 
 def test_a_pod_with_work_pending_is_never_reaped(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -468,7 +470,8 @@ def _live(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, provisioned: bool 
         "cost_per_hr": 0.74, "opened_at": (now - timedelta(minutes=30)).isoformat(),
         "window_end": (now + timedelta(hours=2)).isoformat(), "tier_label": "RTX 4090/SECURE",
         "vram_gb": 24, "low_vram": True, "quantisation": "int8", "ssh": {}, "provisioned": provisioned,
-        "last_media_kind": "drama", "last_activity_at": (now - timedelta(minutes=3)).isoformat(),
+        "last_activity_label": "drama", "grace_minutes": 10.0,
+        "last_activity_at": (now - timedelta(minutes=3)).isoformat(),
     }
     sess.STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     sess.STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
@@ -538,7 +541,36 @@ def test_the_reaper_decision_is_still_the_old_string_with_fields(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _live(monkeypatch, tmp_path, provisioned=False)
-    # the fixture's last_media_kind is "drama", so the drama grace applies
-    decision = sess.close_if_idle(drama_idle_minutes=10_000, name="w", hold=True)
+    sess.touch_activity("drama", grace_minutes=10_000)
+    decision = sess.close_if_idle(name="w", hold=True)
     assert "held: work pending" in decision  # the contract every caller relies on
     assert decision.action == "held" and decision.pod_id == "p1" and decision.grace == 10_000
+
+
+def test_provision_ships_extras_into_pod_setup_d(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A caller's extension scripts go up before the setup script runs, to
+    the directory its last step walks; anything that is not a plain *.sh is
+    refused rather than quietly skipped."""
+    from pydantic import SecretStr
+
+    deposited: list[tuple[str, str]] = []
+    monkeypatch.setattr(sess, "_runpodctl", lambda *a: {"ip": "1.2.3.4", "port": "22"})
+    monkeypatch.setattr(sess, "_ssh_deposit", lambda h, p, body, *, remote_path: deposited.append((remote_path, body)))
+
+    class _Proc:
+        returncode, stdout, stderr = 0, "started", ""
+
+    monkeypatch.setattr(sess, "_ssh", lambda argv, *, stdin, timeout_s: _Proc())
+    monkeypatch.setattr(sess, "get_settings", lambda: type("S", (), {"hf_token": SecretStr("t")})())
+    script, server, ext = tmp_path / "pod_setup.sh", tmp_path / "srv.py", tmp_path / "face_repair.sh"
+    script.write_text("echo\n", encoding="utf-8")
+    server.write_text("print()\n", encoding="utf-8")
+    ext.write_text("exit 0\n", encoding="utf-8")
+    live = sess.Session.__new__(sess.Session)
+    live.__dict__.update(pod_id="p1", vram_gb=24)
+
+    sess.provision(live, script=script, inference_script=server, extras=[ext])
+    assert deposited == [("/workspace/inference_server.py", "print()\n"), ("/workspace/pod_setup.d/face_repair.sh", "exit 0\n")]
+
+    with pytest.raises(PodError):
+        sess.provision(live, script=script, inference_script=server, extras=[tmp_path / "nope.py"])

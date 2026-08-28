@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ai_studio.core.enums import JobState, MediaKind
 
@@ -35,10 +35,9 @@ class UnderstandingCapabilities(BaseModel):
     modality: MediaKind
 
     accepts_prompt: bool = False
-    """False for Qwen3-Omni-Captioner (audio) -- it rejects a text prompt
-    outright. Enforced by `UnderstandingRequest` validation, not just
-    documented: a request with a prompt against a capability that says False
-    raises rather than silently dropping the prompt."""
+    """Whether the backend takes a steering question at all. Enforced by
+    `check_prompt`, not just documented: a request with a prompt against a
+    capability that says False raises rather than silently dropping it."""
 
     max_input_seconds: float | None = Field(
         default=None,
@@ -48,8 +47,8 @@ class UnderstandingCapabilities(BaseModel):
     max_output_chars: int = Field(
         default=1000,
         gt=0,
-        description="Ceiling on the returned description, so it fits LINE's "
-        "MAX_TEXT_CHARS (bots/line/push.py) with room for the wrapper text.",
+        description="Ceiling on each returned answer. The caller's delivery "
+        "channel decides the number; 1000 is a conservative default.",
     )
 
     cost_per_call_usd: float = Field(default=0.0, ge=0)
@@ -82,15 +81,31 @@ class UnderstandingRequest(BaseModel):
     modality: MediaKind
     input_media_path: str
     prompt: str | None = None
-    """The question put to the model. Built at conversion
-    (`prompts.understanding`): the engineered default for a bare trigger, or
-    the user's own trailing text rewritten into the model's best form. None
-    means "no question" -- the server's caption path for a photo."""
+    """The question put to the model. The caller writes it -- neither this
+    package nor the pod server holds a default. Required for audio and video;
+    None for an image means the model's caption path (no question)."""
+    audio_prompt: str | None = None
+    """Video only: the question for the second model, which listens to the
+    extracted audio track. Required for video, forbidden elsewhere."""
 
     extra: dict[str, Any] = Field(
         default_factory=dict,
         description="Backend-specific knobs. Kept out of the typed surface on purpose.",
     )
+
+    @model_validator(mode="after")
+    def _questions_match_the_modality(self) -> UnderstandingRequest:
+        if self.modality is MediaKind.VIDEO_UNDERSTAND:
+            if not self.prompt or not self.audio_prompt:
+                raise ValueError("a video request needs both prompt and audio_prompt")
+        elif self.modality is MediaKind.AUDIO_UNDERSTAND:
+            if not self.prompt:
+                raise ValueError("an audio request needs a prompt")
+            if self.audio_prompt:
+                raise ValueError("audio_prompt is only for video requests")
+        elif self.audio_prompt:
+            raise ValueError("audio_prompt is only for video requests")
+        return self
 
 
 class UnderstandingJob(BaseModel):
@@ -122,10 +137,26 @@ class UnderstandingJob(BaseModel):
         return self.model_copy(update={"state": state, "updated_at": now, **changes})
 
 
+class VideoSections(BaseModel):
+    """What the video modality returns: one answer per model. Presenting
+    them -- headings, the note for a silent clip -- is the caller's."""
+
+    model_config = ConfigDict(frozen=True)
+
+    visual: str
+    audio: str | None
+    """None when the clip carries no audio track (`has_audio_track` False),
+    so the audio model was never run."""
+    has_audio_track: bool
+
+
 class UnderstandingAsset(BaseModel):
     """A produced description. No output file, so no `sha256`/`size_bytes`/
     dimensions -- the same reason `ImageProviderCapabilities` drops fps and
-    duration for a still image."""
+    duration for a still image.
+
+    Exactly one of `result_text` (image, audio) and `sections` (video) is
+    set."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -133,5 +164,14 @@ class UnderstandingAsset(BaseModel):
     provider: str
     job_id: str
     modality: MediaKind
-    result_text: str
+    result_text: str | None = None
+    sections: VideoSections | None = None
+    truncated: bool = False
+    """An answer hit the server's or this side's character ceiling."""
     cost_usd: float = Field(default=0.0, ge=0)
+
+    @model_validator(mode="after")
+    def _one_shape(self) -> UnderstandingAsset:
+        if (self.result_text is None) == (self.sections is None):
+            raise ValueError("exactly one of result_text and sections must be set")
+        return self

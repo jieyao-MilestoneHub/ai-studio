@@ -4,7 +4,7 @@ One pod, one window a day. The window exists because a session's fixed cost is
 ~20 minutes (boot, 51GB weight download, node install) while a clip is ~5
 minutes — so opening a pod per request would spend 80% of the money on setup.
 
-Since the LINE bot's image trigger (`/圖片`, see [line-bot.md](line-bot.md))
+Since the LINE bot's image trigger (`/圖片`, see [line-bot.md](../fun_workflow/docs/line-bot.md))
 shares this same pod, both model sets — H3 and Flux.1-dev — download on every
 open. See [runpod.md](runpod.md) for the updated download math (~72–78GB
 combined, up from H3's ~54.7GB alone).
@@ -19,7 +19,7 @@ combined, up from H3's ~54.7GB alone).
 | Capacity | ~100 usable minutes ÷ ~5 min = **~20 clips/day**, ~600/month |
 
 One FIFO queue serves both the video trigger (`/影片`, and `/圖影` for image-to-video) and the image
-trigger (`/圖片`, see [line-bot.md](line-bot.md)) — `ai-studio worker`
+trigger (`/圖片`, see [line-bot.md](../fun_workflow/docs/line-bot.md)) — `funapp worker`
 dispatches each claimed job to the H3 or Flux provider by `media_kind`. An
 image job's generation time is `[speculative]` but expected in the 15–40s
 range, negligible against a clip's 2–6 minutes, so mixing images in barely
@@ -119,10 +119,10 @@ people wait until eleven. What protects money now is the monthly budget
 guard, the per-day open cap (15, since pods are short-lived), and the three
 closers below.
 
-`ai-studio worker` is the loop. It runs as a service, always:
+`funapp worker` (in `fun_workflow/`) is the loop. It runs as a service, always:
 
 ```bash
-ai-studio worker
+uv run --project fun_workflow funapp worker
 ```
 
 - With nothing queued it checks every 10 seconds and does nothing else.
@@ -149,7 +149,7 @@ functions by protocol and `cli.main` injects them.
 
 | timer | `OnCalendar` | does |
 |---|---|---|
-| `ai-studio-reap` | every minute | `session reap` — close a quiet pod after its per-kind grace; never with work queued. Logs to journald only on a transition, DEBUG to JSONL each minute |
+| `ai-studio-reap` | every minute | `funapp reap` — close a quiet pod after its per-kind grace; never with work queued. Logs to journald only on a transition, DEBUG to JSONL each minute |
 | `ai-studio-gc` | `02:30 Asia/Taipei` | `gc` — sweep delivered media and received photos past `AI_STUDIO_FILES_RETENTION_DAYS` |
 | `ai-studio-archive` | `03:00 Asia/Taipei` | `archive` — snapshot the queue db, tar+zstd the JSONL traces / session and pod records / drama state / ledger, verify, then prune (docs/observability.md) |
 | `ai-studio-close` | `04:05 Asia/Taipei` | `session close` — the daily hard close, a backstop behind the reaper and `--terminate-after` |
@@ -167,22 +167,23 @@ still terminates itself.** The buffer covers a clip mid-render. Three
 independent ways for a machine to stop billing, and only the last needs no
 process alive.
 
-**The reaper is now per-render-kind, and it never closes a pod with work
-waiting.** `session reap` runs every minute; it closes a quiet pod after
-`IMAGE_IDLE_MINUTES` (5) if the last render was an image, `VIDEO_IDLE_MINUTES`
-(10) if it was a clip, `UNDERSTANDING_IDLE_MINUTES` (5) if the last thing
-this pod did was a `/說圖`/`/說音`/`/說影` job, `DRAMA_IDLE_MINUTES` (10, and
-`pipeline.drama` touches activity after every still and clip, so a half-hour
-drama never looks idle) after a `/短劇`, or `CHAT_IDLE_MINUTES` (15)
-after a `/himonkey` reply — the longest of the five, because a chat
-conversation pauses and resumes in a way a render request does not, and it
-is sized against the reopen fixed cost rather than any observed pause. The three numbers differ
-because the reloads do: 📏 Flux comes back into VRAM in ~15 s, H3's 32B text
-encoder in 60–90 s, so a video pod is worth holding longer.
-`UNDERSTANDING_IDLE_MINUTES` is `[speculative]` in a stronger sense than the
-other two — nothing has measured a lazy-load cost for any of the three
-understanding models yet, and they are not even the same size as each other,
-so one shared number is a starting point, not three considered answers.
+**The reaper's grace is whatever the last render recorded, and it never
+closes a pod with work waiting.** `funapp reap` runs every minute. The pod
+runtime keeps only the clock: `touch_activity(label, grace_minutes=)` writes
+the caller's number into the session state and `close_if_idle` reads it
+back (`DEFAULT_GRACE_MINUTES`, 10, if nothing was recorded). The table of
+what each kind earns is fun_workflow's `pipeline/idle.py`: image 5, video
+10, the three understanding kinds 5, drama 10 (and `pipeline.drama` touches
+activity after every still and clip, so a half-hour drama never looks
+idle), chat 15 — the longest, because a chat conversation pauses and
+resumes in a way a render request does not, and it is sized against the
+reopen fixed cost rather than any observed pause. The numbers differ because
+the reloads do: 📏 Flux comes back into VRAM in ~15 s, H3's 32B text encoder
+in 60–90 s, so a video pod is worth holding longer. The understanding grace
+is `[speculative]` in a stronger sense than the others — nothing has
+measured a lazy-load cost for any of the three understanding models yet,
+and they are not even the same size as each other, so one shared number is
+a starting point, not three considered answers.
 Tuned by how often the reaper log shows a pod closed and reopened within a
 few minutes. And a pod with anything queued is *held*, whatever the clock
 says: closing a pod a job is about to land on costs a cold open **and** the
@@ -245,8 +246,8 @@ Three gates, cheapest first, all of them before a pod exists:
    indistinguishable from "the ladder is empty", which *is* worth retrying.
 2. **Opens per day.** `AI_STUDIO_MAX_POD_OPENS_PER_DAY` (default 2: the day's
    window, plus one more if the reaper closed it and a later request needs the
-   shop reopened), counted against `pod_opens` in the queue database on the
-   Asia/Taipei day. This is the failure the monthly guard cannot see — a
+   shop reopened), counted in `runs/.pod_opens.json` (`runtime.opens.PodOpenLedger`) on
+   the Asia/Taipei day. This is the failure the monthly guard cannot see — a
    worker that crash-loops opens a fresh pod on every restart, and every one
    of them is individually inside budget.
 3. **Monthly budget guard.** `runtime.budget.MonthlyBudgetGuard` reads
@@ -296,12 +297,13 @@ schtasks /Create /TN "ai-studio-close" /SC DAILY /ST 13:00 /F `
   /TR "cmd /c cd /d $repo && `"$uv`" run ai-studio session close"
 ```
 
-`ai-studio worker` is not a scheduled task — it is a service that stays up. On
+`funapp worker` is not a scheduled task — it is a service that stays up. On
 Windows that means a console you leave running, or NSSM; on the VPS it is
 `ai-studio-worker.service` with `Restart=always` (see
-[`deploy/vps_setup.sh`](../deploy/vps_setup.sh)); on the Jetson it is the same
-unit written by [`deploy/jetson_setup.sh`](../deploy/jetson_setup.sh), which
-also masks the systemd sleep targets so the box cannot suspend under it.
+[`fun_workflow/deploy/vps_setup.sh`](../fun_workflow/deploy/vps_setup.sh)); on
+the Jetson it is the same unit written by
+[`fun_workflow/deploy/jetson_setup.sh`](../fun_workflow/deploy/jetson_setup.sh),
+which also masks the systemd sleep targets so the box cannot suspend under it.
 
 ⚠️ Task Scheduler does not run while the machine is asleep, and neither does
 the worker. `--terminate-after` guarantees a pod gets *closed*, never that one

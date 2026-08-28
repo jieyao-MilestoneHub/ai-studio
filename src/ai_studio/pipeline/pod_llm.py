@@ -1,17 +1,16 @@
 """gpt-oss-20b on the pod, presented as the `LlmClient` the prompt builders take.
 
 `prompts.convert.convert`, `prompts.flux.convert` and
-`prompts.understanding.convert_question` all rewrite a request through one
-protocol: `complete(system, user, *, max_tokens) -> str`. Until 2026-08-27 the
-concrete client behind it was a RunPod serverless Qwen2.5-7B endpoint
-(`llm.endpoint.RunpodLlmClient`, 📏 183 s cold). By decision that endpoint is
-not used any more: the rewriter is the same gpt-oss-20b the pod already serves
-for `/himonkey`, reached through the inference server's chat modality with a
-`system` instruction block and `json_only` decoding.
+a caller's question rewriter all rewrite a request through one
+protocol: `complete(system, user, *, max_tokens) -> str`. The rewriter is
+the same gpt-oss-20b the pod already serves for chat, reached through the
+inference server's chat modality with a `system` instruction block and
+`json_only` decoding. (A RunPod serverless Qwen2.5-7B endpoint filled this
+role until 2026-08-27, 📏 183 s cold; it was retired and its client deleted.)
 
 **The caller owns the GPU slot.** One 24 GB card holds one model; this client
 does not know which one is resident and never evicts anything. `pipeline.
-worker.prepare` calls `make_room_for(MediaKind.CHAT, providers)` once, then
+worker calls `make_room_for(<the chat provider>, providers)` once, then
 rewrites every pending job while gpt-oss is loaded -- N clips pay one load,
 not N. Calling `complete()` while ComfyUI's checkpoint is resident is not an
 error; it is just a slow first call (📏 57-68 s load) and, if the card is

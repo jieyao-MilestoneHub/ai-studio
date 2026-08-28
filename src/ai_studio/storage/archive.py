@@ -4,21 +4,25 @@ What the always-on host accumulates and where it would otherwise go:
 
 - `logs/<service>/<day>.jsonl`, `logs/sessions/`, `logs/pods/` -- the trace;
   nothing rotated them (no logrotate on the box).
-- `runs/queue.sqlite3` -- the audit trail; WAL, never checkpointed, and
-  `sqlite3` the CLI is not installed, so `cp` would be undefined behaviour.
-- `runs/drama/<token>/state.json` + `render_manifest.json`, the spend ledger
-  and its retired months, `files/index.jsonl`.
+- the spend ledger and its retired months, the session, reap and pod-open
+  records under `runs/`;
+- whatever the caller adds (`extra_members`): the request side keeps its
+  per-request state and delivery index here, and hands in its live WAL queue as
+  `sqlite` -- `sqlite3` the CLI is not installed, so `cp` would be
+  undefined behaviour, and a snapshot is the only honest copy.
 
-One run, every day at 03:00 Asia/Taipei (`deploy/jetson_setup.sh`):
+One run, every day at 03:00 Asia/Taipei (`funapp archive`, which wraps
+`run_archive` with the request side's own members):
 
-1. snapshot the queue with `sqlite3.Connection.backup()` (then checkpoint
-   the WAL so the live file stops growing);
+1. snapshot the sqlite database, if one was handed in, with
+   `sqlite3.Connection.backup()` (then checkpoint the WAL so the live file
+   stops growing);
 2. stream a tar of every member into `zstd -19 -T0`
    (`archive/<day>/ai-studio-<local stamp>.tar.zst`; `lzma` `.tar.xz` when
    `zstd` is not on PATH -- the tests take that path), and list it back;
 3. write `manifest.json` next to it: when, host, git sha, every member with
    size and sha256, bytes before/after;
-4. fold any real /影片 or /圖片 render since the last run into
+4. fold any real video or image render since the last run into
    `runs/benchmark/<YYYY-MM>.json` (`update_benchmark_report`) -- a small
    durable aggregate of what this project's own GPU actually does, by
    `(kind, gpu_tier)`, read off the same JSONL this run just collected for
@@ -27,8 +31,7 @@ One run, every day at 03:00 Asia/Taipei (`deploy/jetson_setup.sh`):
    after would find nothing left to read for those days;
 5. prune -- hot logs older than `log_hot_days` **only if a manifest names
    them** (never anything unarchived); archives older than
-   `archive_keep_days`; `runs/_dryrun`, `runs/_stub`, `out/` at 30 d; empty
-   `runs/drama/<token>` dirs; `chat_turns` rows older than 30 d; VACUUM.
+   `archive_keep_days`; `runs/_dryrun`, `runs/_stub`, `out/` at 30 d.
 
 Idempotent: a second run the same day finds the manifest, skips the tar and
 still prunes; the benchmark rollup tracks its own `days_included` per month
@@ -50,21 +53,20 @@ import sqlite3
 import subprocess
 import tarfile
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ai_studio.core.observability import LOCAL_TZ, local_now_iso, utc_now_iso
+from ai_studio.benchmark.report import update_benchmark_report
+from ai_studio.core.observability import HOT_SUBDIRS, LOCAL_TZ, local_now_iso, utc_now_iso
 from ai_studio.storage.base import sha256_file
 from ai_studio.storage.retention import SweepResult, sweep_old_files
 
 _log = logging.getLogger("ai_studio.archive")
 
 RUNS_SWEEP_DAYS = 30.0
-CHAT_TURNS_KEEP_DAYS = 30.0
-HOT_SUBDIRS = ("sessions", "pods")
-"""Under log_dir, besides the per-service JSONL directories."""
 
 
 @dataclass(frozen=True)
@@ -90,8 +92,6 @@ class ArchiveResult:
     bytes_after: int = 0
     hot_deleted: int = 0
     archives_deleted: int = 0
-    chat_turns_deleted: int = 0
-    drama_dirs_removed: int = 0
     swept: dict[str, SweepResult] = field(default_factory=dict)
     benchmark_folded: dict[str, int] = field(default_factory=dict)
     """`{month: days newly folded in}` from `update_benchmark_report`."""
@@ -109,7 +109,7 @@ class ArchiveResult:
         benchmark_days = sum(self.benchmark_folded.values())
         return (
             f"{head}: {made}; pruned hot={self.hot_deleted} archives={self.archives_deleted} "
-            f"runs={swept} drama-dirs={self.drama_dirs_removed} chat_turns={self.chat_turns_deleted}; "
+            f"runs={swept}; "
             f"benchmark days folded={benchmark_days}"
         )
 
@@ -122,10 +122,11 @@ def local_today() -> date:
 
 
 def collect_members(
-    *, log_dir: Path, runs_dir: Path, files_dir: Path, today: date
+    *, log_dir: Path, runs_dir: Path, today: date, extra: Iterable[Path] = ()
 ) -> list[Path]:
     """Everything worth keeping that is not media. Today's JSONL files are
-    still being written to and are left for tomorrow's run."""
+    still being written to and are left for tomorrow's run. `extra` is what
+    a caller with more state wants kept too (missing paths are skipped)."""
     members: list[Path] = []
     if log_dir.is_dir():
         for service_dir in sorted(p for p in log_dir.iterdir() if p.is_dir()):
@@ -136,39 +137,38 @@ def collect_members(
                 day = jsonl.stem
                 if day < today.isoformat():
                     members.append(jsonl)
-    drama = runs_dir / "drama"
-    if drama.is_dir():
-        for token_dir in sorted(p for p in drama.iterdir() if p.is_dir()):
-            for name in ("state.json", "render_manifest.json"):
-                if (token_dir / name).is_file():
-                    members.append(token_dir / name)
-    for name in (".spend_ledger.json", ".session.json", ".reap_last.json"):
+    for name in (".spend_ledger.json", ".session.json", ".reap_last.json", ".pod_opens.json"):
         if (runs_dir / name).is_file():
             members.append(runs_dir / name)
     members += sorted(runs_dir.glob("spend-*.json"))
-    index = files_dir / "index.jsonl"
-    if index.is_file():
-        members.append(index)
+    members += [p for p in extra if p.is_file()]
     return members
 
 
 def plan_archive(
-    *, log_dir: Path, runs_dir: Path, files_dir: Path, archive_dir: Path, today: date | None = None
+    *,
+    log_dir: Path,
+    runs_dir: Path,
+    archive_dir: Path,
+    today: date | None = None,
+    sqlite: Path | None = None,
+    extra: Iterable[Path] = (),
 ) -> ArchivePlan:
+    """`sqlite` is a live WAL database to snapshot into the tar (a plain copy
+    of one is undefined behaviour); `extra` is more files to keep."""
     today = today or local_today()
     day_dir = archive_dir / today.isoformat()
     manifest = day_dir / "manifest.json"
     stamp = datetime.now(LOCAL_TZ).strftime("%Y-%m-%dT%H%M%S%z")
     suffix = ".tar.zst" if shutil.which("zstd") else ".tar.xz"
     tar_path = day_dir / f"ai-studio-{stamp}{suffix}"
-    members = collect_members(log_dir=log_dir, runs_dir=runs_dir, files_dir=files_dir, today=today)
-    db = runs_dir / "queue.sqlite3"
+    members = collect_members(log_dir=log_dir, runs_dir=runs_dir, today=today, extra=extra)
     return ArchivePlan(
         day=today.isoformat(),
         tar_path=tar_path,
         manifest_path=manifest,
         members=members,
-        sqlite_source=db if db.is_file() else None,
+        sqlite_source=sqlite if sqlite is not None and sqlite.is_file() else None,
         already_archived=manifest.is_file(),
     )
 
@@ -366,192 +366,6 @@ def prune_runs(*, runs_dir: Path, out_dir: Path, days: float = RUNS_SWEEP_DAYS, 
     return results
 
 
-def remove_empty_drama_dirs(runs_dir: Path, *, dry_run: bool = False) -> int:
-    drama = runs_dir / "drama"
-    if not drama.is_dir():
-        return 0
-    removed = 0
-    for token_dir in sorted(p for p in drama.iterdir() if p.is_dir()):
-        if not any(token_dir.rglob("*")) or all(p.is_dir() for p in token_dir.rglob("*")):
-            if not dry_run:
-                shutil.rmtree(token_dir, ignore_errors=True)
-            removed += 1
-    return removed
-
-
-def prune_chat_turns(db: Path, *, days: float = CHAT_TURNS_KEEP_DAYS, dry_run: bool = False) -> int:
-    """`chat_turns` is the rolling context window, not the audit trail (that
-    is `jobs`, which is never deleted). Rows older than `days` go; then a
-    VACUUM in this connection -- it fails harmlessly if a writer is busy."""
-    if not db.is_file():
-        return 0
-    cutoff = datetime.now(LOCAL_TZ).timestamp() - days * 86400
-    conn = sqlite3.connect(db, timeout=30.0)
-    try:
-        n = conn.execute("SELECT COUNT(*) FROM chat_turns WHERE created_at < ?", (cutoff,)).fetchone()[0]
-        if not dry_run and n:
-            conn.execute("DELETE FROM chat_turns WHERE created_at < ?", (cutoff,))
-            conn.commit()
-        if not dry_run:
-            try:
-                conn.execute("VACUUM")
-            except sqlite3.OperationalError as exc:
-                _log.warning("vacuum skipped: %s", exc)
-        return int(n)
-    finally:
-        conn.close()
-
-
-# -------------------------------------------------------------- benchmarking
-
-BENCHMARK_DIR = "benchmark"
-_BENCHMARK_MSGS = {"fetched clip", "fetched image"}
-_BENCHMARK_FIELDS = ("seconds", "cost_usd", "vram_gb")
-"""Numeric fields averaged per `(kind, gpu_tier)` group. `frames_per_s` is
-derived separately -- it needs two fields (`frames` / `seconds`) together."""
-
-
-def _benchmark_month_path(runs_dir: Path, month: str) -> Path:
-    return runs_dir / BENCHMARK_DIR / f"{month}.json"
-
-
-def collect_benchmark_records(log_dir: Path, *, today: date) -> dict[str, list[dict[str, Any]]]:
-    """Every real render's benchmark-shaped JSONL line, by local day, from
-    day files not yet archived (`day < today` -- the same boundary
-    `collect_members` uses; a day still being written must not be read
-    here either). Real generation jobs only: a `stage="render"` "fetched
-    clip"/"fetched image" line, which `pipeline.drain.render_clip`/
-    `render_image` emit for every actual /影片 or /圖片 job that completes --
-    never a synthetic run, per this project's own "not a benchmark dataset"
-    requirement.
-    """
-    by_day: dict[str, list[dict[str, Any]]] = {}
-    if not log_dir.is_dir():
-        return by_day
-    for service_dir in sorted(p for p in log_dir.iterdir() if p.is_dir()):
-        if service_dir.name in HOT_SUBDIRS:
-            continue
-        for jsonl in sorted(service_dir.glob("*.jsonl")):
-            day = jsonl.stem
-            if day >= today.isoformat():
-                continue
-            for line in jsonl.read_text(encoding="utf-8").splitlines():
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                if record.get("stage") == "render" and record.get("msg") in _BENCHMARK_MSGS:
-                    by_day.setdefault(day, []).append(record)
-    return by_day
-
-
-def _fold_group(group: dict[str, Any], records: list[dict[str, Any]]) -> None:
-    """Merge one day's records into a group's running sums.
-
-    Sums, not means: associative, so a day is safe to fold in exactly once
-    and this never needs to re-derive a month's total from raw JSONL again --
-    which may since have been deleted by `prune_hot`. `days_included` (set by
-    the caller) is what makes "exactly once" hold across repeated runs.
-    """
-    group["count"] = group.get("count", 0) + len(records)
-    for metric in _BENCHMARK_FIELDS:
-        values = [v for r in records if isinstance(v := r.get(metric), int | float)]
-        if values:
-            group[f"{metric}_sum"] = group.get(f"{metric}_sum", 0.0) + sum(values)
-            group[f"{metric}_n"] = group.get(f"{metric}_n", 0) + len(values)
-    throughput = [
-        r["frames"] / r["seconds"]
-        for r in records
-        if isinstance(r.get("frames"), int | float)
-        and isinstance(r.get("seconds"), int | float)
-        and r["seconds"] > 0
-    ]
-    if throughput:
-        group["frames_per_s_sum"] = group.get("frames_per_s_sum", 0.0) + sum(throughput)
-        group["frames_per_s_n"] = group.get("frames_per_s_n", 0) + len(throughput)
-
-
-def _with_means(group: dict[str, Any]) -> dict[str, Any]:
-    """A read-friendly copy with `<field>_mean` alongside each running sum --
-    this file's whole purpose is a person skimming it to decide whether a
-    number is worth promoting, and nobody should have to do that division by
-    hand."""
-    out = dict(group)
-    for metric in (*_BENCHMARK_FIELDS, "frames_per_s"):
-        n = group.get(f"{metric}_n", 0)
-        if n:
-            out[f"{metric}_mean"] = round(group[f"{metric}_sum"] / n, 3)
-    return out
-
-
-def update_benchmark_report(
-    *, log_dir: Path, runs_dir: Path, today: date | None = None, dry_run: bool = False
-) -> dict[str, int]:
-    """Fold every real render not yet included into
-    `runs/benchmark/<YYYY-MM>.json`, one small durable aggregate per month,
-    grouped by `(kind, gpu_tier)`. Each day is folded in exactly once
-    (`days_included`, stored in the file itself) as running sums rather than
-    recomputed from raw JSONL on every run -- so a month's totals survive
-    `prune_hot` deleting the source logs weeks later.
-
-    Same per-month rollover shape as `runtime.budget.SpendLedger`
-    (`runs/spend-<YYYY-MM>.json`), which already solves "roll over at a
-    month boundary" -- reused rather than re-solved.
-
-    Deliberately a plain data file, not a doc: per this project's "Number
-    honesty" rule (CLAUDE.md) a figure only earns a 📏 row in
-    `docs/model-h3.md` or a promoted entry in
-    `providers.comfyui.MEASURED_LATENCY_S` once a person has actually looked
-    at it -- this file is what they look at to decide, not something that
-    writes those places itself.
-
-    Returns `{month: days newly folded in}`, for the run's summary line.
-    """
-    today = today or local_today()
-    by_day = collect_benchmark_records(log_dir, today=today)
-    by_month: dict[str, list[str]] = {}
-    for day in by_day:
-        by_month.setdefault(day[:7], []).append(day)
-
-    folded: dict[str, int] = {}
-    for month, days in by_month.items():
-        path = _benchmark_month_path(runs_dir, month)
-        payload: dict[str, Any] = (
-            json.loads(path.read_text(encoding="utf-8"))
-            if path.is_file()
-            else {"month": month, "days_included": [], "groups": {}}
-        )
-        included = set(payload["days_included"])
-        new_days = sorted(d for d in days if d not in included)
-        if not new_days:
-            continue
-        for day in new_days:
-            by_group: dict[tuple[str, str], list[dict[str, Any]]] = {}
-            for record in by_day[day]:
-                key = (str(record.get("kind") or "unknown"), str(record.get("gpu_tier") or "unknown"))
-                by_group.setdefault(key, []).append(record)
-            for (kind, gpu_tier), records in by_group.items():
-                group = payload["groups"].setdefault(f"{kind}/{gpu_tier}", {})
-                _fold_group(group, records)
-            included.add(day)
-        folded[month] = len(new_days)
-        if dry_run:
-            continue
-        payload["days_included"] = sorted(included)
-        payload["updated_at"] = utc_now_iso()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(
-                {**payload, "groups": {k: _with_means(v) for k, v in payload["groups"].items()}},
-                indent=2, ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-        tmp.replace(path)
-    return folded
-
-
 # ------------------------------------------------------------------ the run
 
 
@@ -560,16 +374,20 @@ def run_archive(
     root: Path,
     log_dir: Path,
     runs_dir: Path,
-    files_dir: Path,
     out_dir: Path,
     archive_dir: Path,
     hot_days: float,
     keep_days: float,
     today: date | None = None,
     dry_run: bool = False,
+    sqlite: Path | None = None,
+    extra_members: Iterable[Path] = (),
 ) -> ArchiveResult:
     today = today or local_today()
-    plan = plan_archive(log_dir=log_dir, runs_dir=runs_dir, files_dir=files_dir, archive_dir=archive_dir, today=today)
+    plan = plan_archive(
+        log_dir=log_dir, runs_dir=runs_dir, archive_dir=archive_dir, today=today,
+        sqlite=sqlite, extra=extra_members,
+    )
     result = ArchiveResult(plan=plan, dry_run=dry_run)
 
     if plan.already_archived:
@@ -620,9 +438,6 @@ def run_archive(
     result.hot_deleted = prune_hot(log_dir=log_dir, root=root, hot_days=hot_days, archived=archived, today=today, dry_run=dry_run)
     result.archives_deleted = prune_archives(archive_dir, keep_days=keep_days, today=today, dry_run=dry_run)
     result.swept = prune_runs(runs_dir=runs_dir, out_dir=out_dir, dry_run=dry_run)
-    result.drama_dirs_removed = remove_empty_drama_dirs(runs_dir, dry_run=dry_run)
-    if plan.sqlite_source is not None:
-        result.chat_turns_deleted = prune_chat_turns(plan.sqlite_source, dry_run=dry_run)
     _log.info(result.summary(), extra={"stage": "archive"})
     return result
 

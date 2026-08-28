@@ -26,7 +26,9 @@ DEFAULT_HOURLY_USD = 0.74
 ladder rung answered, same as everything else on this pod."""
 
 
-def chat_capabilities(*, hourly_usd: float = DEFAULT_HOURLY_USD) -> ChatCapabilities:
+def chat_capabilities(
+    *, hourly_usd: float = DEFAULT_HOURLY_USD, max_output_chars: int | None = None
+) -> ChatCapabilities:
     """Capabilities for the one chat model.
 
     `[speculative]` cost/latency until measured on real hardware -- negligible
@@ -40,6 +42,7 @@ def chat_capabilities(*, hourly_usd: float = DEFAULT_HOURLY_USD) -> ChatCapabili
         model_id="openai/gpt-oss-20b",
         expected_latency_s=expected_latency_s,
         cost_per_call_usd=cost,
+        **({"max_output_chars": max_output_chars} if max_output_chars is not None else {}),
     )
 
 
@@ -52,12 +55,14 @@ class ChatProvider:
     """
 
     name = "chat"
+    residency_group = "inference"
 
     def __init__(
         self,
         *,
         base_url: str | None = None,
         hourly_usd: float = DEFAULT_HOURLY_USD,
+        max_output_chars: int | None = None,
         **_: Any,
     ) -> None:
         settings = get_settings()
@@ -65,7 +70,7 @@ class ChatProvider:
             base_url or settings.inference_url, timeout_s=settings.inference_timeout_s
         )
         self._hourly_usd = hourly_usd
-        self._caps = chat_capabilities(hourly_usd=hourly_usd)
+        self._caps = chat_capabilities(hourly_usd=hourly_usd, max_output_chars=max_output_chars)
 
     def capabilities(self) -> ChatCapabilities:
         return self._caps
@@ -76,7 +81,7 @@ class ChatProvider:
         now = time.time()
         history = request.extra.get("history")
         # The developer/system instruction block for the reply, chosen by
-        # the pipeline (prompts/chat.py) -- the provider only carries it.
+        # the caller -- the provider only carries it.
         system = request.extra.get("system")
         job_id = await self.client.submit_chat_job(request.text, history=history, system=system)
         return ChatJob(
@@ -98,7 +103,11 @@ class ChatProvider:
             return job.with_state(
                 JobState.COMPLETED,
                 now=now,
-                raw={**job.raw, "result_text": payload.get("result_text") or ""},
+                raw={
+                    **job.raw,
+                    "result_text": payload.get("result_text") or "",
+                    "reasoning_exhausted": bool(payload.get("reasoning_exhausted")),
+                },
             )
         if state == "failed":
             return job.with_state(
@@ -126,6 +135,7 @@ class ChatProvider:
             provider=self.name,
             job_id=job.job_id,
             result_text=result_text[: self._caps.max_output_chars],
+            reasoning_exhausted=bool(job.raw.get("reasoning_exhausted")),
             cost_usd=round(self._hourly_usd * elapsed / 3600.0, 6),
         )
 

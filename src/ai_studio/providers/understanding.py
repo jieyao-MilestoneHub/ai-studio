@@ -28,6 +28,7 @@ from ai_studio.core.understanding_spec import (
     UnderstandingCapabilities,
     UnderstandingJob,
     UnderstandingRequest,
+    VideoSections,
 )
 from ai_studio.inference.client import InferenceClient
 
@@ -68,7 +69,7 @@ _MODALITY_WIRE_NAME = {
 
 
 def understanding_capabilities(
-    modality: MediaKind, *, hourly_usd: float = DEFAULT_HOURLY_USD
+    modality: MediaKind, *, hourly_usd: float = DEFAULT_HOURLY_USD, max_output_chars: int | None = None
 ) -> UnderstandingCapabilities:
     """Capabilities for one of the three understanding modalities.
 
@@ -81,6 +82,8 @@ def understanding_capabilities(
     except KeyError:
         raise ProviderSubmitError(f"not an understanding modality: {modality!r}") from None
     cost = round(hourly_usd * defaults["expected_latency_s"] / 3600.0, 6)
+    if max_output_chars is not None:
+        defaults = {**defaults, "max_output_chars": max_output_chars}
     return UnderstandingCapabilities(modality=modality, cost_per_call_usd=cost, **defaults)
 
 
@@ -94,6 +97,7 @@ class UnderstandingProvider:
     """
 
     name = "understanding"
+    residency_group = "inference"
 
     def __init__(
         self,
@@ -101,6 +105,7 @@ class UnderstandingProvider:
         modality: MediaKind,
         base_url: str | None = None,
         hourly_usd: float = DEFAULT_HOURLY_USD,
+        max_output_chars: int | None = None,
         **_: Any,
     ) -> None:
         settings = get_settings()
@@ -109,7 +114,9 @@ class UnderstandingProvider:
             base_url or settings.inference_url, timeout_s=settings.inference_timeout_s
         )
         self._hourly_usd = hourly_usd
-        self._caps = understanding_capabilities(modality, hourly_usd=hourly_usd)
+        self._caps = understanding_capabilities(
+            modality, hourly_usd=hourly_usd, max_output_chars=max_output_chars
+        )
 
     def capabilities(self) -> UnderstandingCapabilities:
         return self._caps
@@ -120,7 +127,8 @@ class UnderstandingProvider:
         self._caps.check_prompt(request.prompt)
         now = time.time()
         job_id = await self.client.submit_job(
-            _MODALITY_WIRE_NAME[self.modality], request.input_media_path, request.prompt
+            _MODALITY_WIRE_NAME[self.modality], request.input_media_path, request.prompt,
+            audio_prompt=request.audio_prompt,
         )
         return UnderstandingJob(
             provider=self.name,
@@ -141,7 +149,12 @@ class UnderstandingProvider:
             return job.with_state(
                 JobState.COMPLETED,
                 now=now,
-                raw={**job.raw, "result_text": payload.get("result_text") or ""},
+                raw={
+                    **job.raw,
+                    "result_text": payload.get("result_text"),
+                    "result": payload.get("result"),
+                    "truncated": bool(payload.get("truncated")),
+                },
             )
         if state == "failed":
             return job.with_state(
@@ -162,15 +175,35 @@ class UnderstandingProvider:
     async def fetch(self, job: UnderstandingJob) -> UnderstandingAsset:
         if job.state is not JobState.COMPLETED:
             raise ProviderJobFailed(f"job {job.job_id} is {job.state.value}, not completed")
-        result_text = str(job.raw.get("result_text") or "")
+        cap = self._caps.max_output_chars
+        truncated = bool(job.raw.get("truncated"))
+
+        def clip(text: str) -> str:
+            nonlocal truncated
+            if len(text) > cap:
+                truncated = True
+            return text[:cap]
+
         elapsed = max(job.elapsed_s, 1.0)
-        return UnderstandingAsset(
-            shot_id=job.shot_id,
-            provider=self.name,
-            job_id=job.job_id,
-            modality=self.modality,
-            result_text=result_text[: self._caps.max_output_chars],
+        common: dict[str, Any] = dict(
+            shot_id=job.shot_id, provider=self.name, job_id=job.job_id, modality=self.modality,
             cost_usd=round(self._hourly_usd * elapsed / 3600.0, 6),
+        )
+        result = job.raw.get("result")
+        if self.modality is MediaKind.VIDEO_UNDERSTAND:
+            if not isinstance(result, dict):
+                raise ProviderError(
+                    f"job {job.job_id}: the video modality must return a result object, got {result!r}"
+                )
+            audio = result.get("audio")
+            sections = VideoSections(
+                visual=clip(str(result.get("visual") or "")),
+                audio=clip(str(audio)) if audio is not None else None,
+                has_audio_track=bool(result.get("has_audio_track")),
+            )
+            return UnderstandingAsset(sections=sections, truncated=truncated, **common)
+        return UnderstandingAsset(
+            result_text=clip(str(job.raw.get("result_text") or "")), truncated=truncated, **common
         )
 
     # ---------------------------------------------------------------- cancel

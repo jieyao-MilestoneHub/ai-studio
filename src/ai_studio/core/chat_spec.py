@@ -1,7 +1,7 @@
 """The chat-provider contract. Sibling to `understanding_spec.py`, not a
 promotion of `prompts.convert.LlmClient`.
 
-A chat turn has to sit inside `pipeline.drain`'s window-deadline poll loop
+A chat turn has to sit inside the caller's window-deadline poll loop
 the same way a clip or a description does, so a turn straddling the window's
 close can be cancelled before billing more GPU-seconds -- that needs an
 externally pollable job handle, not one opaque awaited call. It also has no
@@ -11,7 +11,7 @@ than a widened `UnderstandingRequest`.
 
 `ChatRequest` deliberately carries no `user_id`. Per-user isolation is
 enforced entirely host-side, keyed on `Job.user_id` directly
-(`pipeline.drain.render_chat` reads/writes `pipeline.queue.JobQueue`'s
+(the caller reads/writes its own store's
 `chat_turns` table before a `ChatRequest` is ever built) -- the pod-side
 wire protocol has no need to know *whose* conversation it is answering, only
 what to say next, so the field would sit on this type unread. If a future
@@ -40,8 +40,8 @@ class ChatCapabilities(BaseModel):
     max_output_chars: int = Field(
         default=1000,
         gt=0,
-        description="Ceiling on the returned reply, so it fits LINE's "
-        "MAX_TEXT_CHARS (bots/line/push.py) with room for the wrapper text.",
+        description="Ceiling on the returned reply. The caller's delivery "
+        "channel decides the number; 1000 is a conservative default.",
     )
     cost_per_call_usd: float = Field(default=0.0, ge=0)
     expected_latency_s: float = Field(default=20.0, gt=0)
@@ -112,4 +112,7 @@ class ChatAsset(BaseModel):
     provider: str
     job_id: str
     result_text: str
+    reasoning_exhausted: bool = False
+    """The model thought until its budget ran out and wrote no answer;
+    `result_text` is "". The caller words what to say about that."""
     cost_usd: float = Field(default=0.0, ge=0)

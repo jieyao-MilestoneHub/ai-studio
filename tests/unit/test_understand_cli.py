@@ -36,3 +36,27 @@ def test_understand_rejects_an_unknown_kind(tmp_path: Path) -> None:
 def test_understand_rejects_a_missing_file(tmp_path: Path) -> None:
     result = runner.invoke(app, ["understand", str(tmp_path / "nope.jpg"), "--kind", "image"])
     assert result.exit_code != 0
+
+
+def test_understand_audio_needs_a_question(tmp_path: Path) -> None:
+    """This package holds no default wording; a bare audio call is an error,
+    not a silent guess at what to ask."""
+    clip = tmp_path / "clip.m4a"
+    clip.write_bytes(b"x")
+
+    result = runner.invoke(app, ["understand", str(clip), "--kind", "audio"])
+
+    assert result.exit_code == 1
+    assert "--prompt is required" in result.output
+
+
+def test_understand_video_prints_both_answers(tmp_path: Path) -> None:
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"x" * 7)
+
+    result = runner.invoke(
+        app, ["understand", str(clip), "--kind", "video", "--prompt", "frames?", "--audio-prompt", "sound?"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "visual:" in result.output and "audio:" in result.output

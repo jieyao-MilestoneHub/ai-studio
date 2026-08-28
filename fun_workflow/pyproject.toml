@@ -1,0 +1,110 @@
+[project]
+name = "fun_workflow"
+version = "0.1.0"
+description = "The LINE group's playground on top of ai-studio: webhook, request queue, GPU worker, /短劇 and friends"
+readme = "README.md"
+license = { file = "LICENSE" }
+# Same floor as ai-studio, which this package installs editable from `..`.
+requires-python = ">=3.10,<3.14"
+
+dependencies = [
+    "ai-studio",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "typer>=0.12",
+    "rich>=13.7",
+    "tzdata>=2024.1",
+]
+
+[project.scripts]
+funapp = "fun_workflow.cli.main:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "import-linter>=2.0",
+]
+
+[tool.uv.sources]
+# The GPU/model/money side lives one directory up. Editable, so a change
+# there is visible here without a reinstall -- the two are one checkout.
+ai-studio = { path = "..", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fun_workflow"]
+
+# ---------------------------------------------------------------- tooling
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# RUF001-3 flag ambiguous fullwidth punctuation. Right for ai-studio's
+# English-only source; wrong here, where every reply the bot sends is
+# Traditional Chinese by design.
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer's whole API is call-in-default (`= typer.Option(...)`).
+"src/fun_workflow/cli/*.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src/fun_workflow"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "ffmpeg: requires a working ffmpeg on PATH",
+]
+
+# ---------------------------------------------------------------- layering
+# Independent from ai-studio's contracts (not a uv workspace member). A
+# spine, plus (in tests/unit/test_layering.py) "only the composition root
+# reaches the pod runtime" -- providers and the session arrive by injection
+# (`pipeline.worker.WindowHost`), never import.
+
+[tool.importlinter]
+root_package = "fun_workflow"
+
+[[tool.importlinter.contracts]]
+name = "Layered spine"
+type = "layers"
+layers = [
+    "fun_workflow.cli",
+    "fun_workflow.api",
+    "fun_workflow.bots",
+    "fun_workflow.pipeline",
+    "fun_workflow.prompts",
+    "fun_workflow.storage",
+    "fun_workflow.config",
+    "fun_workflow.core",
+]
+
+[[tool.importlinter.contracts]]
+# Prompt building does no I/O, same rule as upstream: the wording the group
+# reads and the questions the models get are pure functions.
+name = "Prompt building does no I/O"
+type = "forbidden"
+source_modules = ["fun_workflow.prompts"]
+forbidden_modules = ["fun_workflow.pipeline", "fun_workflow.storage", "fun_workflow.api", "fun_workflow.bots"]
+
+# import-linter cannot forbid a *subpackage* of an external package, so the
+# two rules that mention ai_studio.runtime / ai_studio.cli live in
+# tests/unit/test_layering.py instead: only fun_workflow.cli may import them.

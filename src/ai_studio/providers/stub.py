@@ -34,6 +34,7 @@ from ai_studio.core.understanding_spec import (
     UnderstandingCapabilities,
     UnderstandingJob,
     UnderstandingRequest,
+    VideoSections,
 )
 from ai_studio.storage.base import sha256_file
 
@@ -61,6 +62,7 @@ class StubProvider:
     """Synthesises clips locally with ffmpeg. No network, no cost."""
 
     name = "stub"
+    residency_group = "comfyui"
 
     def __init__(self, work_dir: Path | str | None = None, **_: Any) -> None:
         settings = get_settings()
@@ -191,8 +193,8 @@ STUB_IMAGE_CAPABILITIES = ImageProviderCapabilities(
 
 
 class StubImageProvider:
-    """Offline synthetic still provider -- the Flux stand-in `drama-dryrun`
-    uses so the whole `/短劇` stage machine runs with no GPU.
+    """Offline synthetic still provider -- the Flux stand-in an offline dry
+    run uses so a whole multi-stage pipeline runs with no GPU.
 
     One `testsrc2` frame, hue-shifted per seed like the clip stub, at the
     requested size. Image-to-image is honoured only in shape: the source is
@@ -202,6 +204,7 @@ class StubImageProvider:
     """
 
     name = "stub-flux"
+    residency_group = "comfyui"
 
     def __init__(self, work_dir: Path | str | None = None, **_: Any) -> None:
         settings = get_settings()
@@ -275,7 +278,7 @@ STUB_UNDERSTANDING_CAPABILITIES: dict[MediaKind, UnderstandingCapabilities] = {
         provider="stub",
         model_id=f"stub-{kind.value}",
         modality=kind,
-        accepts_prompt=kind is not MediaKind.AUDIO_UNDERSTAND,
+        accepts_prompt=True,
         max_input_seconds=30.0 if kind is MediaKind.AUDIO_UNDERSTAND else None,
         cost_per_call_usd=0.0,
         expected_latency_s=1.0,
@@ -296,6 +299,7 @@ class StubUnderstandingProvider:
     """
 
     name = "stub"
+    residency_group = "inference"
 
     def __init__(self, *, modality: MediaKind, **_: Any) -> None:
         self.modality = modality
@@ -332,14 +336,18 @@ class StubUnderstandingProvider:
         result_text = self._results.get(job.job_id)
         if result_text is None:
             raise ProviderJobFailed(f"no stub result for job {job.job_id}")
-        return UnderstandingAsset(
-            shot_id=job.shot_id,
-            provider=self.name,
-            job_id=job.job_id,
-            modality=self.modality,
-            result_text=result_text,
+        common: dict[str, Any] = dict(
+            shot_id=job.shot_id, provider=self.name, job_id=job.job_id, modality=self.modality,
             cost_usd=0.0,
         )
+        if self.modality is MediaKind.VIDEO_UNDERSTAND:
+            # The same two-answer shape the real server returns, so a caller's
+            # composition of it is exercised offline too.
+            return UnderstandingAsset(
+                sections=VideoSections(visual=result_text, audio=f"{result_text} (audio)", has_audio_track=True),
+                **common,
+            )
+        return UnderstandingAsset(result_text=result_text, **common)
 
     async def cancel(self, job: UnderstandingJob) -> None:
         return None

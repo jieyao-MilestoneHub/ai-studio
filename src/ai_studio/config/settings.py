@@ -13,6 +13,11 @@ from pathlib import Path
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+ENV_FILE: Path | None = Path(__file__).resolve().parents[3] / ".env"
+"""The checkout's `.env`, wherever the process was started from. A
+service unit or a shell in a subdirectory reads the same credentials.
+Read at construction (`get_settings`), so a test can point it elsewhere."""
+
 
 class Settings(BaseSettings):
     """Read from the environment, and from `.env` in development.
@@ -21,7 +26,6 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -46,12 +50,10 @@ class Settings(BaseSettings):
     hf_token: SecretStr | None = Field(
         default=None,
         alias="HF_TOKEN",
-        description="A Hugging Face read token. Needed because "
-        "omni-research/Tarsier2-7b-0115 (/說影) is a gated repo: accept its "
-        "terms on huggingface.co once, and any token of that account reads it. "
-        "Fed to deploy/pod_setup.sh on stdin by runtime.session.provision, never "
-        "written to the pod's disk. The other three understanding/chat repos "
-        "are ungated and download without it.",
+        description="A Hugging Face read token, for any gated model repo the pod "
+        "downloads. Fed to deploy/pod_setup.sh on stdin by runtime.session.provision, "
+        "never written to the pod's disk. Every model currently served is ungated "
+        "(Tarsier2, which was, is retired), so it is optional.",
     )
     network_volume_id: str | None = Field(
         default=None,
@@ -91,7 +93,7 @@ class Settings(BaseSettings):
         alias="AI_STUDIO_INFERENCE_URL",
         description=(
             "Base URL of deploy/inference_server.py, the pod-side process "
-            "serving moondream3/Qwen3-Omni-Captioner/Tarsier2. On RunPod this "
+            "serving the understanding and chat models. On RunPod this "
             "is the pod proxy https://<pod-id>-8189.proxy.runpod.net -- same "
             "~100s proxy-timeout caveat as AI_STUDIO_COMFY_URL."
         ),
@@ -108,18 +110,17 @@ class Settings(BaseSettings):
         default=30.0,
         gt=0,
         alias="AI_STUDIO_MAX_AUDIO_UNDERSTAND_S",
-        description="Longest /說音 audio clip accepted, matching "
-        "Qwen3-Omni-Captioner's own stated ceiling. Checked against LINE's "
-        "own reported message duration before the file is even downloaded.",
+        description="Longest audio clip the understanding backend accepts; a "
+        "caller checks it before downloading the file.",
     )
     max_video_understand_s: float = Field(
         default=120.0,
         gt=0,
         alias="AI_STUDIO_MAX_VIDEO_UNDERSTAND_S",
-        description="[speculative] longest /說影 clip accepted -- nothing has "
-        "measured what Tarsier2 actually tolerates or costs per second of "
-        "dense video understanding on this hardware yet. Generous rather "
-        "than tight until benchmarked; tune once measured.",
+        description="[speculative] longest video clip the understanding backend "
+        "accepts -- nothing has measured what Qwen2.5-VL tolerates or costs per "
+        "second of dense video understanding on this hardware yet. Generous "
+        "rather than tight until benchmarked; tune once measured.",
     )
 
     # ---------------------------------------------------------- storage
@@ -163,96 +164,8 @@ class Settings(BaseSettings):
         "monthly guard cannot provide -- a worker crash-looping opens a fresh "
         "pod on every restart and each one is individually within budget.",
     )
-    max_jobs_per_user_per_day: int = Field(
-        default=10,
-        ge=0,
-        alias="AI_STUDIO_MAX_JOBS_PER_USER_PER_DAY",
-        description="How many requests one LINE user may have accepted in an "
-        "Asia/Taipei day. 0 disables the cap. Checked before the request is "
-        "enqueued, so a refusal does not also spend an LLM conversion. "
-        "/himonkey chat messages are excluded -- see "
-        "max_chat_messages_per_user_per_day.",
-    )
-    max_chat_messages_per_user_per_day: int = Field(
-        default=50,
-        ge=0,
-        alias="AI_STUDIO_MAX_CHAT_MESSAGES_PER_USER_PER_DAY",
-        description="How many /himonkey messages one LINE user may have "
-        "accepted in an Asia/Taipei day. 0 disables the cap. Separate from "
-        "max_jobs_per_user_per_day on purpose: a normal chat conversation's "
-        "cadence would otherwise exhaust a user's entire daily video/image "
-        "allowance too.",
-    )
-    max_chat_month_usd: float = Field(
-        default=15.0,
-        ge=0,
-        alias="AI_STUDIO_MAX_CHAT_MONTH_USD",
-        description="A sub-ceiling on /himonkey's share of max_month_usd, "
-        "enforced by pipeline.drain.render_chat against "
-        "pipeline.queue.chat_spent_this_month_usd() before it submits -- "
-        "a separate mechanism from runtime.budget.MonthlyBudgetGuard, "
-        "which only sees whole sessions and knows nothing about chat; the "
-        "all-kinds monthly cap still applies on top. Exists so chat's traffic cadence (many "
-        "short, frequent sessions) cannot silently consume the budget "
-        "video/image also depend on -- once hit, new chat jobs stop being "
-        "claimed for the rest of the month while video/image keep running. "
-        "A starting guess (roughly a third of the default $45 effective GPU "
-        "budget), meant to be retuned from real usage, not a considered "
-        "number.",
-    )
-
-    # ---------------------------------------------------------- /短劇
-
-    max_dramas_per_day: int = Field(
-        default=3,
-        ge=0,
-        alias="AI_STUDIO_MAX_DRAMAS_PER_DAY",
-        description="How many /短劇 requests the group may have accepted in an "
-        "Asia/Taipei day, all users together. A drama is ~15-30 GPU-minutes "
-        "(six H3 clips plus eight Flux stills), so the per-user job cap alone "
-        "would let one afternoon spend the month. 0 disables the cap.",
-    )
-    drama_face_repair: bool = Field(
-        default=True,
-        alias="AI_STUDIO_DRAMA_FACE_REPAIR",
-        description="Run the Impact-Pack FaceDetailer pass on /短劇 keyframe "
-        "stills when the pod has the nodes. Never on video. Off: plain "
-        "image-to-image keyframes.",
-    )
-    drama_keyframe_denoise: float = Field(
-        default=0.55,
-        gt=0,
-        le=1.0,
-        alias="AI_STUDIO_DRAMA_KEYFRAME_DENOISE",
-        description="How much of the character sheet a /短劇 keyframe may "
-        "repaint: lower keeps the face, higher lets the scene change. "
-        "[speculative] 0.55 -- retune from the first real drama's keyframes.",
-    )
-
     ffmpeg_bin: str = Field(default="ffmpeg", alias="AI_STUDIO_FFMPEG_BIN")
     ffprobe_bin: str = Field(default="ffprobe", alias="AI_STUDIO_FFPROBE_BIN")
-
-    # ---------------------------------------------------------- LINE (phase 2)
-
-    public_base_url: str = Field(
-        default="http://localhost:8000",
-        alias="AI_STUDIO_PUBLIC_BASE_URL",
-        description=(
-            "The externally reachable HTTPS origin of the always-on service. It "
-            "goes into every link the bot replies with, so it must be the public "
-            "hostname, not localhost, in production."
-        ),
-    )
-    files_dir: Path = Field(default=Path("files"), alias="AI_STUDIO_FILES_DIR")
-    incoming_dir: Path = Field(default=Path("incoming"), alias="AI_STUDIO_INCOMING_DIR")
-    files_retention_days: float = Field(
-        default=7.0,
-        ge=0.0,
-        alias="AI_STUDIO_FILES_RETENTION_DAYS",
-        description="Delete delivered media and received photos older than this "
-        "many days. `ai-studio gc` and the daily timer enforce it. 0 keeps "
-        "everything (and lets the disk fill -- only for a short-lived host).",
-    )
 
     # ---------------------------------------------------------- logs / archive
 
@@ -291,21 +204,6 @@ class Settings(BaseSettings):
         description="Archives older than this are deleted. 0 keeps every archive.",
     )
 
-    line_channel_secret: SecretStr | None = Field(default=None, alias="LINE_CHANNEL_SECRET")
-    line_channel_access_token: SecretStr | None = Field(
-        default=None, alias="LINE_CHANNEL_ACCESS_TOKEN"
-    )
-    line_allowed_group_id: str | None = Field(default=None, alias="LINE_ALLOWED_GROUP_ID")
-    # Optional second gate, inside the group. Group membership is not ours to
-    # control: anyone an existing member invites can otherwise spend GPU time.
-    line_allowed_user_ids: str | None = Field(default=None, alias="LINE_ALLOWED_USER_IDS")
-
-    @property
-    def allowed_users(self) -> frozenset[str]:
-        """The user allowlist, or empty meaning "any member of the group"."""
-        raw = self.line_allowed_user_ids or ""
-        return frozenset(u.strip() for u in raw.replace(";", ",").split(",") if u.strip())
-
     def run_dir(self, run_id: str) -> Path:
         return self.runs_dir / run_id
 
@@ -317,5 +215,5 @@ def get_settings(*, refresh: bool = False) -> Settings:
     """Process-wide settings singleton. `refresh=True` re-reads for tests."""
     global _settings
     if _settings is None or refresh:
-        _settings = Settings()
+        _settings = Settings(_env_file=ENV_FILE)
     return _settings

@@ -2,7 +2,7 @@
 
 Sufficient for development, CI, and the whole generation milestone. It cannot
 serve a public URL, and says so by returning `None` from `public_url` rather
-than inventing a `file://` that LINE could never fetch.
+than inventing a `file://` no delivery channel could ever fetch.
 """
 
 from __future__ import annotations

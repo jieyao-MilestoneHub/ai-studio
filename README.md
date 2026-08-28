@@ -2,9 +2,11 @@
 
 Generate video clips with **MiniMax H3** and images with **Flux.1-dev** on
 RunPod GPUs, then assemble the video output into a finished piece using a
-rigorous, mechanically-enforced editing grammar. A FastAPI service + LINE bot
-lets a group chat trigger either — `/影片` for video, `/圖片` for image, a
-photo then `/圖影` or `/圖圖` for image-to-video or image-to-image.
+rigorous, mechanically-enforced editing grammar — and measure what each GPU
+tier actually does while doing it. The LINE group that drives all this lives
+in its own package, [`fun_workflow/`](fun_workflow/), built on top: `/影片`
+for video, `/圖片` for image, a photo then `/圖影` or `/圖圖` for
+image-to-video or image-to-image, and more.
 
 The premise: an AI video model gives you *shots*. It does not give you an
 *edit*. Everything interesting in this repo about the video path is that
@@ -38,8 +40,8 @@ which filters are missing if any are.
 
 This only exercises the video (H3) path — `generate` always builds a clip
 request and writes an mp4. Flux.1-dev images have no offline stub; they run
-through the LINE bot's queue against a live pod — see
-[docs/line-bot.md](docs/line-bot.md) and
+through fun_workflow's queue against a live pod — see
+[fun_workflow/docs/line-bot.md](fun_workflow/docs/line-bot.md) and
 [docs/model-flux.md](docs/model-flux.md).
 
 ---
@@ -48,13 +50,17 @@ through the LINE bot's queue against a live pod — see
 
 ```
 L0  core                          pure data model — imports nothing internal
-L1  config · prompts · editing     policy tables, H3 + Flux prompt schemas, editing rules
-L2  media · storage                artifact stores, ffmpeg invocation
-L3  gates · providers · comfy       rule checks, clip/image backends, ComfyUI + LLM protocols
-    · llm · planner · render
-L4  pipeline                       request queue, drain loop, stage graph
-L5  runtime · cli                  pod lifecycle, command line
-L6  api · bots                     FastAPI service + LINE bot
+L1  config · benchmark · prompts   settings, the render-measurement records/report/rates,
+    · editing                      H3 + Flux prompt schemas, editing rules
+L2  media · storage                artifact stores, ffmpeg invocation, the daily archive
+L3  gates · providers · comfy       rule checks, clip/image/understanding/chat backends,
+    · inference · llm · planner     ComfyUI + the pod-side inference-server client
+    · render
+L4  pipeline                       model residency hand-off, the pod-side prompt rewriter
+L5  runtime · cli                  pod lifecycle, budget, command line
+
+fun_workflow/  (separate package, installs ai-studio editable)
+    api · bots · pipeline          FastAPI service + LINE bot, request queue, worker, /短劇
 ```
 
 Four import rules are enforced in CI by `import-linter`, and they are the
@@ -114,17 +120,24 @@ MiniMax H3's geographic exclusion below. See
 
 ---
 
-## The LINE bot
+## The LINE bot — `fun_workflow/`
 
-**→ [docs/line-bot.md](docs/line-bot.md)** for the full design.
+**→ [fun_workflow/CLAUDE.md](fun_workflow/CLAUDE.md)** and
+**[fun_workflow/docs/line-bot.md](fun_workflow/docs/line-bot.md)** for the
+full design.
 
-A FastAPI service runs 24/7 on a small VPS while the GPU pod exists only for a
-scheduled daily window (see [docs/schedule.md](docs/schedule.md)). A LINE
-group triggers either generator — `/影片` queues a video, `/圖片` queues an
-image, a photo then `/圖影` or `/圖圖` queues an image-to-video clip or an image-to-image render — and gets a link back once the window
-renders it. Requests land in a SQLite queue immediately, because LINE needs
-its `200` in under two seconds; an LLM converts each one into a structured
-H3 or Flux prompt in the background, so a bad prompt never occupies GPU time.
+A FastAPI service runs 24/7 on an always-on box while the GPU pod is opened
+on demand and reaped minutes after the last render (see
+[docs/schedule.md](docs/schedule.md)). A LINE group triggers any model —
+`/影片` queues a video, `/圖片` an image, a photo then `/圖影` or `/圖圖` an
+image-to-video clip or an image-to-image render, `/說圖`/`/說音`/`/說影`
+describe media, `/himonkey` chats, `/短劇` makes a one-minute drama — and
+gets a link back once it renders. Requests land in a SQLite queue
+immediately, because LINE needs its `200` in under two seconds; the worker
+rewrites each one into a structured prompt on the pod before it renders, so
+a bad prompt never occupies GPU time. The status page each link opens shows
+which GPU tier rendered it and what that tier rents for — numbers ai-studio
+owns (`ai-studio bench`).
 
 ---
 

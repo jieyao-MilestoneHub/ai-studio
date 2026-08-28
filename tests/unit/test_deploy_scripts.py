@@ -16,7 +16,18 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-SCRIPTS = sorted((REPO / "deploy").glob("*.sh"))
+# The pod's own bootstrap stays here; the always-on host's installers moved
+# with the request side. Both are shell that runs as root somewhere, so both
+# get the same scrutiny.
+DEPLOY_DIRS = (REPO / "deploy", REPO / "fun_workflow" / "deploy")
+SCRIPTS = sorted(p for d in DEPLOY_DIRS for p in d.glob("*.sh"))
+
+
+def _deploy(name: str) -> Path:
+    for d in DEPLOY_DIRS:
+        if (d / name).is_file():
+            return d / name
+    raise FileNotFoundError(name)
 
 
 def _unquoted(line: str) -> str:
@@ -344,7 +355,7 @@ def test_the_flags_are_never_passed_unconditionally() -> None:
 # while the next-steps text said "three timers armed" -- so the numbers are now
 # derived and compared rather than trusted.
 
-VPS_SETUP = REPO / "deploy" / "vps_setup.sh"
+VPS_SETUP = _deploy("vps_setup.sh")
 
 REMOVAL_LOOP = ["open", "drain", "reap", "close", "gc"]
 """Every unit this script has ever installed, which is what it must remove."""
@@ -472,7 +483,7 @@ def test_daily_timers_name_their_zone() -> None:
     and terminated a live render (2026-08-27). Only the every-minute reaper
     is zone-free."""
     for script in ("jetson_setup.sh", "vps_setup.sh"):
-        body = (REPO / "deploy" / script).read_text(encoding="utf-8")
+        body = _deploy(script).read_text(encoding="utf-8")
         assert 'when="04:05 Asia/Taipei"' in body, script
         assert 'when="02:30 Asia/Taipei"' in body, script
         assert 'when="03:00 Asia/Taipei"' in body, script  # the daily archive
@@ -481,7 +492,7 @@ def test_daily_timers_name_their_zone() -> None:
 def test_the_jetson_script_bounds_journald() -> None:
     """journald defaults to 4 GiB and no time bound; the JSONL trace is the
     durable record, so the journal only needs the hot window."""
-    body = (REPO / "deploy" / "jetson_setup.sh").read_text(encoding="utf-8")
+    body = _deploy("jetson_setup.sh").read_text(encoding="utf-8")
     assert "/etc/systemd/journald.conf.d/ai-studio.conf" in body
     assert "SystemMaxUse=1G" in body and "MaxRetentionSec=30day" in body
 
@@ -502,27 +513,24 @@ def test_renamed_flux_files_are_not_redownloaded_when_present() -> None:
         assert setup.count(target.strip('"').replace("$M/", "")) >= 2
 
 
-def test_the_face_repair_block_can_never_kill_the_setup() -> None:
-    """Impact-Pack is a nice-to-have for /短劇 keyframes. A failure inside its
-    block must log and continue: H3, Flux, the understanding models and chat
-    do not depend on it, and a `die` there would take them all down."""
+def test_extensions_run_last_best_effort_and_never_gate_on_the_marker() -> None:
+    """Whatever a caller ships to /workspace/pod_setup.d/ runs after every
+    step this script owns is up, on every open, and cannot take the pod
+    down: a failed extension is logged, and the marker is still written."""
     body = POD_SETUP.read_text(encoding="utf-8")
-    start = body.index("face_repair_setup() {")
-    end = body.index("face_repair_setup ||", start)
-    block = body[start:end]
-    assert "die " not in block and "die\n" not in block, "the face-repair block must not die"
-    assert "ComfyUI-Impact-Pack" in block and "ComfyUI-Impact-Subpack" in block
-    assert "face_yolov8m.pt" in block
-    assert ".venv-cu128/bin/pip" in block, "node-pack requirements go into ComfyUI's own venv"
-    assert "SETUP_VERSION=5" in body, "provisioned volumes must re-run the new step"
-
-
+    loop = body.index("for ext in /workspace/pod_setup.d/*.sh")
+    assert body.index("inference server did not answer /healthz") < loop < body.index('touch "$MARKER"')
+    assert loop > body.index("fi  # FAST_PATH"), "extensions are not inside the fast-path gate"
+    block = body[loop : body.index('touch "$MARKER"')]
+    assert "die" not in block and "|| log" in block
+    assert "export CU M PY EXTRA" in body and "export -f log" in body
+    assert "face_repair" not in body and "Impact-Pack" not in body, "FaceDetailer is the request side's extension now"
 def test_every_service_unit_names_its_syslog_identifier() -> None:
-    """Every unit's ExecStart is `uv run ai-studio ...`, so without this
+    """Every unit's ExecStart is `uv run ... funapp|ai-studio ...`, so without this
     journald tags them all SYSLOG_IDENTIFIER=uv and `journalctl -t` cannot
     tell the worker from the webhook (📏 2026-08-28)."""
     for script in ("jetson_setup.sh", "vps_setup.sh"):
-        body = (REPO / "deploy" / script).read_text(encoding="utf-8")
+        body = _deploy(script).read_text(encoding="utf-8")
         blocks = re.findall(
             r"cat > /etc/systemd/system/(ai-studio[^\s]*)\.service <<UNIT\n(.*?)^UNIT\n", body, re.S | re.M
         )

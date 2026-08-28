@@ -239,8 +239,8 @@ class GateReport(BaseModel):
 class RenderResult(BaseModel):
     """The delivered artifact. `result.json`.
 
-    The LINE-facing fields (`output_uri`, `poster_uri`) are populated from day
-    one even though nothing pushes to LINE yet, so phase 2 is additive.
+    The delivery-facing fields (`output_uri`, `poster_uri`) are populated from
+    day one so a delivery channel is additive.
     """
 
     model_config = ConfigDict(frozen=True)

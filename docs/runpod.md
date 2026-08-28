@@ -98,7 +98,7 @@ template's 200 GB container disk.
 
 **This got more expensive to redownload once Flux.1-dev joined the same pod,
 and the conclusion still doesn't flip.** A dual-trigger LINE bot (H3 video +
-Flux image, see [line-bot.md](line-bot.md)) downloads both model sets on every
+Flux image, see [line-bot.md](../fun_workflow/docs/line-bot.md)) downloads both model sets on every
 window open: H3's measured **54.7 GB** int8 working set plus Flux.1-dev's
 `[speculative]` **~17–23 GB** (fp8 transformer + T5-XXL text encoder + CLIP-L +
 VAE — see [model-flux.md](model-flux.md), unmeasured on this project's own

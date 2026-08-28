@@ -1,4 +1,2 @@
-"""The prompt-conversion LLM client (`llm/endpoint.py`), on a RunPod
-serverless endpoint rather than the GPU pod, so it is available around the
-clock.
-"""
+"""Offline `LlmClient` implementations (`llm/scripted.py`). The production
+rewriter lives in `pipeline.pod_llm`, on the GPU pod."""

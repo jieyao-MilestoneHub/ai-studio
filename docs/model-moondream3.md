@@ -64,7 +64,7 @@ deployment before trusting it.
 - **Prompt**: two skills, per the model docs. A bare `/說圖` sends no
   question and `MoondreamBackend.infer()` runs `caption(image,
   length="long")`; `/說圖 <question>` is rewritten by gpt-oss on the pod
-  into one specific English question (`prompts/understanding.py`) and runs
+  into one specific English question (`fun_workflow/prompts/understanding.py`) and runs
   `query(image, question, reasoning=True)`. **English only** — 📏 asked
   three ways on 2026-08-27 it never wrote Chinese, so the LINE delivery is
   prefixed 「(moondream3 只能用英文描述)」 rather than paying a second model

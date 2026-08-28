@@ -88,6 +88,49 @@ async def test_submit_poll_fetch_roundtrip(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_video_job_yields_sections_not_text(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"x")
+    sent: dict = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/submit":
+            sent["audio_prompt"] = b"sound?" in request.content
+            return httpx.Response(200, json={"job_id": "job-1"})
+        return httpx.Response(200, json={
+            "state": "completed", "result_text": None, "truncated": True,
+            "result": {"visual": "a cat", "audio": None, "has_audio_track": False},
+        })
+
+    provider = _provider(MediaKind.VIDEO_UNDERSTAND, handler)
+    request = UnderstandingRequest(
+        shot_id="job1", modality=MediaKind.VIDEO_UNDERSTAND, input_media_path=str(source),
+        prompt="frames?", audio_prompt="sound?",
+    )
+    job = await provider.poll(await provider.submit(request))
+    asset = await provider.fetch(job)
+
+    assert sent["audio_prompt"]
+    assert asset.result_text is None
+    assert asset.sections is not None and asset.sections.visual == "a cat"
+    assert asset.sections.audio is None and asset.sections.has_audio_track is False
+    assert asset.truncated is True
+    await provider.aclose()
+
+
+def test_a_request_needs_the_questions_its_modality_runs(tmp_path: Path) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        UnderstandingRequest(shot_id="j", modality=MediaKind.AUDIO_UNDERSTAND, input_media_path="a.m4a")
+    with pytest.raises(ValidationError):
+        UnderstandingRequest(shot_id="j", modality=MediaKind.VIDEO_UNDERSTAND, input_media_path="v.mp4", prompt="p")
+    with pytest.raises(ValidationError):
+        UnderstandingRequest(shot_id="j", modality=MediaKind.IMAGE_UNDERSTAND, input_media_path="i.jpg", audio_prompt="x")
+    UnderstandingRequest(shot_id="j", modality=MediaKind.IMAGE_UNDERSTAND, input_media_path="i.jpg")
+
+
+@pytest.mark.asyncio
 async def test_a_failed_backend_job_polls_to_failed(tmp_path: Path) -> None:
     source = tmp_path / "clip.m4a"
     source.write_bytes(b"x")
@@ -99,7 +142,8 @@ async def test_a_failed_backend_job_polls_to_failed(tmp_path: Path) -> None:
 
     provider = _provider(MediaKind.AUDIO_UNDERSTAND, handler)
     request = UnderstandingRequest(
-        shot_id="job1", modality=MediaKind.AUDIO_UNDERSTAND, input_media_path=str(source)
+        shot_id="job1", modality=MediaKind.AUDIO_UNDERSTAND, input_media_path=str(source),
+        prompt="what is this?",
     )
     job = await provider.submit(request)
     job = await provider.poll(job)
@@ -175,16 +219,17 @@ async def test_stub_roundtrip_is_deterministic_and_names_the_file(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_stub_also_rejects_a_prompt_for_audio(tmp_path: Path) -> None:
-    source = tmp_path / "clip.m4a"
+async def test_stub_video_returns_two_sections_like_the_real_server(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
     source.write_bytes(b"x")
-    provider = StubUnderstandingProvider(modality=MediaKind.AUDIO_UNDERSTAND)
+    provider = StubUnderstandingProvider(modality=MediaKind.VIDEO_UNDERSTAND)
     request = UnderstandingRequest(
-        shot_id="s1", modality=MediaKind.AUDIO_UNDERSTAND,
-        input_media_path=str(source), prompt="what mood?",
+        shot_id="s1", modality=MediaKind.VIDEO_UNDERSTAND,
+        input_media_path=str(source), prompt="frames?", audio_prompt="sound?",
     )
-    with pytest.raises(ValueError):
-        await provider.submit(request)
+    asset = await provider.fetch(await provider.submit(request))
+    assert asset.result_text is None
+    assert asset.sections is not None and asset.sections.has_audio_track is True
 
 
 @pytest.mark.asyncio
@@ -199,7 +244,8 @@ async def test_an_unknown_poll_state_raises_instead_of_hanging(tmp_path: Path) -
 
     provider = _provider(MediaKind.AUDIO_UNDERSTAND, handler)
     request = UnderstandingRequest(
-        shot_id="job1", modality=MediaKind.AUDIO_UNDERSTAND, input_media_path=str(source)
+        shot_id="job1", modality=MediaKind.AUDIO_UNDERSTAND, input_media_path=str(source),
+        prompt="what is this?",
     )
     job = await provider.submit(request)
     with pytest.raises(ProviderError, match="unknown state 'paused'"):

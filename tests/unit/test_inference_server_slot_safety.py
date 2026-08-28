@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import io
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -298,8 +299,8 @@ def test_final_channel_never_leaks_a_truncated_analysis() -> None:
     """📏 2026-08-27: a generation that spent its whole token budget in the
     analysis channel must not be returned as the reply."""
     truncated = "<|channel|>analysis<|message|>The user writes in Chinese and I should"
-    out = srv._final_channel(truncated)
-    assert "The user writes" not in out and out
+    with pytest.raises(srv.ReasoningExhausted):
+        srv._final_channel(truncated)
 
 
 @pytest.mark.asyncio
@@ -486,7 +487,8 @@ def test_gpt_oss_puts_the_system_block_first_and_honours_the_options() -> None:
 @pytest.mark.asyncio
 async def test_a_video_job_runs_the_frame_model_then_the_audio_model(monkeypatch, tmp_path) -> None:
     """Qwen2.5-VL is deaf; a video job must follow it with the audio model on
-    the extracted track and join the two answers under headings."""
+    the extracted track, each with the caller's own question, and return the
+    two answers separately -- presenting them is the caller's."""
     order: list[str] = []
 
     class _Tracing(_FakeBackend):
@@ -502,16 +504,13 @@ async def test_a_video_job_runs_the_frame_model_then_the_audio_model(monkeypatch
     clip = tmp_path / "c.mp4"
     clip.write_bytes(b"x")
 
-    job = srv.Job(job_id="v", modality="video", media_path=clip, prompt=None)
+    job = srv.Job(job_id="v", modality="video", media_path=clip, prompt="frames?", audio_prompt="sound?")
     await srv._run_job(job)
 
     assert job.state == "completed", job.error
-    assert order == [
-        "video:.mp4:None",
-        f"audio:.wav:{srv.VIDEO_AUDIO_QUESTION}",
-    ]
-    assert job.result_text.startswith("【畫面】\nvideo-answer")
-    assert "【聲音】\naudio-answer" in job.result_text
+    assert order == ["video:.mp4:frames?", "audio:.wav:sound?"]
+    assert job.result == {"visual": "video-answer", "audio": "audio-answer", "has_audio_track": True}
+    assert job.result_text is None
     assert srv._slot.backend.modality == "audio", "the audio model is what stays resident"
 
 
@@ -531,12 +530,12 @@ async def test_a_silent_video_skips_the_audio_model_and_says_so(monkeypatch, tmp
     clip = tmp_path / "s.mp4"
     clip.write_bytes(b"x")
 
-    job = srv.Job(job_id="s", modality="video", media_path=clip, prompt="他做了什麼")
+    job = srv.Job(job_id="s", modality="video", media_path=clip, prompt="他做了什麼", audio_prompt="聲音?")
     await srv._run_job(job)
 
     assert job.state == "completed"
     assert loads == ["video"]
-    assert srv.AUDIO_TRACK_SILENT in job.result_text
+    assert job.result == {"visual": "ok", "audio": None, "has_audio_track": False}
 
 
 @pytest.mark.asyncio
@@ -555,5 +554,53 @@ async def test_the_users_question_reaches_both_models(monkeypatch, tmp_path) -> 
     srv._slot.backend = None
     clip = tmp_path / "q.mp4"
     clip.write_bytes(b"x")
-    await srv._run_job(srv.Job(job_id="q", modality="video", media_path=clip, prompt="他在唱什麼歌"))
-    assert asked == [("video", "他在唱什麼歌"), ("audio", "他在唱什麼歌")]
+    await srv._run_job(srv.Job(job_id="q", modality="video", media_path=clip, prompt="他在唱什麼歌", audio_prompt="歌詞?"))
+    assert asked == [("video", "他在唱什麼歌"), ("audio", "歌詞?")]
+
+
+# ------------------------------------------------ the server holds no wording
+
+
+def test_the_server_carries_no_question_or_reply_wording() -> None:
+    """Every question comes with the request and every answer goes back as
+    data; the side that knows who is reading does the wording. A Chinese
+    string literal here would be product copy on the wrong side of the wire."""
+    import re
+
+    source = Path(srv.__file__).read_text(encoding="utf-8")
+    cjk = [line for line in source.splitlines() if re.search(r"[\u4e00-\u9fff]", line) and not line.lstrip().startswith("#")]
+    assert cjk == [], cjk
+
+
+@pytest.mark.asyncio
+async def test_submit_refuses_a_missing_question(tmp_path) -> None:
+    from fastapi import HTTPException, UploadFile
+
+    async def _submit(**kw):
+        media = UploadFile(filename="x.mp4", file=io.BytesIO(b"x"))
+        return await srv.submit(media=media, **kw)
+
+    with pytest.raises(HTTPException) as exc:
+        await _submit(modality="audio", prompt=None)
+    assert exc.value.status_code == 400
+    with pytest.raises(HTTPException) as exc:
+        await _submit(modality="video", prompt="p", audio_prompt=None)
+    assert exc.value.status_code == 400
+    with pytest.raises(HTTPException) as exc:
+        await _submit(modality="image", prompt=None, audio_prompt="ap")
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_an_analysis_only_reply_is_reported_not_worded(monkeypatch) -> None:
+    class _Thinker(_FakeBackend):
+        def infer(self, media_path, prompt, *, history=None, options=None) -> str:
+            raise srv.ReasoningExhausted("budget spent")
+
+    monkeypatch.setitem(srv._BACKENDS, "chat", lambda: _Thinker("chat"))
+    srv._slot.backend = None
+    job = srv.Job(job_id="c", modality="chat", media_path=None, prompt="hi")
+    await srv._run_job(job)
+
+    assert job.state == "completed"
+    assert job.result_text == "" and job.reasoning_exhausted is True

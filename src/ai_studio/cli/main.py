@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import time
 from datetime import datetime
@@ -27,7 +28,7 @@ app = typer.Typer(
     add_completion=False,
     help=(
         "Generate video (MiniMax H3) and images (Flux.1-dev) on RunPod, and run "
-        "the LINE bot that triggers them."
+        "the request side (fun_workflow) that drives them."
     ),
 )
 console = Console()
@@ -85,16 +86,6 @@ def doctor() -> None:
     table.add_row("cost ceiling", "-", f"${settings.max_cost_usd:.2f} per run")
     table.add_row("month ceiling", "-", f"${settings.max_month_usd:.2f} (VPS ${settings.vps_monthly_usd:.2f})")
 
-    import shutil as _shutil
-
-    usage = _shutil.disk_usage(settings.files_dir if settings.files_dir.exists() else ".")
-    free_gb = usage.free / 1_073_741_824
-    table.add_row(
-        "disk free",
-        _mark(free_gb >= 5.0, warn_only=True),
-        f"{free_gb:.0f} GB free of {usage.total / 1_073_741_824:.0f} GB "
-        f"(retention {settings.files_retention_days:.0f}d, `ai-studio gc`)",
-    )
     log_dir, archive_dir = settings.log_dir, settings.archive_dir
     log_bytes = sum(p.stat().st_size for p in log_dir.rglob("*") if p.is_file()) if log_dir.is_dir() else 0
     newest_log = max((p for p in log_dir.rglob("*.jsonl")), key=lambda p: p.stat().st_mtime, default=None) if log_dir.is_dir() else None
@@ -122,97 +113,24 @@ def doctor() -> None:
     console.print("\n[green]Environment looks good.[/green]")
 
 
-@app.command()
-def gc(
-    days: float = typer.Option(
-        None, help="Delete media older than this. Default: AI_STUDIO_FILES_RETENTION_DAYS."
-    ),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would go, delete nothing."),
-) -> None:
-    """Prune old delivered media and received photos. Schedule this daily.
-
-    `files/` gains an mp4/png plus a jpg poster per finished request and
-    `incoming/` a jpg per photo sent, and nothing removed either -- on an
-    always-on host that is a slow disk leak. A photo a still-live
-    image-to-video job points at is protected regardless of age.
-    """
-    _setup_logging("gc")
-    from ai_studio.pipeline.queue import JobQueue
-    from ai_studio.storage.retention import sweep_old_files
-
-    settings = get_settings()
-    max_age = settings.files_retention_days if days is None else days
-    if max_age <= 0:
-        console.print("retention is 0 (disabled); nothing pruned. [dim]The disk will fill.[/dim]")
-        return
-
-    protected: set[str] = set()
-    try:
-        with JobQueue() as queue:
-            protected = {
-                str(Path(j.first_frame_path).resolve())
-                for j in queue.pending()
-                if j.first_frame_path
-            }
-    except Exception as exc:  # a missing queue must not stop a disk sweep
-        console.print(f"[yellow]could not read the queue ({exc}); protecting nothing[/yellow]")
-
-    total_removed = total_freed = 0
-    # A drama's run directory holds ~15 intermediate stills and clips; sweep
-    # it on the same clock, but never one whose job is still pending -- the
-    # state file is what lets a requeued drama resume instead of re-paying.
-    drama_dirs = sorted(p for p in (settings.runs_dir / "drama").glob("*") if p.is_dir())
-    pending_tokens = set()
-    try:
-        with JobQueue() as queue:
-            pending_tokens = {j.token for j in queue.pending()}
-    except Exception:  # the queue was already reported unreadable above
-        pending_tokens = set()
-    # files/index.jsonl maps every delivered file back to its request; it
-    # is a file under files/ and would be swept like any other at 7 days.
-    from ai_studio.storage.index import index_path
-
-    protected = protected | {str(index_path(settings.files_dir).resolve())}
-    sweep_targets = [("files", settings.files_dir), ("incoming", settings.incoming_dir)]
-    # `sweep_old_files` is deliberately flat, so each stage directory of a
-    # drama is its own target (state.json and the manifest sit at the top).
-    for d in drama_dirs:
-        if d.name in pending_tokens:
-            continue
-        sweep_targets.append((f"runs/drama/{d.name}", d))
-        sweep_targets += [(f"runs/drama/{d.name}/{sub.name}", sub) for sub in sorted(d.iterdir()) if sub.is_dir()]
-    for label, directory in sweep_targets:
-        result = sweep_old_files(
-            directory, max_age_days=max_age, dry_run=dry_run, keep=protected
-        )
-        verb = "would remove" if dry_run else "removed"
-        console.print(f"  {label}: {verb} {result.removed}, kept {result.kept} "
-                      f"({result.freed_bytes / 1_048_576:.1f} MB)")
-        total_removed += result.removed
-        total_freed += result.freed_bytes
-    console.print(
-        f"[green]gc[/green] {'(dry run) ' if dry_run else ''}"
-        f"{total_removed} file(s), {total_freed / 1_048_576:.1f} MB, "
-        f"older than {max_age:.0f}d"
-    )
-
-
 @app.command("archive")
 def archive(
     dry_run: bool = typer.Option(False, "--dry-run", help="Plan and report; write and delete nothing."),
 ) -> None:
     """Snapshot, compress, verify, then prune. Schedule this daily (03:00 Asia/Taipei).
 
-    Tars the JSONL traces (days before today), session and pod records, drama
-    state/manifests, the spend ledger and files/index.jsonl plus a consistent
-    sqlite backup of the queue into archive/<day>/*.tar.zst with a manifest
-    of sha256s; then deletes hot logs older than AI_STUDIO_LOG_HOT_DAYS
-    (only what a manifest names), archives older than
-    AI_STUDIO_ARCHIVE_KEEP_DAYS, stale dry-run/stub/out files, empty drama
-    dirs and old chat_turns; then folds any real render since the last run
-    into runs/benchmark/<month>.json, a durable per-GPU-tier performance
-    aggregate (see docs/observability.md). Idempotent: a second run the
-    same day only prunes and has nothing new to fold.
+    Tars the JSONL traces (days before today), session and pod records and
+    the spend ledger into archive/<day>/*.tar.zst with a manifest of
+    sha256s; then deletes hot logs older than AI_STUDIO_LOG_HOT_DAYS (only
+    what a manifest names), archives older than AI_STUDIO_ARCHIVE_KEEP_DAYS
+    and stale dry-run/stub/out files; then folds any real render since the
+    last run into runs/benchmark/<month>.json, a durable per-GPU-tier
+    performance aggregate (see docs/observability.md). Idempotent: a second
+    run the same day only prunes and has nothing new to fold.
+
+    The request-taking side has more to keep (its queue, per-request state,
+    delivery index): `funapp archive` runs this with those added, and is
+    what the daily timer calls on a host that serves the group.
     """
     _setup_logging("archive")
     from ai_studio.storage.archive import run_archive
@@ -222,7 +140,6 @@ def archive(
         root=Path.cwd(),
         log_dir=settings.log_dir,
         runs_dir=settings.runs_dir,
-        files_dir=settings.files_dir,
         out_dir=Path("out"),
         archive_dir=settings.archive_dir,
         hot_days=settings.log_hot_days,
@@ -238,36 +155,80 @@ def archive(
     console.print(f"[green]{result.summary()}[/green]")
 
 
+@app.command("bench")
+def bench(
+    month: str | None = typer.Option(None, "--month", help="YYYY-MM; default this month."),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw report instead of a table."),
+) -> None:
+    """What each GPU tier has measured this month, and what the open pod rents for.
+
+    Reads runs/benchmark/<month>.json (folded daily by `archive` from real
+    renders only) and runs/.session.json. Every number here is 📏 measured
+    on our own hardware; nothing is promoted to docs/ without a person
+    reading this first (CLAUDE.md, "Number honesty").
+    """
+    from ai_studio.benchmark import live_rate, month_report
+    from ai_studio.runtime.session import load_state
+
+    settings = get_settings()
+    rate = live_rate(load_state())
+    report = month_report(Path(settings.runs_dir), month)
+    if as_json:
+        console.print_json(json.dumps({"live": rate.__dict__ if rate else None, "report": report}))
+        return
+
+    if rate:
+        console.print(
+            f"[green]open[/green] {rate.tier}  ${rate.usd_per_hr:.3f}/hr  {rate.vram_gb}GB  "
+            f"{rate.datacenter}  since {rate.since}"
+        )
+    else:
+        console.print("no pod open")
+    if not report:
+        console.print("no benchmark report yet (nothing real has rendered and been archived)")
+        return
+
+    table = Table(title=f"benchmark {report['month']}  days={len(report.get('days_included', []))}")
+    for col in ("kind/gpu_tier", "n", "s mean", "$ mean", "VRAM GB", "frames/s"):
+        table.add_column(col, justify="right" if col != "kind/gpu_tier" else "left")
+    for key, g in sorted(report.get("groups", {}).items()):
+        table.add_row(
+            key, str(g.get("count", 0)),
+            _fmt(g.get("seconds_mean"), 1), _fmt(g.get("cost_usd_mean"), 3),
+            _fmt(g.get("vram_gb_mean"), 1), _fmt(g.get("frames_per_s_mean"), 2),
+        )
+    console.print(table)
+
+
+def _fmt(value: object, places: int) -> str:
+    return "-" if not isinstance(value, int | float) else f"{value:.{places}f}"
+
+
 @app.command("preflight")
 def preflight_cmd(
     skip_suite: bool = typer.Option(
         False, "--skip-suite", help="Skip check 1 (pytest/ruff/lint-imports/mypy)."
     ),
-    push: bool = typer.Option(
-        False, "--push", help="Check 5 only: actually send a message to the real group."
-    ),
 ) -> None:
-    """Run the nine pre-launch checks. Nothing here opens a pod.
+    """Run the GPU-side pre-launch checks. Nothing here opens a pod.
 
-    This is what replaces the stub: everything provable without spending a
-    GPU-second, proved, so the one affordable live run is spent only on the
-    part that genuinely needs a GPU. See PLAN.md Phase 4.
+    Everything provable without spending a GPU-second, proved, so a live run
+    is spent only on the part that genuinely needs a GPU: the offline suite,
+    the poster path, every ComfyUI graph, and the placement ladder against
+    the live catalog. The request-taking side has its own list: `funapp
+    preflight`.
 
-    Exits 0 only when all nine PASS. A check that cannot run is SKIP, not PASS
-    -- "could not verify" must never read as "verified" -- so offline you
-    should expect several skips and a non-zero exit, which is the honest
-    answer: Phase 4 is not complete off the VM.
-
-    `--push` sends a real message to the real group and spends real quota. It
-    is opt-in rather than merely credential-gated for exactly that reason.
+    Exits 0 only when every check PASSes. A check that cannot run is SKIP,
+    not PASS -- "could not verify" must never read as "verified".
     """
     from datetime import timezone
 
-    from ai_studio.cli.preflight import Status, run_all, stamp, summarise
+    from ai_studio.checks import Status, stamp, summarise
+    from ai_studio.cli.preflight import run_all
 
-    results = run_all(run_suite=not skip_suite, send_push=push)
+    results = run_all(run_suite=not skip_suite)
 
-    table = Table(title="preflight (PLAN.md Phase 4)")
+    table = Table(title="preflight (GPU side)")
     table.add_column("#", justify="right")
     table.add_column("check")
     table.add_column("", justify="center")
@@ -286,12 +247,9 @@ def preflight_cmd(
     console.print(f"\n{summary}")
     console.print(f"[dim]{stamp(results, when=datetime.now(timezone.utc)).splitlines()[0]}[/dim]")
     if green:
-        console.print("[green]all nine green: the only thing left unproven is generation.[/green]")
+        console.print("[green]all green: the only thing left unproven is generation.[/green]")
         return
-    console.print(
-        "[yellow]not green.[/yellow] Phase 7 spends the one affordable run; "
-        "a skip here is an unknown it would spend that run discovering."
-    )
+    console.print("[yellow]not green.[/yellow] A skip here is an unknown a live run would spend money discovering.")
     raise typer.Exit(1)
 
 
@@ -414,124 +372,6 @@ async def _generate(
     )
 
 
-DRYRUN_SCREENPLAY: dict[str, Any] = {
-    # The canned screenwriter replies `drama-dryrun` feeds through the real
-    # `prompts.drama` parser, so the offline run exercises validation too.
-    "outline": {
-        "title": "夜市的信",
-        "logline": "A night-market stall owner finds a letter that says the market closes tomorrow.",
-        "style": "Live-action, cinematic",
-        "anchor": {
-            "name": "阿玲",
-            "appearance": "25-year-old Asian woman, oval face, small mole under right eye, "
-            "dark chin-length straight hair",
-            "wardrobe": "a faded red apron over a white t-shirt",
-            "voice": "soft, low, slightly hoarse",
-        },
-        "beats": [
-            "She lifts the stall's shutter before dawn and finds an envelope taped underneath.",
-            "She reads it between customers: the market closes tomorrow.",
-            "A regular asks what is wrong; she says nothing is.",
-            "Evening: she looks down the row of stalls packing up early.",
-            "She writes a reply on the back of the letter.",
-            "Dawn again: she tapes her reply where the first one was, and opens as usual.",
-        ],
-        "overall_soundscape": "Sizzling oil, a crowd murmuring, scooters passing on the road behind.",
-        "non_diegetic_music": "N/A",
-    },
-    "shots": [
-        {"index": 1, "scene": "a night-market stall before dawn, shutter half up, string lights off", "framing": "medium", "action": "the lead crouches and peels an envelope from under the counter", "camera": {"motion": "push_in", "amplitude": "small", "speed": "slow"}},
-        {"index": 2, "scene": "the same stall, mid-evening, steam from the wok, a paper letter in hand", "framing": "close-up", "action": "the lead reads the letter and her hands go still", "camera": {"motion": "static_shot"}},
-        {"index": 3, "scene": "the stall counter, a regular customer's shoulder in the foreground", "framing": "over-the-shoulder", "action": "the lead answers with a small shake of the head", "camera": {"motion": "static_shot"}, "dialogue": [{"speaker_id": "S1", "identity": "the lead", "language": "Mandarin Chinese", "text": "沒事,明天照常開。"}]},
-        {"index": 4, "scene": "the market row at night, neighbouring stalls stacking crates", "framing": "wide", "action": "the lead stands at her counter looking down the row", "camera": {"motion": "pan_right", "speed": "slow"}, "cut_reason": "time_passing"},
-        {"index": 5, "scene": "the counter under one work lamp, the letter turned face down, a pen", "framing": "medium close-up", "action": "the lead writes on the back of the letter", "camera": {"motion": "push_in", "amplitude": "small", "speed": "slow"}},
-        {"index": 6, "scene": "the stall before dawn again, shutter going up, first light", "framing": "close-up", "action": "the lead tapes the letter under the counter and stands", "camera": {"motion": "tilt_up", "speed": "slow"}, "cut_reason": "time_passing"},
-    ],
-}
-
-
-@app.command("drama-dryrun")
-def drama_dryrun(
-    premise: str = typer.Argument("一個夜市老闆娘發現攤位下藏著一封信", help="The premise (recorded, not used offline)."),
-    out: Path = typer.Option(Path("out"), help="Where the finished mp4 goes."),
-    runs: Path = typer.Option(Path("runs/_dryrun"), help="Where the drama's state and stages go."),
-    screenplay: Path | None = typer.Option(
-        None, help="A JSON file with {outline, shots} to use instead of the built-in one."
-    ),
-) -> None:
-    """Run the whole /短劇 stage machine offline: scripted screenwriter, stub
-    Flux and H3 (ffmpeg testsrc2), real loudnorm + concat. Proves the state
-    file, the resume rule and the assembly with no pod and no money. Run it
-    twice: the second run must render nothing."""
-    try:
-        asyncio.run(_drama_dryrun(premise, out, runs, screenplay))
-    except AIStudioError as exc:
-        console.print(f"[red]{type(exc).__name__}:[/red] {exc}")
-        raise typer.Exit(1) from None
-
-
-async def _drama_dryrun(premise: str, out: Path, runs: Path, screenplay_file: Path | None) -> None:
-    import json as _json
-    from datetime import timedelta, timezone
-
-    from ai_studio.llm.endpoint import ScriptedLlmClient
-    from ai_studio.pipeline.drama import load_state, render_drama
-    from ai_studio.pipeline.queue import JobQueue
-    from ai_studio.prompts.drama import screenplay_payload, write_screenplay
-
-    canned = DRYRUN_SCREENPLAY
-    if screenplay_file is not None:
-        canned = _json.loads(screenplay_file.read_text(encoding="utf-8"))
-    shots = canned["shots"]
-    client = ScriptedLlmClient(
-        _json.dumps(canned["outline"], ensure_ascii=False),
-        _json.dumps({"shots": shots[:3]}, ensure_ascii=False),
-        _json.dumps({"shots": shots[3:]}, ensure_ascii=False),
-    )
-    screenplay, how = await write_screenplay(premise, client)
-    console.print(f"[bold]{screenplay.title}[/bold] -- {screenplay.logline}  ({how})")
-    console.print(f"  anchor: {screenplay.anchor.appearance}")
-
-    runs.mkdir(parents=True, exist_ok=True)
-    queue = JobQueue(runs / "dryrun.sqlite3")
-    try:
-        accepted, _ = queue.enqueue("dryrun", "Cdryrun", premise, media_kind=MediaKind.DRAMA)
-        queue.set_parsed(accepted.id, screenplay_payload(screenplay, how))
-        job = queue.by_id(accepted.id)
-        assert job is not None
-        providers = {
-            MediaKind.IMAGE: get_provider("stub-flux", work_dir=runs / "_stub"),
-            MediaKind.VIDEO: get_provider("stub", work_dir=runs / "_stub"),
-        }
-        touches = 0
-
-        def touched() -> None:
-            nonlocal touches
-            touches += 1
-
-        started = time.monotonic()
-        result = await render_drama(
-            job, providers, files_dir=out, runs_dir=runs,
-            deadline=datetime.now(timezone.utc) + timedelta(hours=2),
-            poll_interval_s=0.0, on_activity=touched,
-        )
-        state = load_state(runs / "drama" / job.token)
-    finally:
-        queue.close()
-
-    info = media.probe(result)
-    console.print(
-        f"\n[green]wrote[/green] {result}  {info.width}x{info.height} {info.duration_s:.1f}s "
-        f"audio={'yes' if info.has_audio else 'no'} in {time.monotonic() - started:.0f}s"
-    )
-    console.print(
-        f"  stills {len(state.character)}+{len(state.keyframes)}, clips {len(state.clips)}, "
-        f"leveled {len(state.leveled)}, ffmpeg calls {len(state.ffmpeg_argv)}, "
-        f"activity touches {touches}, face_repair={state.face_repair}"
-    )
-    console.print(f"  state: {runs / 'drama' / job.token / 'state.json'}  (run again: nothing re-renders)")
-
-
 _UNDERSTAND_KINDS = {
     "image": MediaKind.IMAGE_UNDERSTAND,
     "audio": MediaKind.AUDIO_UNDERSTAND,
@@ -546,21 +386,33 @@ def understand(
     provider: str = typer.Option("stub-understanding", "--provider", "-p"),
     prompt: str | None = typer.Option(
         None, "--prompt", "-q",
-        help="A question for the model, sent as typed. Omit for the engineered default.",
+        help="The question for the model, sent as typed. Required for audio and video; "
+        "omit for image to get the model's caption.",
+    ),
+    audio_prompt: str | None = typer.Option(
+        None, "--audio-prompt",
+        help="Video only: the question for the second model, which listens to the track.",
     ),
 ) -> None:
     """Describe one photo/audio/video clip. The offline smoke test for an
     understanding provider -- the `generate`/`--provider stub` of the
-    understanding path: no GPU, no RunPod account, no money."""
+    understanding path: no GPU, no RunPod account, no money.
+
+    This package holds no question wording: you supply it."""
     try:
-        asyncio.run(_understand(path, kind, provider, prompt=prompt))
+        asyncio.run(_understand(path, kind, provider, prompt=prompt, audio_prompt=audio_prompt))
     except AIStudioError as exc:
         console.print(f"[red]{type(exc).__name__}:[/red] {exc}")
         raise typer.Exit(1) from None
 
 
 async def _understand(
-    path: Path, kind: str, provider_name: str, *, prompt: str | None = None
+    path: Path,
+    kind: str,
+    provider_name: str,
+    *,
+    prompt: str | None = None,
+    audio_prompt: str | None = None,
 ) -> None:
     from ai_studio.core.understanding_spec import UnderstandingRequest
 
@@ -569,6 +421,12 @@ async def _understand(
         raise AIStudioError(f"--kind must be one of {', '.join(_UNDERSTAND_KINDS)}, got {kind!r}")
     if not path.is_file():
         raise AIStudioError(f"no such file: {path}")
+    if kind in ("audio", "video") and not prompt:
+        raise AIStudioError(f"--prompt is required for --kind {kind}: this tool has no default question")
+    if kind == "video" and not audio_prompt:
+        raise AIStudioError("--audio-prompt is required for --kind video (the question for the audio model)")
+    if kind != "video" and audio_prompt:
+        raise AIStudioError("--audio-prompt only applies to --kind video")
 
     settings = get_settings()
     backend: Any = get_provider(provider_name, modality=modality)
@@ -580,7 +438,7 @@ async def _understand(
 
     request = UnderstandingRequest(
         shot_id=new_run_id(), modality=modality, input_media_path=str(path),
-        prompt=prompt or None,
+        prompt=prompt or None, audio_prompt=audio_prompt or None,
     )
     try:
         job = await backend.submit(request)
@@ -606,13 +464,14 @@ async def _understand(
     finally:
         await backend.aclose()
 
-    console.print(
-        f"\n[green]{asset.modality.value}[/green]  cost ${asset.cost_usd:.4f}\n{asset.result_text}"
-    )
-
-
-line_app = typer.Typer(help="LINE bot: serve the webhook, or discover a group id.")
-app.add_typer(line_app, name="line")
+    console.print(f"\n[green]{asset.modality.value}[/green]  cost ${asset.cost_usd:.4f}"
+                  f"{'  (truncated)' if asset.truncated else ''}")
+    if asset.sections is None:
+        console.print(asset.result_text or "", markup=False, highlight=False)
+    else:
+        console.print(f"visual: {asset.sections.visual}", markup=False, highlight=False)
+        audio = asset.sections.audio if asset.sections.audio is not None else "(no audio track)"
+        console.print(f"audio:  {audio}", markup=False, highlight=False)
 
 
 def _setup_logging(service: str) -> None:
@@ -626,97 +485,7 @@ def _setup_logging(service: str) -> None:
     configure_logging(service=service, log_dir=settings.log_dir, level=settings.log_level)
 
 
-def _run_server(host: str, port: int, reload: bool = False) -> None:
-    import uvicorn
-
-    from ai_studio.api.main import create_app
-
-    # log_config=None keeps uvicorn from calling dictConfig, which clears every
-    # existing handler and defines no root logger - so a config set up here
-    # would be silently discarded and ai-studio's own lines would never appear.
-    # Owning the config instead means our INFO lines and uvicorn's both show up,
-    # here and under journalctl on the host.
-    _setup_logging("webhook")
-    uvicorn.run(
-        create_app(),
-        host=host,
-        port=port,
-        reload=reload,
-        access_log=False,
-        log_config=None,
-    )
-
-
-@line_app.command("serve")
-def line_serve(
-    host: str = typer.Option("0.0.0.0", help="Bind address."),
-    port: int = typer.Option(8000),
-) -> None:
-    """Run the always-on service: webhook, status pages, file downloads."""
-    settings = get_settings()
-    if settings.line_channel_secret is None:
-        console.print("[red]LINE_CHANNEL_SECRET is unset.[/red] Every webhook will 400.")
-        raise typer.Exit(1)
-
-    group = settings.line_allowed_group_id
-    console.print(f"[bold]ai-studio[/bold] on {host}:{port}")
-    console.print(f"  public base  {settings.public_base_url}")
-    console.print(f"  webhook      {settings.public_base_url.rstrip('/')}/callback")
-    if group:
-        console.print(f"  serving group {group}")
-        users = settings.allowed_users
-        if users:
-            console.print(f"  authorised    {len(users)} user(s)")
-        else:
-            # Not a warning about a misconfiguration - a warning about a choice.
-            console.print(
-                "  [yellow]any group member can spend GPU time[/yellow]: "
-                "LINE_ALLOWED_USER_IDS is unset, so whoever is invited to the "
-                "group next can trigger a render."
-            )
-    else:
-        console.print(
-            "  [yellow]capture mode[/yellow]: no LINE_ALLOWED_GROUP_ID set, so no "
-            "work is accepted. Say the trigger word in the group and the id "
-            "will be printed here."
-        )
-    _run_server(host, port)
-
-
-@line_app.command("capture-group")
-def line_capture_group(
-    port: int = typer.Option(8000),
-    host: str = typer.Option("0.0.0.0"),
-) -> None:
-    """Discover a group's id, which no API exposes.
-
-    LINE documents that a bot cannot list the groups it belongs to, so the id
-    has to be read off a live webhook event. This runs the service in capture
-    mode: it answers the trigger word with the group id and accepts no work.
-    """
-    settings = get_settings()
-    if settings.line_allowed_group_id:
-        console.print(
-            f"[yellow]LINE_ALLOWED_GROUP_ID is already set[/yellow] "
-            f"({settings.line_allowed_group_id}). "
-            "Clear it in .env first, or you will not see capture output."
-        )
-        raise typer.Exit(1)
-
-    console.print("[bold]capture mode[/bold] - waiting for a group message")
-    console.print("  1. add the official account to the group")
-    console.print("  2. point the LINE console Webhook URL at "
-                  f"{settings.public_base_url.rstrip('/')}/callback")
-    # The trigger is CJK and has no ASCII alias any more (one spelling per
-    # trigger, see bots.line.webhook). On a cp950 console it may print as
-    # mojibake; the docs carry the same string for copy-pasting.
-    console.print("  3. say [cyan]/影片 test[/cyan] in the group")
-    console.print("  the group id will be printed here, and replied into the chat")
-    console.print("")
-    _run_server(host, port)
-
-
-_REWRITE_KINDS = ("video", "image", "image-q", "audio-q", "video-q")
+_REWRITE_KINDS = ("video", "image")
 
 
 @app.command("rewrite")
@@ -727,10 +496,10 @@ def rewrite(
 ) -> None:
     """Run the prompt rewriter on an open pod and print what the model would get.
 
-    The live smoke test of prompts/convert.py, prompts/flux.py and
-    prompts/understanding.py against gpt-oss-20b -- no LINE, no render. Needs
-    a pod with the inference server up (AI_STUDIO_INFERENCE_URL); evicting
-    ComfyUI's checkpoint is left to you (it is the worker's job in service).
+    The live smoke test of prompts/convert.py and prompts/flux.py against
+    gpt-oss-20b -- no render. Needs a pod with the inference server up
+    (AI_STUDIO_INFERENCE_URL); evicting ComfyUI's checkpoint is left to you
+    (it is the worker's job in service).
     """
     try:
         asyncio.run(_rewrite(text, kind, seconds))
@@ -743,7 +512,6 @@ async def _rewrite(text: str, kind: str, seconds: float) -> None:
     from ai_studio.inference.client import InferenceClient
     from ai_studio.pipeline.pod_llm import PodLlmClient
     from ai_studio.prompts import flux as flux_prompts
-    from ai_studio.prompts import understanding as und
     from ai_studio.prompts.convert import convert
     from ai_studio.prompts.h3 import H3Mode
 
@@ -759,17 +527,9 @@ async def _rewrite(text: str, kind: str, seconds: float) -> None:
         if kind == "video":
             h3, how = await convert(text, llm, duration_s=seconds, mode=H3Mode.T2VA)
             out = h3.render()
-        elif kind == "image":
+        else:
             fx, how = await flux_prompts.convert(text, llm)
             out = fx.render()
-        else:
-            modality = {
-                "image-q": MediaKind.IMAGE_UNDERSTAND,
-                "audio-q": MediaKind.AUDIO_UNDERSTAND,
-                "video-q": MediaKind.VIDEO_UNDERSTAND,
-            }[kind]
-            question, how = await und.convert_question(text, llm, modality=modality)
-            out = question or "(no question: caption path)"
     finally:
         await llm.aclose()
     console.print(f"[bold]built_by[/bold] {how}   {time.monotonic() - started:.1f}s")
@@ -804,24 +564,19 @@ def session_open(
     tz: str = typer.Option(WINDOW_TZ, "--tz", help="Timezone for --until."),
     name: str = typer.Option("ai-studio-window"),
 ) -> None:
-    """Deploy the window's pod. Sets --terminate-after as a backstop.
+    """Deploy the window's pod by hand. Sets --terminate-after as a backstop.
 
-    Two checks run before anything is created: a demand gate (skip entirely
-    if the queue is empty — the timer fires unconditionally every day, this
-    command decides whether that's worth spending on) and a monthly budget
-    guard (refuse, or shrink the window, once this month's cap is close).
+    Nothing runs this on a timer any more: the worker opens pods on demand
+    (`runtime.session.ensure_pod`). This is the operator's manual path — a
+    GPU test session, or a pod for `session drain`. The monthly budget guard
+    still applies (refuse, or shrink the window, once this month's cap is
+    close), and the open is counted against the daily cap like any other.
     """
     _setup_logging("session")
     from datetime import timezone
 
-    from ai_studio.pipeline.queue import JobQueue
     from ai_studio.runtime import session as sess
     from ai_studio.runtime.budget import MonthlyBudgetGuard, SpendLedger
-
-    with JobQueue() as queue:
-        if not queue.pending():
-            console.print("no queued work; skipping window open (no spend today)")
-            return
 
     settings = get_settings()
     guard = MonthlyBudgetGuard(
@@ -909,463 +664,31 @@ def session_status() -> None:
 
 @session_app.command("reap")
 def session_reap(
-    image_idle_minutes: int = typer.Option(
-        None, help="Grace after an image render (default: runtime.session.IMAGE_IDLE_MINUTES)."
+    grace_minutes: float = typer.Option(
+        None, "--grace-minutes",
+        help="Grace when the last activity recorded none "
+        "(default: runtime.session.DEFAULT_GRACE_MINUTES).",
     ),
-    video_idle_minutes: int = typer.Option(
-        None, help="Grace after a video render (default: runtime.session.VIDEO_IDLE_MINUTES)."
-    ),
-    understanding_idle_minutes: int = typer.Option(
-        None,
-        help="Grace after an understanding job (default: "
-        "runtime.session.UNDERSTANDING_IDLE_MINUTES).",
-    ),
-    chat_idle_minutes: int = typer.Option(
-        None, help="Grace after a /himonkey reply (default: runtime.session.CHAT_IDLE_MINUTES)."
-    ),
-    drama_idle_minutes: int = typer.Option(
-        None, help="Grace after a /短劇 artifact (default: runtime.session.DRAMA_IDLE_MINUTES)."
+    hold: bool = typer.Option(
+        False, "--hold/--no-hold",
+        help="Never close: work is about to land on the pod. The caller that owns "
+        "the request queue decides this; a bare `session reap` has no queue to ask.",
     ),
 ) -> None:
     """Close the pod once it has gone quiet. Schedule this every minute.
 
-    The grace depends on what the pod last rendered, and a pod with work
-    waiting in the queue is never closed, whatever the clock says.
+    The grace is whatever the caller of `touch_activity` recorded with its
+    last activity, else --grace-minutes. Pass --hold when work is waiting for
+    the pod — it is then never closed, whatever the clock says.
     """
     _setup_logging("reap")
-    from ai_studio.pipeline.queue import JobQueue
     from ai_studio.runtime import session as sess
 
-    with JobQueue() as queue:
-        hold = bool(queue.pending())
     decision = sess.close_if_idle(
-        image_idle_minutes=image_idle_minutes or sess.IMAGE_IDLE_MINUTES,
-        video_idle_minutes=video_idle_minutes or sess.VIDEO_IDLE_MINUTES,
-        understanding_idle_minutes=(
-            understanding_idle_minutes or sess.UNDERSTANDING_IDLE_MINUTES
-        ),
-        chat_idle_minutes=chat_idle_minutes or sess.CHAT_IDLE_MINUTES,
-        drama_idle_minutes=drama_idle_minutes or sess.DRAMA_IDLE_MINUTES,
-        hold=hold,
+        default_grace_minutes=grace_minutes or sess.DEFAULT_GRACE_MINUTES, hold=hold,
     )
     console.print(str(decision))
-    _log_reap(decision)
-
-
-_REAP_LAST = Path("runs/.reap_last.json")
-
-
-def _log_reap(decision: Any) -> None:
-    """DEBUG every minute (JSONL only), INFO only when the action changes.
-
-    The reaper fires every minute and used to be ~65 % of ai-studio's journald
-    volume saying `held: work pending` (📏 2026-08-28); the transitions are
-    the information, the repeats are not."""
-    import json
-    import logging
-
-    log = logging.getLogger("ai_studio.reap")
-    fields = {
-        "action": getattr(decision, "action", None), "idle_min": round(getattr(decision, "idle_min", 0.0), 1),
-        "grace": getattr(decision, "grace", None), "spent": round(getattr(decision, "spent_usd", 0.0), 2),
-        "pod_id": getattr(decision, "pod_id", None),
-    }
-    previous = None
-    try:
-        previous = json.loads(_REAP_LAST.read_text(encoding="utf-8")).get("action")
-    except Exception:
-        previous = None
-    if fields["action"] != previous:
-        log.info("reap: %s", decision, extra=fields)
-        try:
-            _REAP_LAST.parent.mkdir(parents=True, exist_ok=True)
-            _REAP_LAST.write_text(json.dumps({"action": fields["action"]}), encoding="utf-8")
-        except OSError:
-            pass
-    else:
-        log.debug("reap: %s", decision, extra=fields)
-
-
-@session_app.command("drain")
-def session_drain(
-    max_clips: int | None = typer.Option(None, help="Stop after N clips."),
-    poll_seconds: float = typer.Option(15.0, help="How often to poll ComfyUI."),
-) -> None:
-    """Render queued requests on the open window's pod.
-
-    This is what turns an open window into videos. Schedule it alongside `reap`:
-    it exits immediately and successfully when no window is open, so a timer
-    firing outside the window is a no-op rather than a failure, and if a drain
-    dies mid-window the next tick picks the queue back up.
-
-    Which workflow runs is decided by the rung that answered, not by preference.
-    A 48GB card takes the fp8 graph and applies the LoRA in bypass; a 24GB card
-    takes int8 with the LoRA merged, which the node pack itself calls softer.
-    """
-    _setup_logging("session")
-    from ai_studio.inference.client import InferenceClient
-    from ai_studio.pipeline.drain import drain_window
-    from ai_studio.pipeline.pod_llm import PodLlmClient
-    from ai_studio.pipeline.queue import JobQueue
-    from ai_studio.runtime import session as sess
-
-    settings = get_settings()
-    session = sess.load_state()
-    if session is None:
-        console.print("no window is open; nothing to drain")
-        return
-    if session.past_window():
-        console.print("the window has already ended; not claiming new work")
-        return
-
-    workflow = Path("workflows") / (
-        "h3_fl2va_turbo.json" if session.low_vram else "h3_fl2va_turbo_fp8.json"
-    )
-    flux_workflow = Path("workflows") / "flux_dev.json"
-    if not workflow.is_file():
-        console.print(f"[red]missing workflow {workflow}[/red] (run from the repo root)")
-        raise typer.Exit(1)
-    if not flux_workflow.is_file():
-        console.print(f"[red]missing workflow {flux_workflow}[/red] (run from the repo root)")
-        raise typer.Exit(1)
-
-    console.print(
-        f"draining on {session.tier_label} ({session.vram_gb}GB, {session.quantisation}, "
-        f"lora={'merged' if session.low_vram else 'bypass'}) until {session.window_end}"
-    )
-
-    from ai_studio.core.enums import MediaKind
-
-    h3_backend = get_provider(
-        "comfyui",
-        workflow=workflow,
-        base_url=session.comfy_url,
-        hourly_usd=session.cost_per_hr,
-    )
-    flux_backend = get_provider(
-        "flux",
-        workflow=flux_workflow,
-        base_url=session.comfy_url,
-        hourly_usd=session.cost_per_hr,
-    )
-    # Understanding and chat jobs share this pod's one FIFO queue -- a manual
-    # drain that omitted them would KeyError the moment one was claimed.
-    understand_backends = {
-        kind: get_provider(name, base_url=session.inference_url, hourly_usd=session.cost_per_hr)
-        for kind, name in (
-            (MediaKind.IMAGE_UNDERSTAND, "understand-image"),
-            (MediaKind.AUDIO_UNDERSTAND, "understand-audio"),
-            (MediaKind.VIDEO_UNDERSTAND, "understand-video"),
-            (MediaKind.CHAT, "chat"),
-        )
-    }
-    queue = JobQueue()
-    try:
-        report = asyncio.run(
-            drain_window(
-                queue,
-                {MediaKind.VIDEO: h3_backend, MediaKind.IMAGE: flux_backend, **understand_backends},
-                window_end=datetime.fromisoformat(session.window_end),
-                files_dir=settings.files_dir,
-                gpu_tier=session.tier_label,
-                gpu_usd_per_hr=session.cost_per_hr,
-                poll_interval_s=poll_seconds,
-                max_clips=max_clips,
-                # Without this a long render looks like idleness and the reaper
-                # closes the window out from under the clip being rendered.
-                on_activity=sess.touch_activity,
-                # The rewriter on the same pod; queued requests are converted
-                # up front, one gpt-oss residency for the batch.
-                llm=PodLlmClient(
-                    InferenceClient(session.inference_url, timeout_s=settings.inference_timeout_s),
-                    job_timeout_s=settings.inference_job_timeout_s,
-                ),
-            )
-        )
-    finally:
-        queue.close()
-    console.print(str(report))
-
-
-class _RuntimeHost:
-    """The composition root's half of `pipeline.worker.WindowHost`.
-
-    `pipeline` sits below `runtime` in the layer contract, so the worker loop
-    cannot import business hours, sessions or the provider registry. It takes
-    them by protocol instead, and this is where the two halves are joined —
-    which is exactly what the CLI is for, and why it is the one package
-    exempted from the "phase-2 packages stay leaves" contract.
-    """
-
-    def __init__(self, *, name: str, poll_seconds: float, push: object | None = None) -> None:
-        from ai_studio.bots.line.push import LinePushClient, NullPushClient
-
-        self.name = name
-        self.poll_seconds = poll_seconds
-        self._providers: dict[str, dict[MediaKind, object]] = {}
-        self._llms: dict[str, object] = {}
-
-        settings = get_settings()
-        self.files_dir = Path(settings.files_dir)
-        self.base_url = settings.public_base_url.rstrip("/")
-        token = settings.line_channel_access_token
-        # NullPushClient without a token: the worker still renders and still
-        # marks jobs delivered, and the log says the push was not sent. Failing
-        # to start would make credentials a prerequisite for generating at all.
-        self.push: Any = push or (
-            LinePushClient(token.get_secret_value()) if token else NullPushClient()
-        )
-
-    def now(self) -> datetime:
-        from datetime import timezone
-
-        return datetime.now(timezone.utc)
-
-    @staticmethod
-    def _live_session(now: datetime | None) -> object | None:
-        """The pod already open, if any."""
-        from ai_studio.runtime import session as sess
-
-        live = sess.load_state()
-        if live is None or live.past_window(now):
-            return None
-        return live
-
-    def claim_deadline(self, now: datetime | None = None) -> datetime:
-        """The bell new work must finish before: the live pod's lease end, or
-        the lease a pod opened now would get. This is what stops a render
-        being started two minutes before `--terminate-after` throws it away.
-        """
-        from ai_studio.runtime import hours
-        from ai_studio.runtime.session import Session
-
-        live = cast(Session | None, self._live_session(now))
-        if live is not None:
-            return datetime.fromisoformat(live.window_end)
-        return hours.window_end_for(now)
-
-    def ensure_pod(self, queue: object) -> object:
-        from ai_studio.pipeline.queue import JobQueue
-        from ai_studio.runtime import session as sess
-
-        session = sess.ensure_pod(cast(JobQueue, queue), name=self.name)
-        console.print(
-            f"[green]window[/green] pod={session.pod_id} {session.tier_label} "
-            f"${session.cost_per_hr:.2f}/hr until {session.window_end}"
-        )
-        return session
-
-    def wait_ready(self, session: object) -> float:
-        from ai_studio.runtime import session as sess
-
-        live = cast(sess.Session, session)
-        if not live.provisioned:
-            # A fresh pod: start deploy/pod_setup.sh on it (the step that used
-            # to be a person with a terminal), then wait for the node pack.
-            console.print(f"  provisioning {live.pod_id} (pod_setup.sh over ssh)")
-            sess.provision(live)
-            sess.mark_provisioned()
-        waited = sess.wait_ready(live)
-        console.print(f"  ComfyUI ready after {waited:.0f}s")
-        # A second, unrelated process on the same pod: deploy/pod_setup.sh
-        # starts both, but they have separate readiness signals (ComfyUI's
-        # node-pack probe vs a plain health check), so both are waited on
-        # before any job -- including an understanding one -- is claimed.
-        understanding_waited = sess.wait_understanding_ready(live)
-        console.print(f"  inference server ready after {understanding_waited:.0f}s")
-        return waited
-
-    def providers_for(self, session: object) -> dict[MediaKind, object]:
-        """Backends bound to this pod, built once per pod and then reused.
-
-        Rebuilding them per job would reopen an HTTP client for every render;
-        keying the cache on the pod id is what makes a *new* pod get new ones.
-        """
-        from ai_studio.runtime.session import Session
-
-        live = cast(Session, session)
-        if live.pod_id in self._providers:
-            return self._providers[live.pod_id]
-
-        workflow = Path("workflows") / (
-            "h3_fl2va_turbo.json" if live.low_vram else "h3_fl2va_turbo_fp8.json"
-        )
-        flux_workflow = Path("workflows") / "flux_dev.json"
-        for path in (workflow, flux_workflow):
-            if not path.is_file():
-                raise AIStudioError(f"missing workflow {path} (run from the repo root)")
-
-        built: dict[MediaKind, object] = {
-            MediaKind.VIDEO: get_provider(
-                "comfyui", workflow=workflow, base_url=live.comfy_url,
-                hourly_usd=live.cost_per_hr,
-            ),
-            MediaKind.IMAGE: get_provider(
-                "flux", workflow=flux_workflow, base_url=live.comfy_url,
-                hourly_usd=live.cost_per_hr,
-            ),
-            MediaKind.IMAGE_UNDERSTAND: get_provider(
-                "understand-image", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
-            ),
-            MediaKind.AUDIO_UNDERSTAND: get_provider(
-                "understand-audio", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
-            ),
-            MediaKind.VIDEO_UNDERSTAND: get_provider(
-                "understand-video", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
-            ),
-            MediaKind.CHAT: get_provider(
-                "chat", base_url=live.inference_url, hourly_usd=live.cost_per_hr,
-            ),
-        }
-        self._providers = {live.pod_id: built}
-        return built
-
-    def llm_for(self, session: object) -> object:
-        """The prompt rewriter on this pod: gpt-oss-20b through the inference
-        server, one client per pod like `providers_for`. Never a serverless
-        endpoint (decision 2026-08-27) -- see `pipeline.pod_llm`."""
-        from ai_studio.inference.client import InferenceClient
-        from ai_studio.pipeline.pod_llm import PodLlmClient
-        from ai_studio.runtime.session import Session
-
-        live = cast(Session, session)
-        if live.pod_id not in self._llms:
-            settings = get_settings()
-            self._llms = {
-                live.pod_id: PodLlmClient(
-                    InferenceClient(live.inference_url, timeout_s=settings.inference_timeout_s),
-                    job_timeout_s=settings.inference_job_timeout_s,
-                )
-            }
-        return self._llms[live.pod_id]
-
-    def touch_activity(self, media_kind: str) -> None:
-        from ai_studio.runtime import session as sess
-
-        sess.touch_activity(media_kind)
-
-    async def deliver(self, job: Any, asset: Path | None) -> str:
-        """Push the finished media into the group that asked for it, @-ing them.
-
-        The poster is built here rather than in `push.py` because it is an
-        ffmpeg call and `bots` has no business shelling out. If it fails, the
-        delivery degrades to text and a link rather than being abandoned — a
-        thumbnail is not worth losing a clip that cost GPU-minutes over.
-        """
-        from ai_studio.bots.line import push as line_push
-
-        status_url = f"{self.base_url}/q/{job.token}"
-
-        if job.result_text:
-            # An understanding job (/說圖 /說音 /說影): text, no media object
-            # and no poster -- `asset` is always None for these.
-            text = job.result_text
-            if job.media_kind is MediaKind.IMAGE_UNDERSTAND:
-                # 📏 moondream3 never writes Chinese. Translating it here
-                # would mean another model swap on the one card (~60 s per
-                # photo), so the note is the honest, free answer.
-                text = f"(moondream3 只能用英文描述)\n{text}"
-            messages = line_push.understood_messages(
-                result_text=text, status_url=status_url, quote_token=job.quote_token,
-            )
-            fallback = f"{text[:200]}\n{status_url}"
-        elif asset is None:
-            messages = line_push.failed_messages(
-                reason=job.error or "unknown", status_url=status_url,
-                prompt=job.text, quote_token=job.quote_token,
-            )
-            fallback = f"{job.text[:40]} 失敗了\n{status_url}"
-        else:
-            messages = []
-            try:
-                preview = media.poster(asset, self.files_dir / f"{asset.stem}_poster.jpg")
-            except AIStudioError as exc:
-                console.print(f"[yellow]no poster for {asset.name}:[/yellow] {exc}")
-            else:
-                messages = line_push.delivered_messages(
-                    media_url=f"{self.base_url}/files/{asset.name}",
-                    preview_url=f"{self.base_url}/files/{preview.name}",
-                    status_url=status_url,
-                    is_video=job.media_kind in (MediaKind.VIDEO, MediaKind.DRAMA),
-                    prompt=job.text,
-                    quote_token=job.quote_token,
-                    caption=_drama_caption(job),
-                )
-            fallback = f"{_drama_caption(job) or job.text[:40] + ' 完成了'}\n{status_url}"
-            if not messages:
-                messages = [
-                    line_push.text_message(fallback, quote_token=job.quote_token)
-                ]
-
-        return await line_push.deliver(
-            self.push,
-            to=job.group_id,
-            messages=messages,
-            fallback_text=fallback,
-            # LINE treats a repeat of this key as the same send, so a retry
-            # after a timeout cannot bill the group twice.
-            retry_key=job.token,
-            quote_token=job.quote_token,
-        )
-
-
-def _drama_caption(job: Any) -> str | None:
-    """「《title》logline」for a finished drama; None for every other kind,
-    so `delivered_messages` keeps its「<prompt> 完成了」default."""
-    if job.media_kind is not MediaKind.DRAMA:
-        return None
-    screenplay = (job.prompt or {}).get("screenplay") or {}
-    title = str(screenplay.get("title") or job.text[:20])
-    logline = str(screenplay.get("logline") or "")
-    return f"🎭《{title}》完成了\n{logline[:80]}".rstrip()
-
-
-@app.command("worker")
-def worker(
-    name: str = typer.Option("ai-studio-window", help="Pod name to open and reuse."),
-    poll_seconds: float = typer.Option(15.0, help="How often to poll ComfyUI."),
-    idle_seconds: float = typer.Option(10.0, help="Queue check interval while open."),
-    max_ticks: int | None = typer.Option(None, help="Stop after N passes. For testing."),
-) -> None:
-    """Serve the queue: open a pod when work arrives, at any hour.
-
-    This is what replaces the `open` and `drain` timers. It runs as a systemd
-    service with `Restart=always`; with nothing queued it sleeps, so nothing
-    fires when no one has asked for anything.
-
-    Closing is still someone else's job, on purpose: `session reap` every five
-    minutes, `session close` at the bell, and `--terminate-after` on the pod
-    itself. Three independent ways for a machine to stop billing, none of which
-    depends on this process still being alive.
-    """
-    _setup_logging("worker")
-    from ai_studio.pipeline.queue import JobQueue
-    from ai_studio.pipeline.worker import serve
-
-    settings = get_settings()
-    host = _RuntimeHost(name=name, poll_seconds=poll_seconds)
-    queue = JobQueue()
-    console.print(
-        f"worker up. opens a pod on demand at any hour, "
-        f"files -> {settings.files_dir}"
-    )
-    try:
-        report = asyncio.run(
-            serve(
-                queue,
-                cast(Any, host),
-                files_dir=settings.files_dir,
-                idle_poll_s=idle_seconds,
-                poll_interval_s=poll_seconds,
-                max_ticks=max_ticks,
-            )
-        )
-    except KeyboardInterrupt:
-        console.print("worker stopped. [dim]Any open pod is still billing: session close[/dim]")
-        raise typer.Exit(0) from None
-    finally:
-        queue.close()
-    console.print(report.summary())
+    sess.log_reap(decision)
 
 
 pod_app = typer.Typer(help="RunPod pod lifecycle. `down` terminates — stopping still bills.")

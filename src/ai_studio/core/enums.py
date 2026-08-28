@@ -62,62 +62,30 @@ class GenMode(str, Enum):
 
 
 class MediaKind(str, Enum):
-    """The job-dispatch discriminator: what a job's provider produces --
-    video, image -- or consumes and describes -- a photo, an audio clip, a
-    video clip. One shared FIFO queue and one `providers_for()` dict are
-    dispatched on this single field, so every kind gets exactly one provider,
-    prompt builder (generation kinds only), and asset shape. See
-    `core/understanding_spec.py` for why the *request/job/asset* types for
-    the three understanding kinds are still kept as siblings of
+    """What a model serves: the key a provider is registered under. A
+    provider produces video or image, or consumes and describes a photo, an
+    audio clip or a video clip, or answers a chat turn. Whoever submits work
+    keys its own job types onto these; this package knows only the models.
+    See `core/understanding_spec.py` for why the *request/job/asset* types
+    for the three understanding kinds are siblings of
     `core/provider_spec.py`/`core/image_provider_spec.py` rather than merged
-    into them -- a description has no width, height, fps, or duration."""
+    -- a description has no width, height, fps, or duration."""
 
     VIDEO = "video"
+    """MiniMax H3 through ComfyUI."""
     IMAGE = "image"
+    """Flux.1-dev through ComfyUI."""
     IMAGE_UNDERSTAND = "image_understand"
-    """/說圖: describe a photo. Backed by moondream3 (or Florence-2)."""
-
+    """Describe a photo: moondream3 on the inference server."""
     AUDIO_UNDERSTAND = "audio_understand"
-    """/說音: describe/transcribe an audio clip. Backed by
-    Qwen3-Omni-Captioner -- no text prompt accepted, audio capped at
-    `Settings.max_audio_understand_s`."""
-
+    """Describe an audio clip: Qwen2-Audio-7B-Instruct on the inference server."""
     VIDEO_UNDERSTAND = "video_understand"
-    """/說影: describe a video clip. Backed by Tarsier2."""
-
+    """Describe a video clip: Qwen2.5-VL-7B-Instruct on the frames, then
+    Qwen2-Audio on the extracted track -- two answers, see
+    `understanding_spec.VideoSections`."""
     CHAT = "chat"
-    """/himonkey: a plain-text LLM reply, backed by gpt-oss-20b. Deliberately
-    *not* in `_UNDERSTANDING_KINDS` -- `is_understanding` specifically means
-    "describes attached media", and chat describes nothing. It shares the
-    understanding side's GPU slot (see `pipeline.drain.make_room_for`), but
-    that is a VRAM-residency fact, not a semantic one, so call sites that
-    need it join with an explicit `or job_kind is MediaKind.CHAT` rather than
-    being folded into this property."""
-
-    DRAMA = "drama"
-    """/短劇: a ~60 s six-shot story with one recurring character. Not a
-    single provider call: `pipeline.drama.render_drama` drives the IMAGE
-    provider (character sheet, keyframes) and then the VIDEO provider (six
-    image-to-video clips) and concatenates. It sits on ComfyUI's side of the
-    GPU hand-off for the whole run -- see `is_generation`."""
-
-    @property
-    def is_understanding(self) -> bool:
-        return self in _UNDERSTANDING_KINDS
-
-    @property
-    def is_generation(self) -> bool:
-        """ComfyUI-served kinds: they share one checkpoint slot with each
-        other and are evicted as a block by `pipeline.drain.make_room_for`
-        when an understanding/chat job needs the card. DRAMA is here because
-        every GPU second it spends is a Flux or an H3 job."""
-        return self in _GENERATION_KINDS
-
-
-_UNDERSTANDING_KINDS = frozenset(
-    {MediaKind.IMAGE_UNDERSTAND, MediaKind.AUDIO_UNDERSTAND, MediaKind.VIDEO_UNDERSTAND}
-)
-_GENERATION_KINDS = frozenset({MediaKind.VIDEO, MediaKind.IMAGE, MediaKind.DRAMA})
+    """A plain-text reply: gpt-oss-20b on the inference server. The same
+    model is the prompt rewriter (`pipeline.pod_llm`)."""
 
 
 class JobState(str, Enum):

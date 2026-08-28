@@ -1,53 +1,76 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with
+code in this repository.
 
 ## What this is
 
-This repository is a monorepo for AI model development. This file covers the
-root package, **ai-studio**. A second, independent subsystem lives in
-[`twin/`](twin/CLAUDE.md) — a personal digital-twin agent framework, currently
-spec-only and unrelated to ai-studio's code or stack. Read `twin/CLAUDE.md`
-when working under `twin/`; nothing below applies there.
+This repository is a monorepo of three independent packages. This file covers
+the root package, **ai-studio**. The other two live in their own directories
+with their own `pyproject.toml`, `uv.lock`, tests and `CLAUDE.md`:
+
+| directory | what | read |
+|---|---|---|
+| `fun_workflow/` | the LINE group's playground built *on* ai-studio: webhook, request queue, GPU worker, `/短劇`, `/himonkey`, the status page users open. Installs ai-studio editable from `..`. | [`fun_workflow/CLAUDE.md`](fun_workflow/CLAUDE.md) |
+| `twin/` | a personal digital-twin agent framework, unrelated to ai-studio's code or stack | [`twin/CLAUDE.md`](twin/CLAUDE.md) |
+
+When working under either directory, read its `CLAUDE.md`; nothing below
+applies there except the platform traps.
 
 ### ai-studio
 
-AI video generation *and* understanding on RunPod: **MiniMax H3** clips and
-**Flux.1-dev** images generated through ComfyUI, plus **moondream3**,
-**Qwen2-Audio-7B-Instruct**, and **Qwen2.5-VL-7B-Instruct** describing a photo/audio/video clip
-back — all on a shared GPU pod, generation assembled with an editing grammar
-derived from
-[`Hao0321/video-autopilot-kit`](https://github.com/Hao0321/video-autopilot-kit)
-(MIT). A FastAPI service + LINE bot lets a group chat trigger any of them
-(`/影片` for video, `/圖片` for image, photo then `/圖影` / `/圖圖` for
-image-to-video / image-to-image, photo/audio/video then `/說圖` / `/說音` /
-`/說影` to describe it, `/himonkey` for plain-text chat via **gpt-oss-20b**,
-video then `/影音` to get its audio track as an M4A (ffmpeg on the host,
-no pod), `/短劇` for a one-minute six-shot drama with a stable lead
-(gpt-oss-20b screenplay → Flux keyframes → H3 image-to-video → ffmpeg;
-`docs/drama.md`), and「讓我看看」— quote-reply an earlier request to pull
-that one result back as a free reply when push quota is gone; one spelling
-each, no aliases) — see
-`docs/line-bot.md`.
+**GPU test deployment and measurement.** ai-studio owns the pod, the models,
+the money, and the numbers — and nothing about who asked for a render:
 
-Currently built: core model, format policy, H3 prompt builder, Flux prompt
-builder, ComfyUI client, the pod-side understanding-model server and its
-client, stub providers, pod lifecycle, CLI, FastAPI + LINE bot (ten triggers,
-queue, status pages, monthly budget guard), the **pod-side prompt
-rewriter**: every request is rewritten into its model's best input shape by
-gpt-oss-20b on the pod before it renders (`prompts/convert.py` H3 schema +
-community rules, `prompts/flux.py`, `prompts/understanding.py`,
-`prompts/chat.py`), batched by the worker's prepare phase so N clips pay one
-model swap; `_built_by` on the job says which path ran. No serverless
-endpoint is involved (retired 2026-08-27). And the `/短劇` pipeline
-(`pipeline/drama.py`: resumable per-artifact state, cost and lease-time
-gates, FaceDetailer on stills only). **Not built:** the editing
-grammar implementation, gate rules, planner, render. The grammar is
-specified in `docs/editing-grammar.md` and waiting. The three understanding
-models' licences: moondream3 unverified (`docs/model-moondream3.md`); the
-two Qwen models are Apache-2.0 per their cards (`docs/model-qwen2-audio.md`,
-`docs/model-qwen2.5-vl.md`). The models they replaced, and why, are in
-`docs/model-qwen3-omni-captioner.md` and `docs/model-tarsier2.md`.
+- **Pod lifecycle** on RunPod (`runtime/pod.py`, `runtime/session.py`): the
+  licence-safe capacity ladder, `ensure_pod` (the single path that ever
+  creates a pod), provisioning over SSH (`deploy/pod_setup.sh` +
+  `deploy/inference_server.py`), readiness, the idle reaper, close.
+- **Model access**: **MiniMax H3** clips and **Flux.1-dev** images through
+  ComfyUI (`comfy/`, `providers/comfyui.py`, `providers/flux.py`);
+  **moondream3**, **Qwen2-Audio-7B-Instruct** and **Qwen2.5-VL-7B-Instruct**
+  describing a photo/audio/video back, and **gpt-oss-20b** for chat and as
+  the **prompt rewriter**, all through the pod-side inference server
+  (`inference/client.py`, `providers/understanding.py`, `providers/chat.py`,
+  `pipeline/pod_llm.py`). Generation requests are rewritten into their
+  model's best input shape before they render (`prompts/convert.py` H3
+  schema + community rules, `prompts/flux.py`); `pipeline/residency.py` is
+  the one-card model hand-off, decided by each provider's `residency_group`.
+  **The pod server holds no question or reply wording**: an understanding
+  request carries its own `prompt` (and `audio_prompt` for video), and the
+  video modality answers with `sections` (`visual`, `audio`,
+  `has_audio_track`) for the caller to word — the questions and the
+  Chinese headings are `fun_workflow/prompts/understanding.py`.
+- **Money**: per-run and calendar-month ceilings (`runtime/budget.py`), the
+  daily pod-open cap (`runtime/opens.py`).
+- **Measurement**: every real render logs one `benchmark.records` line;
+  `ai-studio archive` folds them daily into `runs/benchmark/<YYYY-MM>.json`
+  (`benchmark/report.py`); `benchmark/rates.py` reads that and the open
+  session back out — the data behind any "what does this GPU cost and do"
+  display, including the GPU tier / $/hr rows on fun_workflow's status page.
+  `ai-studio bench` prints it.
+- An editing grammar derived from
+  [`Hao0321/video-autopilot-kit`](https://github.com/Hao0321/video-autopilot-kit)
+  (MIT), **specified in `docs/editing-grammar.md` and not implemented**
+  (`editing/format_policy.py` is the only built piece; `gates/`, `planner/`,
+  `render/` are shells).
+
+Not here, by design: anything that knows what a LINE group is. The queue,
+worker loop, webhook, `/短劇` pipeline and screenwriter, the `/himonkey`
+persona, the delivery index and the always-on host's installers are all in
+`fun_workflow/`. ai-studio exposes what they need as plain functions
+(`runtime.session.{ensure_pod,load_state,provision,wait_ready,
+wait_understanding_ready,close_if_idle,touch_activity,log_reap}`,
+`providers.registry.get_provider`, `pipeline.{pod_llm,residency}`,
+`benchmark.*`, `media`, `paths`, `storage.archive.run_archive`) and never
+imports back.
+
+The three understanding models' licences: moondream3 unverified
+(`docs/model-moondream3.md`); the two Qwen models are Apache-2.0 per their
+cards (`docs/model-qwen2-audio.md`, `docs/model-qwen2.5-vl.md`). The models
+they replaced, and why, are in `docs/model-qwen3-omni-captioner.md` and
+`docs/model-tarsier2.md`. No serverless endpoint is involved (retired
+2026-08-27; its client is deleted).
 
 ## Commands
 
@@ -66,11 +89,18 @@ uv run lint-imports                                                # the layerin
 uv run mypy
 
 uv run ai-studio doctor                                             # python, ffmpeg + filters, credentials, logs/archive
+uv run ai-studio bench                                              # this month's per-tier measurements + the open pod's rate
 uv run ai-studio archive --dry-run                                  # what tonight's 03:00 archive would tar and prune
+uv run ai-studio preflight --skip-suite                             # GPU-side checks: poster, every graph, placement ladder
 uv run ai-studio generate "a test clip" --provider stub             # offline end-to-end
+uv run ai-studio understand photo.jpg --kind image                  # offline understanding path
 uv run ai-studio format yt_longform_1080p                           # inspect the delivery transform
 uv run ai-studio pod capacity | up | status | down
+uv run ai-studio session open | close | status | reap --hold
 ```
+
+The request side is `funapp` (`cd fun_workflow && uv run funapp ...`); see
+its `CLAUDE.md`. Both packages' sweeps are what `verify` runs.
 
 Python is pinned to **3.13** (`.python-version`); runpod-flash and several deps
 refuse 3.14+.
@@ -81,10 +111,11 @@ refuse 3.14+.
 |---|---|
 | `runpod-session` skill | any pod work — spin up, generate, shut down, "the pod is stuck" |
 | `editing-rule` skill | touching `editing/`, `gates/`, or `docs/editing-grammar.md` |
-| `verify` skill | before a commit or handing work back |
+| `verify` skill | before a commit or handing work back — runs both packages |
 | `docs/observability.md` | tracing one request across services (`grep '"token":…' logs/*/*.jsonl`), what each record timestamps, the daily archive and its retention |
 | `cost-guard` agent | reviewing anything that can spend money |
 | `architecture-reviewer` agent | reviewing changes against the invariants below |
+| `fun_workflow/` work | any task under `fun_workflow/` — read `fun_workflow/CLAUDE.md` first |
 | `twin/` work | any task under `twin/` — read `twin/CLAUDE.md` first; it has its own skills/agents table |
 
 RunPod's official plugin is installed; route through the `runpod` skill rather
@@ -97,18 +128,46 @@ read `https://api.runpod.io/v2/openapi.json` — that is where the pod schema in
 Layers, enforced by `import-linter` contracts in `pyproject.toml`:
 
 ```
-L0 core → L1 config·prompts·editing → L2 media·storage
-   → L3 gates·providers·comfy·inference·planner·render → L4 pipeline → L5 runtime·cli → L6 api·bots
+L0 core → L1 config·benchmark → L2 media·storage → L3 llm·inference·comfy·providers
+   → L4 pipeline (residency, pod_llm) → L5 runtime → L6 cli
+prompts · editing · gates · planner · render sit beside the spine with their own contracts
 ```
 
-Four contracts, each protecting something specific:
+Five contracts, each protecting something specific:
 
+- the layered spine above
+- `prompts` ⊬ `llm`/`providers`/`comfy`/`pipeline`/`runtime`/`storage` —
+  prompt building does no I/O; it takes an `LlmClient` by protocol
 - `editing` ⊬ `providers`/`render`/`runtime`/`storage`/`media` — the editing
   rules must be readable and testable with zero infrastructure
 - `gates` ⊬ `providers`/`render`/`runtime` — **gates are pure functions of
   on-disk JSON**, so they run against fixtures with no GPU
 - `render` ⊬ `providers` — swapping the model cannot touch editing
-- nothing ⊬ `api`/`bots` — phase 2 stays a leaf
+
+There is no longer a "bots/api are leaves" contract: those packages left the
+tree. The equivalent rule now lives on the other side — only `fun_workflow.cli`
+may import `ai_studio.runtime`, and nothing imports `ai_studio.cli`
+(`fun_workflow/tests/unit/test_layering.py`; the checklist machinery both
+preflights share is the library `ai_studio.checks`).
+
+**What ai-studio deliberately does not know** (each was a leak found and
+removed on 2026-08-29; keep it that way):
+- what a *job* is — `MediaKind` names only what a model serves; a request
+  type with more kinds (fun's `JobKind`, with DRAMA) maps onto it via
+  `.model_kind`;
+- which kinds share a GPU slot — each provider declares
+  `residency_group` ("comfyui" | "inference"); `make_room_for(target,
+  providers)` evicts the other group and refuses an undeclared provider;
+- how long a quiet pod is worth — `touch_activity(label,
+  grace_minutes=)` records the caller's number, `close_if_idle` reads it
+  back (`DEFAULT_GRACE_MINUTES` otherwise); the per-kind table is fun's
+  `pipeline/idle.py`;
+- a delivery channel's limits — `media.poster(max_bytes=)`,
+  `media.extract_audio(max_bytes=)`, a provider's `max_output_chars` are
+  parameters; the LINE numbers are `fun_workflow/bots/line/limits.py`;
+- a feature's pod extras — `deploy/pod_setup.sh` runs whatever
+  `provision(extras=...)` shipped to `/workspace/pod_setup.d/`, best effort;
+- a caller's log vocabulary — `configure_logging(extra_fields=...)`.
 
 ### Invariants a linter cannot catch
 
@@ -116,6 +175,20 @@ Four contracts, each protecting something specific:
 what lets `editing.format_policy` and `planner` reason about the model's native
 size and clip-length quantum without importing a backend; they read the
 capabilities snapshot from `provider_manifest.json`. Do not move it.
+
+**`runtime` depends on nothing that takes requests.** `ensure_pod` counts the
+day's opens in its own ledger (`runs/.pod_opens.json`) and the reaper's
+"is work waiting" is a `hold` bool the caller passes. The queue is the
+request side's; the pod is ours.
+
+**`benchmark` sits below `storage` and never imports `runtime`.**
+`benchmark.rates.live_rate` takes a session-shaped object; the CLI and the
+request side pass `runtime.session.load_state()`. That is what keeps the
+report readable from the archive without a layer cycle.
+
+**Assets resolve from the checkout, not the cwd.** `ai_studio.paths` finds
+`workflows/` and `deploy/` from `__file__`; both packages are editable
+installs. Nothing should ever say "run from the repo root" again.
 
 **Absolute time exists in one file, produced by one function.** Authoring models
 carry `segment_id`; `CaptionCue` has no `start`/`end` at all. Time is computed
@@ -161,17 +234,17 @@ Every expensive mistake here is a quiet one.
   terminates a short host.
 - `AI_STUDIO_MAX_COST_USD` is checked before submission — a **per-run** ceiling.
 - `AI_STUDIO_MAX_MONTH_USD` (default $50) is a **calendar-month** ceiling,
-  enforced by `runtime.budget.MonthlyBudgetGuard` inside `runtime.session.
-  ensure_pod` — the single path that ever creates a pod, called by the worker
-  loop the moment anything is queued, at any hour (there are no business
-  hours since 2026-08-27; the reaper closes a quiet pod after 5/10 min) — necessary
-  because the capacity ladder's own worst case already exceeds $50/month on
-  GPU alone. It refuses the window outright if the month's remaining budget
-  can't cover even a minimal session at the ladder's priciest rung, or shrinks
-  the window if it can only partly cover the full one. There is no more
-  "skip if the queue is empty" gate on `session open` — nothing opens a pod
-  except a request, so that gate has nothing left to guard; see
-  `docs/schedule.md`.
+  enforced by `runtime.budget.MonthlyBudgetGuard` inside
+  `runtime.session.ensure_pod` — the single path that ever creates a pod,
+  called by `funapp worker` the moment anything is queued, at any hour (there
+  are no business hours since 2026-08-27; `funapp reap` closes a quiet pod
+  after 5/10 min). It refuses outright if the month's remaining budget can't
+  cover even a minimal session at the ladder's priciest rung, or shrinks the
+  window if it can only partly cover the full one. `session open` is the
+  manual path and goes through the same guard and the same daily cap.
+- **`AI_STUDIO_MAX_POD_OPENS_PER_DAY`** (15) is counted in
+  `runs/.pod_opens.json` — the backstop for a crash-looping worker, which
+  the monthly guard cannot see. See `docs/schedule.md`.
 - **Flux.1-dev's licence is non-commercial**, separate from its geographic
   restriction (there is none) — see `docs/model-flux.md`.
 
@@ -203,11 +276,11 @@ no change. A blurry result is a prompt problem — use `ai_studio.prompts.h3`.
 - **Always pass `encoding="utf-8"`** to `open()` and `subprocess`. The Windows
   default is cp950 and throws on any non-ASCII byte. Keep CLI output ASCII —
   em-dashes and bullets render as mojibake in the console.
-- **`ruff --fix` and `ruff format` cannot write in this sandbox**; run
-  `ruff check --no-cache` and apply fixes with the edit tools. `--no-cache` is
-  required.
+- **`ruff format` cannot write in this sandbox**; `ruff check --fix --no-cache`
+  can and is how import blocks get sorted. `--no-cache` is required.
 - The Bash working directory **persists between calls** — `cd` back to the repo
-  root or use absolute paths.
+  root or use absolute paths. `fun_workflow/` has its own venv: run its tools
+  as `uv run --project fun_workflow ...` from the root or `cd` in first.
 - `zoompan` and `minterpolate` are permanently banned
   (`editing/format_policy.BANNED_FILTERS`).
 
@@ -216,13 +289,14 @@ no change. A blurry result is a prompt problem — use `ai_studio.prompts.h3`.
 Grade every figure: 📏 measured by us, `[reported]` quoted from someone else,
 `[speculative]` inferred. **Most numbers in `docs/` are `[reported]`** — the H3
 performance figures have not been verified on our own hardware. Do not promote
-one to 📏 without measuring it.
+one to 📏 without measuring it. `runs/benchmark/<month>.json` (`ai-studio
+bench`) is where 📏 numbers come from now; a person reads it and promotes.
 
 ## Attribution boundary
 
 We inherit the upstream kit's **craft** — rhythm, transitions, captions, audio,
 gate discipline. We do **not** inherit its **evidence epistemics**
-(`proof_stage.py`, the risky-claim regex gate, "real screenshots only"). Those
-keep claims honest about *real footage*; our material is generative by design,
-so they are a category error here rather than a standard we are failing. See
-`docs/attribution.md`.
+(`proof_stage.py`, the risky-claim regex gate, "real screenshots only").
+Those keep claims honest about *real footage*; our material is generative by
+design, so they are a category error here rather than a standard we are failing.
+See `docs/attribution.md`.

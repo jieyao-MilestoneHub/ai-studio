@@ -102,6 +102,7 @@ class FluxComfyUIProvider:
     """Drives a ComfyUI instance running Flux.1-dev."""
 
     name = "flux"
+    residency_group = "comfyui"
 
     def __init__(
         self,
@@ -114,6 +115,7 @@ class FluxComfyUIProvider:
         steps: int = DEFAULT_STEPS,
         lora_strength: float = DEFAULT_LORA_STRENGTH,
         i2i_denoise: float = DEFAULT_I2I_DENOISE,
+        i2i_face_workflow: Path | str | None = None,
         **_: Any,
     ) -> None:
         settings = get_settings()
@@ -124,13 +126,19 @@ class FluxComfyUIProvider:
             workflow, "flux_dev", "flux_dev_i2i",
             required_bindings=IMAGE_REQUIRED_BINDINGS | {"source_image", "denoise"},
         )
-        # A third sibling for `/短劇` keyframes: the same i2i graph with an
-        # Impact-Pack FaceDetailer pass on the decoded image. Loaded lazily
-        # and only *used* when the pod actually registers the nodes -- see
-        # `supports_face_repair`. Absent file, absent nodes: plain i2i.
-        self._i2i_face_workflow = Workflow.sibling(
-            workflow, "flux_dev", "flux_dev_i2i_face",
-            required_bindings=IMAGE_REQUIRED_BINDINGS | {"source_image", "denoise"},
+        # An optional third graph for keyframe stills: the same i2i graph
+        # with an Impact-Pack FaceDetailer pass on the decoded image. The
+        # caller that wants face repair passes it in (this package ships no
+        # such graph itself). Only *used* when the pod actually registers the
+        # nodes -- see `supports_face_repair`. Absent graph, absent nodes:
+        # plain i2i.
+        self._i2i_face_workflow = (
+            Workflow.load(
+                i2i_face_workflow,
+                required_bindings=IMAGE_REQUIRED_BINDINGS | {"source_image", "denoise"},
+            )
+            if i2i_face_workflow is not None
+            else None
         )
         self._face_repair_available: bool | None = None
         self._i2i_denoise = i2i_denoise
@@ -214,7 +222,7 @@ class FluxComfyUIProvider:
         next to the base workflow *and* ComfyUI registers the Impact-Pack
         nodes it uses. Probed once per provider (per pod) and cached; a probe
         failure counts as "no" -- degrading to plain i2i is the honest
-        answer, not an error, and the drama records which one it got."""
+        answer, not an error, and the caller records which one it got."""
         if self._face_repair_available is None:
             if self._i2i_face_workflow is None:
                 self._face_repair_available = False

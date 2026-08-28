@@ -40,7 +40,7 @@ def test_a_record_lands_in_jsonl_with_timestamps_and_the_bound_context(tmp_path,
     log = logging.getLogger("ai_studio.test")
 
     with obs.bind(job_id=12, token="aB3dEf9x", kind="video"):
-        log.info("job done", extra={"seconds": 287.4, "cost_usd": 0.41, "outcome": "completed"})
+        log.info("job done", extra={"seconds": 287.4, "cost_usd": 0.41, "gpu_tier": "4090"})
 
     files = list((tmp_path / "worker").glob("*.jsonl"))
     assert len(files) == 1 and re.fullmatch(r"\d{4}-\d{2}-\d{2}\.jsonl", files[0].name)
@@ -48,7 +48,7 @@ def test_a_record_lands_in_jsonl_with_timestamps_and_the_bound_context(tmp_path,
     assert rec["msg"] == "job done" and rec["level"] == "INFO" and rec["service"] == "worker"
     assert rec["logger"] == "ai_studio.test"
     assert rec["job_id"] == 12 and rec["token"] == "aB3dEf9x" and rec["kind"] == "video"
-    assert rec["seconds"] == 287.4 and rec["cost_usd"] == 0.41 and rec["outcome"] == "completed"
+    assert rec["seconds"] == 287.4 and rec["cost_usd"] == 0.41 and rec["gpu_tier"] == "4090"
     # UTC with offset and milliseconds, plus the Taipei rendering of the same instant
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+00:00", rec["ts"])
     assert rec["local"].endswith("+08:00")
@@ -115,3 +115,22 @@ def test_the_pod_server_carries_the_same_human_format() -> None:
     m = re.search(r'^INFERENCE_LOG_FORMAT = "(.*)"$', server, re.M)
     assert m, "deploy/inference_server.py must define INFERENCE_LOG_FORMAT"
     assert m.group(1) == obs.HUMAN_FORMAT
+
+
+def test_a_caller_extends_the_allow_list_and_bound_context_always_lands(tmp_path: Path) -> None:
+    """The request side has vocabulary this package does not (a delivery
+    token, a push outcome). It passes those keys at configure time; what it
+    binds is emitted regardless."""
+    import json as _json
+
+    obs.configure_logging(
+        service="webhook", log_dir=tmp_path, level="INFO", stream=io.StringIO(),
+        extra_fields=("outcome",),
+    )
+    log = logging.getLogger("fun_workflow.test")
+    with obs.bind(token="aB3d"):
+        log.info("accepted", extra={"outcome": "accepted", "stray": "never"})
+    line = next(p for p in (tmp_path / "webhook").glob("*.jsonl")).read_text(encoding="utf-8").splitlines()[-1]
+    rec = _json.loads(line)
+    assert rec["token"] == "aB3d" and rec["outcome"] == "accepted"
+    assert "stray" not in rec

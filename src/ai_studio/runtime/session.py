@@ -30,6 +30,7 @@ import json
 import logging
 import subprocess
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,12 +38,13 @@ from typing import Any
 
 import httpx
 
+from ai_studio import paths
 from ai_studio.config.settings import get_settings
 from ai_studio.core.errors import CostCeilingExceeded, PodError
 from ai_studio.core.observability import utc_now_iso
-from ai_studio.pipeline.queue import JobQueue
 from ai_studio.runtime import hours
 from ai_studio.runtime.budget import MonthlyBudgetGuard, SpendLedger
+from ai_studio.runtime.opens import PodOpenLedger
 
 TEMPLATE_COMFYUI_STANDARD = "cw3nka7d08"
 """Official RunPod "ComfyUI" template, for standard GPUs (RTX 4090, L40, A100,
@@ -189,7 +191,7 @@ STATE_FILE = Path("runs/.session.json")
 SESSIONS_LOG_DIR = Path("logs/sessions")
 """Where every closed session's state lands (pod, tier, quantisation, opened/
 closed, cost, why it closed). `.session.json` is unlinked at close, so before
-2026-08-28 nothing but the pod id in `pod_opens` and the cost in the ledger
+2026-08-28 nothing but the pod id in the opens ledger and the cost in the spend ledger
 survived a session. Monkeypatched in tests like STATE_FILE."""
 PODS_LOG_DIR = Path("logs/pods")
 """Where a pod's own logs (setup.log, inference.log, comfy.log tail, dl-logs)
@@ -219,9 +221,12 @@ class Session:
     provisioned: bool = False
     """Whether `deploy/pod_setup.sh` has been started on this pod. Set by
     `mark_provisioned`; the worker provisions once and then only waits."""
-    last_media_kind: str = ""
-    """What the last render was ("image"/"video"), so the reaper can give a
-    video pod -- whose model takes 90 s to reload -- a longer grace."""
+    last_activity_label: str = ""
+    """What the caller said it just did (free text, for the reaper log)."""
+    grace_minutes: float | None = None
+    """How long the caller wants this pod kept after that activity; None
+    means `DEFAULT_GRACE_MINUTES`. The caller knows what it rendered and what
+    the next request is likely to be; this side only keeps the clock."""
 
     @property
     def comfy_url(self) -> str:
@@ -297,8 +302,13 @@ def open_session(
     volume_gb: int = 80,
     candidates: tuple[Tier, ...] = CANDIDATES,
     network_volume_id: str | None = None,
+    opens: PodOpenLedger | None = None,
 ) -> Session:
     """Deploy a pod for this window, or raise if nothing is available.
+
+    Every pod created here is counted in the daily open ledger (`opens`),
+    manual `session open` included — a pod that exists but was never counted
+    is one the daily cap cannot see.
 
     With `network_volume_id` the pod mounts that volume at /workspace instead
     of a fresh `volume_gb` disk; pair it with `candidates_for_volume(...)`,
@@ -369,6 +379,9 @@ def open_session(
                 low_vram=tier.low_vram,
                 quantisation=tier.quantisation,
             )
+            # Counted before anything else can go wrong: a pod that exists but
+            # was never counted is one the daily cap cannot see.
+            (opens or PodOpenLedger()).record(pod_id)
             save_state(session)
             return session
 
@@ -386,12 +399,12 @@ def _seconds_left(window_end: datetime) -> float:
 
 
 def ensure_pod(
-    queue: JobQueue,
     *,
     name: str = "ai-studio-window",
     candidates: tuple[Tier, ...] | None = None,
     now: datetime | None = None,
     max_opens_per_day: int | None = None,
+    opens: PodOpenLedger | None = None,
 ) -> Session:
     """Return a live window: the open one if there is one, else open one if
     business hours allow it.
@@ -436,7 +449,8 @@ def ensure_pod(
     if candidates is None:
         candidates, network_volume_id = placement()
     limit = settings.max_pod_opens_per_day if max_opens_per_day is None else max_opens_per_day
-    opened = queue.opens_today(since=hours.day_start(now).timestamp())
+    opens = opens or PodOpenLedger()
+    opened = opens.count_since(hours.day_start(now).timestamp())
     if limit and opened >= limit:
         _log.warning("refused to open pod", extra={"reason": "daily opens cap", "opened_today": opened, "cap": limit})
         raise CostCeilingExceeded(
@@ -462,11 +476,9 @@ def ensure_pod(
                               "tier": candidates[0].label if candidates else None},
     )
     session = open_session(
-        window_end, name=name, candidates=candidates, network_volume_id=network_volume_id
+        window_end, name=name, candidates=candidates, network_volume_id=network_volume_id,
+        opens=opens,
     )
-    # Recorded before the caller does anything else with the session: a pod
-    # that exists but was never counted is one the daily cap cannot see.
-    queue.record_pod_open(session.pod_id)
     _log.info(
         "pod opened", extra={"pod_id": session.pod_id, "tier": session.tier_label,
                              "usd_per_hr": session.cost_per_hr, "window_end": session.window_end,
@@ -548,7 +560,7 @@ def wait_understanding_ready(
 
     A different readiness signal from `wait_ready`'s, deliberately: that
     server has no node-pack concept and does not need one loaded to be
-    "ready" -- moondream3/Qwen3-Omni-Captioner/Tarsier2 load lazily per
+    "ready" -- the understanding and chat models load lazily per
     request, not at startup. A plain `/healthz` is the whole check, so this
     is expected to resolve well inside the shorter default timeout above.
     """
@@ -700,40 +712,12 @@ def pull_pod_logs(session: Session, dest: Path, *, timeout_s: float = POD_LOG_PU
     return written
 
 
-IMAGE_IDLE_MINUTES = 5
-VIDEO_IDLE_MINUTES = 10
-UNDERSTANDING_IDLE_MINUTES = 5
-CHAT_IDLE_MINUTES = 15
-DRAMA_IDLE_MINUTES = 10
-"""How long a quiet pod is kept after its last render, by what it rendered.
-
-Numbers differ because the reloads cost differently: Flux comes back into
-VRAM in 📏 ~15 s, H3's 32B text encoder in 📏 60-90 s. `UNDERSTANDING_IDLE_MINUTES`
-is `[speculative]` -- nothing has measured a lazy-load cost for moondream3,
-Qwen3-Omni-Captioner, or Tarsier2 on this hardware yet, and the three are not
-even the same size, so one shared number is a starting point, not a
-considered answer. A pod is worth keeping only while the chance of the next
-request within the grace, times the reload it would save, beats the idle
-minutes -- and in a group chat the next message usually comes within five
-minutes or not for hours. The reaper log says how often a pod was closed and
-reopened within a few minutes, which is the number that tunes these.
-
-`CHAT_IDLE_MINUTES` is deliberately the longest grace, and for a different
-reason than the others: a `/himonkey` conversation's cadence is many short
-exchanges with ordinary pauses in between, and every reopen has a real fixed
-floor (`runtime.budget.MIN_SESSION_MINUTES` worth of billing) *and* consumes
-one of the day's `max_pod_opens_per_day` opens -- a ceiling that, once hit,
-blocks new video and image sessions too. A grace long enough to survive a
-conversation's ordinary pauses is both cheaper and safer for the rest of the
-service than one short enough to reopen repeatedly. `[speculative]`, same as
-`UNDERSTANDING_IDLE_MINUTES` -- retune from the reaper log once real chat
-traffic exists, not from this guess.
-
-`DRAMA_IDLE_MINUTES` equals the video grace because a drama's last GPU job is
-an H3 clip. What makes it safe for a 15-30 minute render is not the number:
-`pipeline.drama` calls `touch_activity("drama")` after *every* fetched still
-or clip, so the grace only ever measures a real gap, never a long render.
-"""
+DEFAULT_GRACE_MINUTES = 10.0
+"""How long a quiet pod is kept after its last activity when the caller
+recorded no grace of its own (`touch_activity(grace_minutes=...)`). Ten
+minutes covers H3's text-encoder reload (📏 60-90 s) many times over; the
+side that knows what it just rendered, and what the next request is likely
+to be, passes a better number."""
 
 
 class ReapDecision(str):
@@ -759,18 +743,15 @@ class ReapDecision(str):
 
 def close_if_idle(
     *,
-    image_idle_minutes: int = IMAGE_IDLE_MINUTES,
-    video_idle_minutes: int = VIDEO_IDLE_MINUTES,
-    understanding_idle_minutes: int = UNDERSTANDING_IDLE_MINUTES,
-    chat_idle_minutes: int = CHAT_IDLE_MINUTES,
-    drama_idle_minutes: int = DRAMA_IDLE_MINUTES,
+    default_grace_minutes: float = DEFAULT_GRACE_MINUTES,
     hold: bool = False,
     name: str = "ai-studio-window",
 ) -> ReapDecision:
-    """Close the pod when it has gone quiet; the grace depends on what it
-    last rendered. `hold=True` (work is waiting in the queue) never closes:
-    a pod with a job about to land on it is not idle, whatever the clock says
-    -- closing it there is the one move that costs a cold open *and* the wait.
+    """Close the pod when it has gone quiet. The grace is whatever the last
+    `touch_activity` recorded, else `default_grace_minutes`. `hold=True`
+    (the caller has work waiting) never closes: a pod with a job about to
+    land on it is not idle, whatever the clock says -- closing it there is
+    the one move that costs a cold open *and* the wait.
     """
     session = load_state()
     if session is None:
@@ -785,16 +766,8 @@ def close_if_idle(
     state = _read_state_raw()
     last = state.get("last_activity_at") or session.opened_at
     idle = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() / 60
-    overrides = {
-        "image": image_idle_minutes,
-        "video": video_idle_minutes,
-        "image_understand": understanding_idle_minutes,
-        "audio_understand": understanding_idle_minutes,
-        "video_understand": understanding_idle_minutes,
-        "chat": chat_idle_minutes,
-        "drama": drama_idle_minutes,
-    }
-    grace = overrides.get(str(state.get("last_media_kind") or ""), video_idle_minutes)
+    recorded = state.get("grace_minutes")
+    grace = float(recorded) if isinstance(recorded, int | float) and recorded > 0 else default_grace_minutes
     if hold:
         return ReapDecision(
             f"held: work pending ({idle:.0f}min idle, spent ${session.spent_usd():.2f})",
@@ -802,7 +775,7 @@ def close_if_idle(
         )
     if idle >= grace:
         return ReapDecision(
-            f"idle {idle:.0f}min >= {grace}; {close_session(name=name, reason='idle')}",
+            f"idle {idle:.0f}min >= {grace:g}; {close_session(name=name, reason='idle')}",
             action="closed", idle_min=idle, grace=grace, spent_usd=session.spent_usd(), pod_id=session.pod_id,
         )
     return ReapDecision(
@@ -814,8 +787,8 @@ def close_if_idle(
 # ------------------------------------------------------------------ provision
 
 SSH_KEY = Path.home() / ".runpod" / "ssh" / "runpodctl-ssh-key"
-SETUP_SCRIPT = Path("deploy/pod_setup.sh")
-INFERENCE_SERVER_SCRIPT = Path("deploy/inference_server.py")
+SETUP_SCRIPT = paths.deploy_script("pod_setup.sh")
+INFERENCE_SERVER_SCRIPT = paths.deploy_script("inference_server.py")
 PROVISION_WAIT_S = 600.0
 PROVISION_RETRY_S = 15.0
 
@@ -835,7 +808,7 @@ def _ssh_deposit(host: str, port: str, body: str, *, remote_path: str) -> None:
     argv = [
         "ssh", "-i", str(SSH_KEY), "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", "-p", port, f"root@{host}",
-        f"cat > {remote_path}",
+        f"mkdir -p {remote_path.rsplit('/', 1)[0]} && cat > {remote_path}",
     ]
     deadline = time.monotonic() + PROVISION_WAIT_S
     last = ""
@@ -858,8 +831,14 @@ def provision(
     *,
     script: Path = SETUP_SCRIPT,
     inference_script: Path = INFERENCE_SERVER_SCRIPT,
+    extras: Sequence[Path] = (),
 ) -> None:
     """Start `deploy/pod_setup.sh` on the pod, detached, over SSH.
+
+    `extras` are the caller's own `*.sh` files, deposited to
+    `/workspace/pod_setup.d/` first and run by the setup script's last step,
+    best effort -- what a caller wants on the pod that this package has no
+    business knowing about.
 
     This is the step that used to be a person with a terminal. The worker
     opens a pod and then has to wait for it; nobody else is there to run the
@@ -887,12 +866,19 @@ def provision(
         host, port, inference_script.read_text(encoding="utf-8"),
         remote_path="/workspace/inference_server.py",
     )
+    for extra in extras:
+        if extra.suffix != ".sh" or "/" in extra.name or not extra.is_file():
+            raise PodError(f"pod_setup.d extension must be an existing *.sh file, got {extra}")
+        _ssh_deposit(
+            host, port, extra.read_text(encoding="utf-8"),
+            remote_path=f"/workspace/pod_setup.d/{extra.name}",
+        )
 
     # The HF token rides as the first stdin line, ahead of the script body,
     # and is read into the environment `nohup` inherits: it never lands on
     # the pod's disk (the script file is the *rest* of stdin) nor in argv
     # (visible in `ps` on both ends). Empty line when unset -- pod_setup.sh
-    # itself decides whether that is fatal (it is, while Tarsier2 is gated
+    # itself decides whether that is fatal (it was, while Tarsier2 was gated
     # and not yet cached).
     token = get_settings().hf_token
     body = (token.get_secret_value() if token else "") + "\n" + script.read_text(encoding="utf-8")
@@ -947,14 +933,17 @@ def load_state() -> Session | None:
     return Session(**{k: v for k, v in raw.items() if k in known})
 
 
-def touch_activity(media_kind: str | None = None) -> None:
-    """Record that work just happened, so the idle timer restarts, and what
-    kind it was, so the reaper can pick the right grace."""
+def touch_activity(label: str | None = None, *, grace_minutes: float | None = None) -> None:
+    """Record that work just happened, so the idle timer restarts; optionally
+    what it was (for the log) and how long the pod is worth keeping after it
+    (the reaper's grace, until the next touch)."""
     raw = _read_state_raw()
     if raw:
         raw["last_activity_at"] = datetime.now(timezone.utc).isoformat()
-        if media_kind:
-            raw["last_media_kind"] = media_kind
+        if label:
+            raw["last_activity_label"] = label
+        if grace_minutes is not None:
+            raw["grace_minutes"] = float(grace_minutes)
         STATE_FILE.write_text(json.dumps(raw, indent=2), encoding="utf-8")
 
 
@@ -981,3 +970,33 @@ def _read_state_raw() -> dict[str, Any]:
         # shape we do not recognise risks reporting "nothing is billing".
         raise PodError(f"{STATE_FILE} is not a JSON object: {type(data).__name__}")
     return data
+
+
+REAP_LAST = Path("runs/.reap_last.json")
+
+def log_reap(decision: Any) -> None:
+    """DEBUG every minute (JSONL only), INFO only when the action changes.
+
+    The reaper fires every minute and used to be ~65 % of the host's journald
+    volume saying `held: work pending` (📏 2026-08-28); the transitions are
+    the information, the repeats are not."""
+    log = logging.getLogger("ai_studio.reap")
+    fields = {
+        "action": getattr(decision, "action", None), "idle_min": round(getattr(decision, "idle_min", 0.0), 1),
+        "grace": getattr(decision, "grace", None), "spent": round(getattr(decision, "spent_usd", 0.0), 2),
+        "pod_id": getattr(decision, "pod_id", None),
+    }
+    previous = None
+    try:
+        previous = json.loads(REAP_LAST.read_text(encoding="utf-8")).get("action")
+    except Exception:
+        previous = None
+    if fields["action"] != previous:
+        log.info("reap: %s", decision, extra=fields)
+        try:
+            REAP_LAST.parent.mkdir(parents=True, exist_ok=True)
+            REAP_LAST.write_text(json.dumps({"action": fields["action"]}), encoding="utf-8")
+        except OSError:
+            pass
+    else:
+        log.debug("reap: %s", decision, extra=fields)
