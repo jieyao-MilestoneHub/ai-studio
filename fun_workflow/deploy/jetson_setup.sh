@@ -33,7 +33,7 @@ DOMAIN="${1:?usage: jetson_setup.sh <static-domain>}"
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo"; exit 1; }
 APP_USER="${SUDO_USER:?run with sudo from your own account, not as root directly}"
 APP_HOME="$(getent passwd "$APP_USER" | cut -d: -f6)"
-APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"  # the repo root: this script lives in fun_workflow/deploy/
 BIN="$APP_HOME/.local/bin"
 UNIT_PATH="$BIN:/usr/local/bin:/usr/bin:/bin"
 
