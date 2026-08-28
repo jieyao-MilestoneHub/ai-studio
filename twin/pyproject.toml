@@ -45,6 +45,7 @@ dependencies = [
     # SPEC.md §8: adapters are personal data ("可反推行為特徵") and MUST be
     # stored encrypted — see core/encryption.py.
     "cryptography>=44.0",
+    "modal>=1.5.4",
 ]
 
 [project.scripts]

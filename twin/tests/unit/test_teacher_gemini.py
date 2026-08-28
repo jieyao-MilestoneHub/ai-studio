@@ -93,14 +93,21 @@ class TestGeminiTeacherFromSettings:
     kwargs — every field here is `alias=`-only (mirrors ai_studio.config.settings),
     so the alias (the env var name) is what the constructor actually accepts."""
 
-    def test_requires_an_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_requires_an_api_key(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # A real twin/.env now exists for local development (both fields set) —
+        # pydantic-settings reads env_file as a source independent of
+        # os.environ, so delenv alone doesn't simulate "unset" once that file
+        # is present. chdir to an empty dir so env_file=".env" resolves to
+        # nothing, isolating this test from local developer/CI environment.
+        monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("TWIN_GEMINI_API_KEY", raising=False)
         monkeypatch.setenv("TWIN_GEMINI_MODEL", "gemini-flash-test")
         settings = get_settings(refresh=True)
         with pytest.raises(TeacherError, match="TWIN_GEMINI_API_KEY"):
             GeminiTeacher.from_settings(settings)
 
-    def test_requires_a_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_requires_a_model(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("TWIN_GEMINI_API_KEY", "k")
         monkeypatch.delenv("TWIN_GEMINI_MODEL", raising=False)
         settings = get_settings(refresh=True)
