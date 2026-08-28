@@ -365,7 +365,7 @@ Collecting the ids needs no extra tooling. Every accepted request logs
 authorise someone:
 
 ```
-2026-08-25 11:03:22 INFO    ai_studio.webhook | callback ok: wrong_user (U7d3...)
+2026-08-25 11:03:22 INFO    fun_workflow.webhook | callback ok: wrong_user (U7d3...)
 ```
 
 Two deliberate limits on the gate:
@@ -381,8 +381,8 @@ the only notice a change produces; it is logged at WARNING, with a second line
 if no user allowlist is set:
 
 ```
-WARNING ai_studio.webhook | member(s) JOINED the group: U7d3...
-WARNING ai_studio.webhook |   no LINE_ALLOWED_USER_IDS set: they can trigger a render now
+WARNING fun_workflow.webhook | member(s) JOINED the group: U7d3...
+WARNING fun_workflow.webhook |   no LINE_ALLOWED_USER_IDS set: they can trigger a render now
 ```
 
 Both lines are asserted in `tests/unit/test_api.py`: two warnings with an open

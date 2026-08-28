@@ -1,7 +1,7 @@
 """Logging that can follow one request through the whole pipeline.
 
-Two sinks, one record. Every process (`ai-studio worker`, `line serve`, the
-timers) calls `configure_logging()` once at its composition root and gets:
+Two sinks, one record. Every process (a worker, a web service, the timers)
+calls `configure_logging()` once at its composition root and gets:
 
 - a human line on stderr (journald): local time with offset and milliseconds,
   level, logger, a `[job=12 token=aB3d kind=video]` context block, message;
@@ -10,9 +10,11 @@ timers) calls `configure_logging()` once at its composition root and gets:
   daily archive compresses and what `grep '"token":"..."'` walks.
 
 Correlation is a `contextvars.ContextVar`, not a parameter: `bind(job_id=...,
-token=..., kind=...)` around `worker._run_one` is enough for every log line
-inside -- drama stages, the pod LLM, the model swap, the push -- to carry the
-job, because they run in the same task. Nothing changes its signature.
+kind=...)` around one unit of work is enough for every log line inside --
+the pod LLM, the model swap, a provider's poll -- to carry it, because they
+run in the same task. Nothing changes its signature. Whatever a caller
+binds is emitted as bound; the allow-list below governs only stray `extra=`
+keys, and a caller with its own vocabulary extends it at configure time.
 
 Why this lives in `core`: it is the only package every layer may import
 (`pyproject.toml` layers contract), which is the point -- `providers`,
@@ -25,7 +27,7 @@ own errors (a full disk disables it until the next day; stderr still works),
 and unknown `extra` keys are dropped rather than breaking a JSON line.
 
 Before 2026-08-28 the worker configured no logging at all, so every
-`_log.info` -- job durations, `_built_by`, the drama's six clips -- went to
+`_log.info` -- job durations, how each prompt was built -- went to
 `logging.lastResort` and was dropped (📏 `journalctl -u ai-studio-worker |
 grep -c "done in"` -> 0 after a day of renders).
 """
@@ -36,7 +38,7 @@ import contextlib
 import json
 import logging
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,28 +46,30 @@ from typing import IO, Any
 from zoneinfo import ZoneInfo
 
 LOCAL_TZ = ZoneInfo("Asia/Taipei")
+"""The zone operators read and the timers are written in (docs/schedule.md).
+JSONL carries both `ts` (UTC) and `local`; file names use the local day."""
 
 HOT_SUBDIRS = ("sessions", "pods")
 """Subdirectories of the log dir that hold per-session/per-pod records
 rather than daily JSONL: never archived by day, never scanned for render
 records."""
-"""The zone operators read and the timers are written in (docs/schedule.md).
-JSONL carries both `ts` (UTC) and `local`; file names use the local day."""
 
 HUMAN_FORMAT = "%(asctime)s %(levelname)-7s %(name)s [%(ctx)s] %(message)s"
 """The stderr/journald line. `deploy/inference_server.py` carries a
-byte-identical copy (it cannot import this package); a test pins the two."""
+byte-identical copy (it is standalone on the pod and cannot import this
+package); a test pins the two -- the format is plumbing, not wording."""
 
 EXTRA_FIELDS: tuple[str, ...] = (
-    "job_id", "token", "kind", "pod_id", "stage", "seconds", "cost_usd", "built_by",
-    "model", "user", "message_id", "gpu_tier", "reason", "outcome", "deferred",
-    "resident", "evicted", "attempts", "polls", "sha256", "load_s", "infer_s", "vram_gb",
-    "minutes", "tier", "usd_per_hr", "window_end", "datacenter", "idle_min", "grace",
-    "action", "spent", "cap", "opened_today", "month_spent", "quota_exhausted", "to",
-    "messages", "modality", "pod_job", "members", "bytes_before", "bytes_after", "frames",
+    "job_id", "kind", "pod_id", "stage", "seconds", "cost_usd", "model", "gpu_tier",
+    "reason", "evicted", "polls", "sha256", "vram_gb", "minutes", "tier", "usd_per_hr",
+    "window_end", "datacenter", "idle_min", "grace", "action", "spent", "cap",
+    "opened_today", "messages", "modality", "pod_job", "members", "bytes_before",
+    "bytes_after", "frames",
 )
-"""The keys a record may carry into JSONL, from `bind()` or `extra=`. An
-allow-list so a stray `extra` can never produce a line that is not JSON."""
+"""The `extra=` keys this package's own records may carry into JSONL. An
+allow-list so a stray `extra` can never produce a line that is not JSON; a
+caller with more vocabulary passes `configure_logging(extra_fields=...)`.
+Bound context (`bind()`) is always emitted."""
 
 _HANDLER_TAG = "_ai_studio_observability"
 
@@ -133,8 +137,8 @@ class ContextFilter(logging.Filter):
         for key, value in ctx.items():
             if not hasattr(record, key):
                 setattr(record, key, value)
-        parts = [f"{k}={getattr(record, k)}" for k in ("job_id", "token", "kind", "pod_id")
-                 if getattr(record, k, None) is not None]
+        record.bound_keys = tuple(ctx)
+        parts = [f"{k}={v}" for k, v in ctx.items() if v is not None]
         record.ctx = " ".join(parts) if parts else "-"
         return True
 
@@ -148,9 +152,10 @@ class HumanFormatter(logging.Formatter):
 
 
 class JsonlFormatter(logging.Formatter):
-    def __init__(self, service: str) -> None:
+    def __init__(self, service: str, fields: tuple[str, ...] = EXTRA_FIELDS) -> None:
         super().__init__()
         self.service = service
+        self.fields = fields
 
     def format(self, record: logging.LogRecord) -> str:
         when = datetime.fromtimestamp(record.created, timezone.utc)
@@ -162,7 +167,8 @@ class JsonlFormatter(logging.Formatter):
             "service": self.service,
             "msg": record.getMessage(),
         }
-        for key in EXTRA_FIELDS:
+        bound: tuple[str, ...] = getattr(record, "bound_keys", ())
+        for key in (*bound, *self.fields):
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value
@@ -274,12 +280,15 @@ def configure_logging(
     log_dir: Path | str | None,
     level: int | str = "INFO",
     stream: IO[str] | None = None,
+    extra_fields: Iterable[str] = (),
 ) -> None:
     """Install the two sinks on the root logger. Idempotent: a second call
     replaces only the handlers this function installed (they are tagged), so
     pytest's `caplog` handler and anything else stays.
 
-    `log_dir=None` means stderr only (tests, one-off CLI use)."""
+    `log_dir=None` means stderr only (tests, one-off CLI use). `extra_fields`
+    extends the JSONL allow-list with the caller's own `extra=` keys."""
+    fields = (*EXTRA_FIELDS, *(k for k in extra_fields if k not in EXTRA_FIELDS))
     root = logging.getLogger()
     for existing in list(root.handlers):
         if getattr(existing, _HANDLER_TAG, False):
@@ -292,8 +301,8 @@ def configure_logging(
     # pytest's caplog (its own root handler) -- and any other sink someone
     # attaches -- would get records with no job/token on them. Python only
     # runs a logger's filters for records created on that logger, so the
-    # filter is installed on the root and every "ai_studio.*" logger created
-    # so far; `_ctx_logger_class` covers loggers created later.
+    # filter is installed on the root and every logger created so far,
+    # whatever its name; `_ContextLogger` covers loggers created later.
     ctx_filter = _ContextFilterSingleton.get()
     _install_context_filter(ctx_filter)
 
@@ -305,13 +314,13 @@ def configure_logging(
 
     if log_dir is not None:
         jsonl = DailyJsonlHandler(Path(log_dir), service)
-        jsonl.setFormatter(JsonlFormatter(service))
+        jsonl.setFormatter(JsonlFormatter(service, fields))
         jsonl.addFilter(ctx_filter)
         setattr(jsonl, _HANDLER_TAG, True)
         root.addHandler(jsonl)
 
     root.setLevel(logging.getLevelName(level) if isinstance(level, str) else level)
-    # Chatter that adds nothing to a trace: every callback is already one
-    # line under ai_studio.webhook, and every poll is one under its provider.
+    # Chatter that adds nothing to a trace: every request is already one line
+    # under its own logger, and every poll is one under its provider.
     for noisy in ("uvicorn.access", "httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)

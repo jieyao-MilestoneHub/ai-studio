@@ -54,7 +54,7 @@ caption; the media object goes first and unquoted. A token LINE no longer
 honours is not a delivery failure: the caption just arrives unquoted.
 """
 
-_log = logging.getLogger("ai_studio.push")
+_log = logging.getLogger("fun_workflow.push")
 
 
 class LinePushError(Exception):

@@ -29,7 +29,7 @@ from fun_workflow.bots.line.verify import verify
 from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline.queue import Job, JobQueue, JobState
 
-_log = logging.getLogger("ai_studio.webhook")
+_log = logging.getLogger("fun_workflow.webhook")
 
 DEFAULT_TRIGGER = "/影片"
 """Text-to-video. Messages must start with this — exactly this, no bare

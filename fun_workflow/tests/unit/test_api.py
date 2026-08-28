@@ -233,7 +233,7 @@ def test_a_rejected_signature_is_logged_at_warning(client, caplog) -> None:
     secret has to be visible in `journalctl -u ai-studio` without a debugger.
     """
     c, _, _ = client
-    with caplog.at_level(logging.WARNING, logger="ai_studio.webhook"):
+    with caplog.at_level(logging.WARNING, logger="fun_workflow.webhook"):
         assert c.post(
             "/callback",
             content=b'{"events":[]}',
@@ -246,7 +246,7 @@ def test_an_accepted_event_logs_its_token(client, caplog) -> None:
     """The status-page token is the only handle on a request, so the log line
     has to carry it: without it a support question cannot be traced to a job."""
     c, _, replier = client
-    with caplog.at_level(logging.INFO, logger="ai_studio.webhook"):
+    with caplog.at_level(logging.INFO, logger="fun_workflow.webhook"):
         _post(c, [_event("/影片 一隻貓")])
 
     # The reply carries the status URL, so the token it ends with is the same
@@ -262,7 +262,7 @@ def test_an_accepted_event_logs_its_token(client, caplog) -> None:
 def test_the_verify_ping_is_logged_as_such(client, caplog) -> None:
     """`events: []` is the console's Verify button, not an error."""
     c, _, _ = client
-    with caplog.at_level(logging.INFO, logger="ai_studio.webhook"):
+    with caplog.at_level(logging.INFO, logger="fun_workflow.webhook"):
         _post(c, [])
     assert any("no events" in r.getMessage() for r in caplog.records)
 
@@ -371,7 +371,7 @@ def test_an_open_allowlist_warns_twice_when_someone_joins(
     """With no user allowlist, the newcomer can trigger a render immediately.
     That is the whole reason the second line exists."""
     app, queue = _app_with_users(tmp_path, ())
-    with TestClient(app) as c, caplog.at_level(logging.WARNING, logger="ai_studio.webhook"):
+    with TestClient(app) as c, caplog.at_level(logging.WARNING, logger="fun_workflow.webhook"):
         assert _post(c, [_member_joined()]).status_code == 200
 
     messages = [r.getMessage() for r in caplog.records]
@@ -384,7 +384,7 @@ def test_a_closed_allowlist_warns_once(tmp_path: Path, caplog) -> None:
     """The join is still worth a line — the roster changed — but the newcomer
     cannot spend anything, so the second line would be false."""
     app, queue = _app_with_users(tmp_path, ("U" + "1" * 32,))
-    with TestClient(app) as c, caplog.at_level(logging.WARNING, logger="ai_studio.webhook"):
+    with TestClient(app) as c, caplog.at_level(logging.WARNING, logger="fun_workflow.webhook"):
         assert _post(c, [_member_joined()]).status_code == 200
 
     messages = [r.getMessage() for r in caplog.records]
@@ -397,7 +397,7 @@ def test_a_join_in_another_group_warns_about_nothing(tmp_path: Path, caplog) -> 
     """Any account can add this bot to any group. Only the roster of the group
     actually served is worth a line."""
     app, queue = _app_with_users(tmp_path, ())
-    with TestClient(app) as c, caplog.at_level(logging.WARNING, logger="ai_studio.webhook"):
+    with TestClient(app) as c, caplog.at_level(logging.WARNING, logger="fun_workflow.webhook"):
         assert _post(c, [_member_joined(group="C" + "f" * 32)]).status_code == 200
 
     messages = [r.getMessage() for r in caplog.records]

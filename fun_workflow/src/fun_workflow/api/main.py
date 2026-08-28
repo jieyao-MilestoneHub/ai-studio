@@ -44,7 +44,7 @@ from fun_workflow.config.settings import get_fun_settings
 from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline.queue import Job, JobQueue, JobState
 
-_log = logging.getLogger("ai_studio.webhook")
+_log = logging.getLogger("fun_workflow.webhook")
 
 def create_app(
     *,

@@ -13,14 +13,14 @@ wired by `cli/main.py::_setup_logging`) and writes the same record two ways:
 
 | sink | where | format |
 |---|---|---|
-| journald | `journalctl -t ai-studio-worker` (each unit has its own `SyslogIdentifier`) | `2026-08-28T01:12:48.616+08:00 INFO ai_studio.worker [job_id=103 token=5h_3-ye_cJU kind=drama] clip 3/6` |
+| journald | `journalctl -t ai-studio-worker` (each unit has its own `SyslogIdentifier`) | `2026-08-28T01:12:48.616+08:00 INFO fun_workflow.worker [job_id=103 token=5h_3-ye_cJU kind=drama] clip 3/6` |
 | JSONL | `logs/<service>/<YYYY-MM-DD>.jsonl` (local day) | one object per line, below |
 
 Services: `webhook`, `worker`, `reap`, `close`, `gc`, `archive`, `session`.
 
 ```json
 {"ts":"2026-08-27T16:35:22.569+00:00","local":"2026-08-28T00:35:22.569+08:00",
- "level":"INFO","logger":"ai_studio.drama","service":"worker","msg":"clip 4/6",
+ "level":"INFO","logger":"fun_workflow.drama","service":"worker","msg":"clip 4/6",
  "job_id":103,"token":"5h_3-ye_cJU","kind":"drama","stage":"clip",
  "sha256":"9cfac2093e1a","cost_usd":0.039453,"seconds":195.2}
 ```

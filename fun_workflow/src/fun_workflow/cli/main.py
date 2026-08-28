@@ -40,8 +40,12 @@ def _setup_logging(service: str) -> None:
     it first; read-only commands do not."""
     from ai_studio.core.observability import configure_logging
 
+    from fun_workflow.core.observability import EXTRA_FIELDS
+
     settings = get_settings()
-    configure_logging(service=service, log_dir=settings.log_dir, level=settings.log_level)
+    configure_logging(
+        service=service, log_dir=settings.log_dir, level=settings.log_level, extra_fields=EXTRA_FIELDS,
+    )
 
 
 line_app = typer.Typer(help="LINE bot: serve the webhook, or discover a group id.")

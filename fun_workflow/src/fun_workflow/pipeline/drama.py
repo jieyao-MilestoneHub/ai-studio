@@ -57,7 +57,7 @@ from fun_workflow.pipeline.convert_worker import DEFAULT_DURATION_S, snap_frames
 from fun_workflow.pipeline.queue import Job
 from fun_workflow.prompts.drama import character_sheet_prompts, h3_prompt
 
-_log = logging.getLogger("ai_studio.drama")
+_log = logging.getLogger("fun_workflow.drama")
 
 STAGE_RESERVE_S: dict[str, float] = {"image": 90.0, "video": 6 * 60.0}
 """Seconds that must remain on the lease before a submit of that kind.

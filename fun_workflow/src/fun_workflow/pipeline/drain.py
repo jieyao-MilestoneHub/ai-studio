@@ -52,7 +52,7 @@ from fun_workflow.pipeline.queue import Job, JobQueue, JobState
 from fun_workflow.prompts.chat import CHAT_THOUGHT_TOO_LONG
 from fun_workflow.prompts.understanding import compose_answer
 
-_log = logging.getLogger("ai_studio.drain")
+_log = logging.getLogger("fun_workflow.drain")
 
 STOP_CLAIMING_BEFORE_S = 8 * 60
 """Reserve the last eight minutes of the window for finishing, not starting.

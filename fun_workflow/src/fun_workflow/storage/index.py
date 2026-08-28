@@ -21,7 +21,7 @@ from pathlib import Path
 from ai_studio.core.observability import utc_now_iso
 from ai_studio.storage.base import sha256_file
 
-_log = logging.getLogger("ai_studio.index")
+_log = logging.getLogger("fun_workflow.index")
 
 INDEX_NAME = "index.jsonl"
 

@@ -55,7 +55,7 @@ from fun_workflow.pipeline.drama import render_drama
 from fun_workflow.pipeline.queue import Job, JobQueue, JobState
 from fun_workflow.storage.index import append_delivery
 
-_log = logging.getLogger("ai_studio.worker")
+_log = logging.getLogger("fun_workflow.worker")
 
 IDLE_POLL_S = 10.0
 """How often the queue is checked while the shop is open.

@@ -30,7 +30,7 @@ def test_an_unwritable_index_is_a_warning_not_an_error(tmp_path: Path, caplog) -
 
     files = tmp_path / "not-a-dir"
     files.write_text("I am a file, not a directory", encoding="utf-8")
-    with caplog.at_level(logging.WARNING, logger="ai_studio.index"):
+    with caplog.at_level(logging.WARNING, logger="fun_workflow.index"):
         rec = append_delivery(files, token="t", job_id=1, kind="image", path=tmp_path / "x.png")
     assert rec is None
     assert any("delivery index not written" in r.getMessage() for r in caplog.records)
