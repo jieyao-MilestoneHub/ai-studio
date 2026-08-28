@@ -1,7 +1,7 @@
 """The request side's pre-launch checklist: everything about taking a
 request and answering it that can be proved with no pod and no money.
 
-Built on `ai_studio.cli.preflight` -- same result type, same rules (a check
+Built on `ai_studio.checks` -- same result type, same rules (a check
 that cannot run is SKIP, never PASS; green means green) -- with the LINE
 half of the list: the deployed secret, dedupe, the queue -> rewrite path,
 accept-and-hold, the push client, and range requests on /files. The GPU
@@ -20,13 +20,13 @@ from pathlib import Path
 from typing import Any
 
 from ai_studio import paths
-from ai_studio.cli.preflight import (
+from ai_studio.checks import (
     CheckResult,
-    _fail,
-    _pass,
-    _skip,
     check_offline_suite,
+    fail,
+    passed,
     run_checks,
+    skip,
 )
 
 from fun_workflow.config.settings import get_fun_settings
@@ -112,12 +112,12 @@ def check_signature_and_dedupe() -> CheckResult:
     settings = get_fun_settings()
     secret = settings.line_channel_secret
     if secret is None:
-        return _skip(2, name, "LINE_CHANNEL_SECRET is not set")
+        return skip(2, name, "LINE_CHANNEL_SECRET is not set")
 
     try:
         client, queue, _ = _test_client()
     except ImportError as exc:
-        return _skip(2, name, f"the web extra is not installed: {exc}")
+        return skip(2, name, f"the web extra is not installed: {exc}")
 
     try:
         value = secret.get_secret_value()
@@ -127,20 +127,20 @@ def check_signature_and_dedupe() -> CheckResult:
         body, signature = _signed([_event("/影片 preflight", event_id="pf-1", group=group)], value)
         good = client.post("/callback", content=body, headers={"x-line-signature": signature})
         if good.status_code != 200:
-            return _fail(2, name, f"a correctly signed event got {good.status_code}")
+            return fail(2, name, f"a correctly signed event got {good.status_code}")
 
         tampered = client.post(
             "/callback", content=body + b" ", headers={"x-line-signature": signature}
         )
         if tampered.status_code != 400:
-            return _fail(2, name, f"a tampered body got {tampered.status_code}, expected 400")
+            return fail(2, name, f"a tampered body got {tampered.status_code}, expected 400")
 
         client.post("/callback", content=body, headers={"x-line-signature": signature})
         jobs = queue.counts()
         total = sum(jobs.values())
         if total != 1:
-            return _fail(2, name, f"a redelivered event produced {total} jobs, expected 1")
-        return _pass(2, name, "200 signed, 400 tampered, redelivery deduped")
+            return fail(2, name, f"a redelivered event produced {total} jobs, expected 1")
+        return passed(2, name, "200 signed, 400 tampered, redelivery deduped")
     finally:
         queue.close()
 
@@ -175,13 +175,13 @@ def check_queue_and_conversion() -> CheckResult:
         how = asyncio.run(convert_job(queue, job.id, client, prompt_mode="structured"))
         stored = queue.by_id(job.id)
         if stored is None or stored.prompt is None:
-            return _fail(3, name, "the job was never parsed")
+            return fail(3, name, "the job was never parsed")
         rendered = str(stored.prompt.get("_rendered", ""))
         if not rendered.isascii():
-            return _fail(3, name, f"the prompt is not English ({how}): {rendered[:60]}")
-        return _pass(3, name, f"built_by={how}, rendered={rendered[:60]}")
+            return fail(3, name, f"the prompt is not English ({how}): {rendered[:60]}")
+        return passed(3, name, f"built_by={how}, rendered={rendered[:60]}")
     except Exception as exc:
-        return _fail(3, name, f"{type(exc).__name__}: {exc}")
+        return fail(3, name, f"{type(exc).__name__}: {exc}")
     finally:
         queue.close()
 
@@ -204,7 +204,7 @@ def check_out_of_hours() -> CheckResult:
     try:
         client, queue, _ = _test_client()
     except ImportError as exc:
-        return _skip(4, name, f"the web extra is not installed: {exc}")
+        return skip(4, name, f"the web extra is not installed: {exc}")
 
     from ai_studio.runtime import session as sess
 
@@ -221,27 +221,27 @@ def check_out_of_hours() -> CheckResult:
         )
         response = client.post("/callback", content=body, headers={"x-line-signature": signature})
         if response.status_code != 200:
-            return _fail(4, name, f"the request got {response.status_code}")
+            return fail(4, name, f"the request got {response.status_code}")
 
         if sum(queue.counts().values()) != 1:
-            return _fail(4, name, "the request was refused instead of held for the worker")
+            return fail(4, name, "the request was refused instead of held for the worker")
 
         sent = handler.replier.sent
         if not sent:
-            return _fail(4, name, "the request was accepted with no reply at all")
+            return fail(4, name, "the request was accepted with no reply at all")
         text = sent[-1][1][0]
         if "/q/" not in text:
-            return _fail(4, name, f"the reply carries no status-page link: {text[:80]}")
+            return fail(4, name, f"the reply carries no status-page link: {text[:80]}")
 
         state_after = sess.load_state()
         if (state_after is not None) != (state_before is not None) or (
             state_after is not None and state_before is not None
             and state_after.pod_id != state_before.pod_id
         ):
-            return _fail(4, name, "the webhook path changed the pod session state")
+            return fail(4, name, "the webhook path changed the pod session state")
     except Exception as exc:
-        return _fail(4, name, f"{type(exc).__name__}: {exc}")
-    return _pass(4, name, "accepted and held (1 waiting), reply carries a status link, no pod created")
+        return fail(4, name, f"{type(exc).__name__}: {exc}")
+    return passed(4, name, "accepted and held (1 waiting), reply carries a status link, no pod created")
 
 
 def check_push(*, send: bool = False) -> CheckResult:
@@ -254,12 +254,12 @@ def check_push(*, send: bool = False) -> CheckResult:
     name = "push into the real group (with mention)"
     settings = get_fun_settings()
     if not send:
-        return _skip(5, name, "not attempted; pass --push to send a real message")
+        return skip(5, name, "not attempted; pass --push to send a real message")
     token = settings.line_channel_access_token
     if token is None:
-        return _skip(5, name, "LINE_CHANNEL_ACCESS_TOKEN is not set")
+        return skip(5, name, "LINE_CHANNEL_ACCESS_TOKEN is not set")
     if not settings.line_allowed_group_id:
-        return _skip(5, name, "LINE_ALLOWED_GROUP_ID is not set")
+        return skip(5, name, "LINE_ALLOWED_GROUP_ID is not set")
 
     import asyncio
 
@@ -272,8 +272,8 @@ def check_push(*, send: bool = False) -> CheckResult:
     try:
         asyncio.run(client.push(settings.line_allowed_group_id, [message], retry_key="preflight"))
     except Exception as exc:
-        return _fail(5, name, f"{type(exc).__name__}: {exc}")
-    return _pass(
+        return fail(5, name, f"{type(exc).__name__}: {exc}")
+    return passed(
         5, name,
         "sent 1 text message"
         " -- now read the quota consumed off LINE Official Account Manager",
@@ -295,16 +295,16 @@ def check_files_range() -> CheckResult:
     try:
         client, queue, _ = _test_client(files_dir=files)
     except ImportError as exc:
-        return _skip(6, name, f"the web extra is not installed: {exc}")
+        return skip(6, name, f"the web extra is not installed: {exc}")
 
     try:
         response = client.get("/files/preflight.mp4", headers={"Range": "bytes=0-99"})
         if response.status_code != 206:
-            return _fail(6, name, f"got {response.status_code}, expected 206")
+            return fail(6, name, f"got {response.status_code}, expected 206")
         content_range = response.headers.get("content-range", "")
         if content_range != "bytes 0-99/1024":
-            return _fail(6, name, f"Content-Range was {content_range!r}")
-        return _pass(6, name, f"206 with {content_range}")
+            return fail(6, name, f"Content-Range was {content_range!r}")
+        return passed(6, name, f"206 with {content_range}")
     finally:
         queue.close()
 

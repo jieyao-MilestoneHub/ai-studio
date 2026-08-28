@@ -17,9 +17,10 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from ai_studio.checks import CheckResult, Status, stamp, summarise
 from ai_studio.cli import preflight
 from ai_studio.cli.main import app
-from ai_studio.cli.preflight import CheckResult, Status, run_all, stamp, summarise
+from ai_studio.cli.preflight import run_all
 from ai_studio.config import settings as settings_mod
 from ai_studio.config.settings import get_settings
 

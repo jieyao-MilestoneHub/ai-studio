@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from ai_studio.cli.preflight import Status
+from ai_studio.checks import Status
 from ai_studio.config import settings as settings_mod
 from ai_studio.config.settings import get_settings
 from typer.testing import CliRunner

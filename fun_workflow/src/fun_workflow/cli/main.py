@@ -745,7 +745,7 @@ def preflight_cmd(
     """
     from datetime import timezone
 
-    from ai_studio.cli.preflight import Status, stamp, summarise
+    from ai_studio.checks import Status, stamp, summarise
 
     from fun_workflow.cli.preflight import run_all
 

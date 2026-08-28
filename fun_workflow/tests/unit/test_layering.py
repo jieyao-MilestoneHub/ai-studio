@@ -1,6 +1,7 @@
 """The rule import-linter cannot express for an external package: only the
-composition root (`fun_workflow.cli`) may reach ai-studio's pod runtime or
-its CLI. Everything else takes sessions and providers by injection
+composition root (`fun_workflow.cli`) may reach ai-studio's pod runtime,
+and nothing at all imports its CLI (`ai_studio.checks` is the library the
+two preflights share). Everything else takes sessions and providers by injection
 (`pipeline.worker.WindowHost`), which is what keeps the request side
 testable with no pod."""
 

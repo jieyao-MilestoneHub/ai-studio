@@ -223,7 +223,8 @@ def preflight_cmd(
     """
     from datetime import timezone
 
-    from ai_studio.cli.preflight import Status, run_all, stamp, summarise
+    from ai_studio.checks import Status, stamp, summarise
+    from ai_studio.cli.preflight import run_all
 
     results = run_all(run_suite=not skip_suite)
 

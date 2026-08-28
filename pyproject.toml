@@ -105,6 +105,7 @@ layers = [
     "ai_studio.storage",
     "ai_studio.media",
     "ai_studio.benchmark",
+    "ai_studio.checks",
     "ai_studio.config",
     "ai_studio.core",
 ]
