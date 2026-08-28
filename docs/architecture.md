@@ -192,6 +192,7 @@ generation is a receipt, not a check.
 | `gates` | shell built; no rules yet |
 | `planner`, `render` | not started |
 | `pipeline` | `residency` (one-card model hand-off) and `pod_llm` (gpt-oss-20b on the pod as an `LlmClient`). The request queue, worker with its prepare phase, drain loop and the resumable `/短劇` stage machine are `fun_workflow/pipeline/` |
-| `runtime` | `pod`, `session`, `budget` and `opens` (the daily pod-open ledger) built against the live REST v2 schema |
+| `checks` | built — the pre-launch checklist machinery both packages' `preflight` commands build on |
+| `runtime` | `pod`, `session` (idle grace recorded per activity; `provision(extras=)` ships `pod_setup.d/` extensions), `budget` and `opens` (the daily pod-open ledger) built against the live REST v2 schema |
 | `cli` | `doctor`, `bench`, `archive`, `preflight`, `format`, `generate`, `understand`, `rewrite`, `pod {capacity,placement,up,status,down}`, `session {open,close,status,reap}` |
 | `fun_workflow/` | built — FastAPI webhook/status/file service, the LINE bot, queue, worker, drain, `/短劇`; console script `funapp` |

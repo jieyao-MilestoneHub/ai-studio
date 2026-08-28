@@ -149,8 +149,9 @@ considered numbers; see issue #27.
 **Same pod, same one-model-at-a-time rule** as the understanding triggers:
 gpt-oss-20b is the fourth backend behind the inference server's one model
 slot, evicted by the next generation job and evicting ComfyUI's checkpoint
-in turn. A pod whose last job was chat is held `CHAT_IDLE_MINUTES` (15)
-before the reaper closes it — see [schedule.md](schedule.md).
+in turn. A pod whose last job was chat is held 15 minutes
+(`pipeline/idle.py`) before the reaper closes it — see
+[schedule.md](../../docs/schedule.md).
 
 ## A ninth trigger: a one-minute drama
 

@@ -104,5 +104,5 @@ a generation that spends its whole budget in `analysis` is reported as
 - Whether the harmony channel-tag syntax `_final_channel()` assumes matches
   a real generation's actual output.
 - A real token-to-character ratio, to retune `MAX_NEW_TOKENS` and the
-  `AI_STUDIO_MAX_CHAT_MONTH_USD` / `CHAT_IDLE_MINUTES` starting guesses in
-  `config/settings.py` / `runtime/session.py` against real usage.
+  `AI_STUDIO_MAX_CHAT_MONTH_USD` / chat grace starting guesses in
+  `fun_workflow/config/settings.py` / `fun_workflow/pipeline/idle.py` against real usage.

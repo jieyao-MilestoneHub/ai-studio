@@ -34,7 +34,7 @@ real drama shows whether the keyframe chain alone holds the face.
 ## The pipeline
 
 ```
-/短劇 <premise>                LINE webhook: MediaKind.DRAMA, group cap per day
+/短劇 <premise>                LINE webhook: JobKind.DRAMA, group cap per day
       │
       ▼  worker.prepare()  —  gpt-oss-20b resident, json_only, 3 calls
    Screenplay  { title, logline, style, anchor{name, appearance, wardrobe, voice},
@@ -99,8 +99,8 @@ per-user job cap alone would let one afternoon spend the month.
 (~2 min including one gpt-oss load) + 8 Flux stills (~8 × 30 s) + 6 H3 clips
 (6 × 79–215 s) + CPU concat ≈ **15–30 minutes, $0.20–0.40** per drama.
 
-The reaper: a drama's last GPU job is an H3 clip, so `DRAMA_IDLE_MINUTES`
-equals the video grace (10). What makes that safe for a half-hour render is
+The reaper: a drama's last GPU job is an H3 clip, so the drama grace
+(`pipeline/idle.py`) equals the video grace (10). What makes that safe for a half-hour render is
 that `render_drama` calls `touch_activity("drama")` after **every** fetched
 still or clip, so the grace only ever measures a real gap.
 

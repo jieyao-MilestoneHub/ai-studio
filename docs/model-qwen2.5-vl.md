@@ -2,8 +2,10 @@
 
 Serves the **picture half** of `/說影` from `deploy/inference_server.py` since
 2026-08-27 — the model samples frames only (`process_vision_info`) and cannot
-hear, so `_run_job` follows it with Qwen2-Audio on the ffmpeg-extracted track
-and joins the two under 【畫面】/【聲音】 (asked 2026-08-27: 「避免 /說影
+hear, so `_run_job` follows it with Qwen2-Audio on the ffmpeg-extracted track,
+each with the question the caller sent for it, and returns the two answers
+as sections; the caller (`fun_workflow/prompts/understanding.compose_answer`)
+joins them under 【畫面】/【聲音】 (asked 2026-08-27: 「避免 /說影
 只根據畫面」). Replacing
 Tarsier2-7b-0115, whose `TarsierForConditionalGeneration` exists only in ByteDance's repo pinned to transformers 4.47 (see `model-tarsier2.md`). Chosen because it **runs** on the stack the pod already has —
 transformers 5.16, one RTX 4090 — not because it is the strongest

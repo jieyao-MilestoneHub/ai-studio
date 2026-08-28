@@ -31,8 +31,10 @@ owns the pod, the models, the money and the measurements. This package owns
 | `bots/line/` — signature, Reply/Push/Content clients, trigger parsing, caps, media pairing | — |
 | `pipeline/queue.py` — the SQLite request queue (`runs/queue.sqlite3`), the audit trail | `runtime/` — pod lifecycle, budget, daily open cap |
 | `pipeline/worker.py` — the always-on loop; `pipeline/drain.py` — one render per kind | `providers/`, `comfy/`, `inference/` — the models |
-| `pipeline/convert_worker.py` — which rewriter each request needs | `prompts/{convert,flux,understanding}` + `pipeline/pod_llm` — the rewriting itself |
-| `pipeline/drama.py`, `prompts/drama.py`, `core/drama_spec.py`, `workflows/flux_dev_i2i_face.json` — `/短劇` | `prompts/h3`, `providers/flux` (takes the face graph as `i2i_face_workflow=`) |
+| `pipeline/convert_worker.py` — which rewriter each request needs; `prompts/understanding.py` — the questions `/說圖 /說音 /說影` send (`prompt` + `audio_prompt`), their rewriter, and `compose_answer` (【畫面】/【聲音】) | `prompts/{convert,flux}` + `pipeline/pod_llm` — the H3/Flux rewriting itself; the pod server, which holds no wording |
+| `core/kinds.py` — `JobKind`, the queue's discriminator (with DRAMA); `pipeline/idle.py` — the grace each kind earns a quiet pod | `core/enums.MediaKind` — what a model serves; `runtime.session.touch_activity(grace_minutes=)` — the clock |
+| `pipeline/drama.py`, `prompts/drama.py`, `core/drama_spec.py`, `workflows/flux_dev_i2i_face.json`, `deploy/pod_setup.d/face_repair.sh` — `/短劇` | `prompts/h3`, `providers/flux` (takes the face graph as `i2i_face_workflow=`), `pod_setup.sh` (runs the shipped extension) |
+| `bots/line/limits.py` — every LINE ceiling, passed into ai-studio's tools as parameters | `media.poster/extract_audio(max_bytes=)`, providers' `max_output_chars` |
 | `prompts/chat.py` — the `/himonkey` persona | `providers/chat` |
 | `config/settings.py` — `FunSettings`: LINE credentials, caps, delivery dirs, drama knobs; `.studio` is ai-studio's `Settings` | `config/settings.py` — GPU, money, logs |
 | `storage/index.py` (delivery index), `storage/gc.py` (chat_turns, empty drama dirs, what to archive) | `storage/archive.py` — the daily tar, generic |
@@ -79,9 +81,10 @@ Enforced by `import-linter` (`pyproject.toml`) plus one test:
 cli → api → bots → pipeline → prompts → storage → config → core
 ```
 
-- **Only `cli` may import `ai_studio.runtime` or `ai_studio.cli`**
-  (`tests/unit/test_layering.py`; import-linter cannot forbid a subpackage of
-  an external package). The worker loop takes the session, providers, LLM and
+- **Only `cli` may import `ai_studio.runtime`, and nothing imports
+  `ai_studio.cli`** (`tests/unit/test_layering.py`; import-linter cannot
+  forbid a subpackage of an external package). The checklist machinery both
+  preflights share is `ai_studio.checks`. The worker loop takes the session, providers, LLM and
   delivery through `pipeline.worker.WindowHost`, implemented by
   `cli.main._RuntimeHost`. That injection is what keeps every pipeline test
   free of a pod, and it is the seam the two packages were split along.
@@ -108,6 +111,15 @@ outcomes flip a `meta` flag the webhook reads to tell the next requester.
 **The reaper never closes a pod with work queued.** `funapp reap` computes
 `hold` from the queue and passes it to `ai_studio.runtime.session.close_if_idle`;
 that bool is the only thing this side tells the pod runtime about the queue.
+The grace was already recorded by the worker with its last render
+(`_RuntimeHost.touch_activity` → `pipeline.idle.grace_for`).
+
+**Every question is ours; the pod holds no wording.** `convert_question`
+returns `(prompt, audio_prompt, how)`; a bare `/說影` sends
+`VIDEO_DEFAULT_QUESTION` to the frame model and `VIDEO_AUDIO_QUESTION` to
+the audio model (the split found them sharing the frame question), and
+`compose_answer` joins the two `sections` under 【畫面】/【聲音】. `funapp
+rewrite-question` prints what a job would send.
 
 **Caps are wired at the composition root or they do not exist.**
 `WebhookHandler` defaults every cap to off; `api.main.create_app` passes each

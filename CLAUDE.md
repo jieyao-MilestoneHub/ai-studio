@@ -32,10 +32,15 @@ the money, and the numbers — and nothing about who asked for a render:
   describing a photo/audio/video back, and **gpt-oss-20b** for chat and as
   the **prompt rewriter**, all through the pod-side inference server
   (`inference/client.py`, `providers/understanding.py`, `providers/chat.py`,
-  `pipeline/pod_llm.py`). Every request is rewritten into its model's best
-  input shape before it renders (`prompts/convert.py` H3 schema + community
-  rules, `prompts/flux.py`, `prompts/understanding.py`); `pipeline/residency.py`
-  is the one-card model hand-off.
+  `pipeline/pod_llm.py`). Generation requests are rewritten into their
+  model's best input shape before they render (`prompts/convert.py` H3
+  schema + community rules, `prompts/flux.py`); `pipeline/residency.py` is
+  the one-card model hand-off, decided by each provider's `residency_group`.
+  **The pod server holds no question or reply wording**: an understanding
+  request carries its own `prompt` (and `audio_prompt` for video), and the
+  video modality answers with `sections` (`visual`, `audio`,
+  `has_audio_track`) for the caller to word — the questions and the
+  Chinese headings are `fun_workflow/prompts/understanding.py`.
 - **Money**: per-run and calendar-month ceilings (`runtime/budget.py`), the
   daily pod-open cap (`runtime/opens.py`).
 - **Measurement**: every real render logs one `benchmark.records` line;
@@ -141,8 +146,28 @@ Five contracts, each protecting something specific:
 
 There is no longer a "bots/api are leaves" contract: those packages left the
 tree. The equivalent rule now lives on the other side — only `fun_workflow.cli`
-may import `ai_studio.runtime` or `ai_studio.cli`
-(`fun_workflow/tests/unit/test_layering.py`).
+may import `ai_studio.runtime`, and nothing imports `ai_studio.cli`
+(`fun_workflow/tests/unit/test_layering.py`; the checklist machinery both
+preflights share is the library `ai_studio.checks`).
+
+**What ai-studio deliberately does not know** (each was a leak found and
+removed on 2026-08-29; keep it that way):
+- what a *job* is — `MediaKind` names only what a model serves; a request
+  type with more kinds (fun's `JobKind`, with DRAMA) maps onto it via
+  `.model_kind`;
+- which kinds share a GPU slot — each provider declares
+  `residency_group` ("comfyui" | "inference"); `make_room_for(target,
+  providers)` evicts the other group and refuses an undeclared provider;
+- how long a quiet pod is worth — `touch_activity(label,
+  grace_minutes=)` records the caller's number, `close_if_idle` reads it
+  back (`DEFAULT_GRACE_MINUTES` otherwise); the per-kind table is fun's
+  `pipeline/idle.py`;
+- a delivery channel's limits — `media.poster(max_bytes=)`,
+  `media.extract_audio(max_bytes=)`, a provider's `max_output_chars` are
+  parameters; the LINE numbers are `fun_workflow/bots/line/limits.py`;
+- a feature's pod extras — `deploy/pod_setup.sh` runs whatever
+  `provision(extras=...)` shipped to `/workspace/pod_setup.d/`, best effort;
+- a caller's log vocabulary — `configure_logging(extra_fields=...)`.
 
 ### Invariants a linter cannot catch
 

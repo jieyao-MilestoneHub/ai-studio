@@ -167,22 +167,23 @@ still terminates itself.** The buffer covers a clip mid-render. Three
 independent ways for a machine to stop billing, and only the last needs no
 process alive.
 
-**The reaper is now per-render-kind, and it never closes a pod with work
-waiting.** `funapp reap` runs every minute; it closes a quiet pod after
-`IMAGE_IDLE_MINUTES` (5) if the last render was an image, `VIDEO_IDLE_MINUTES`
-(10) if it was a clip, `UNDERSTANDING_IDLE_MINUTES` (5) if the last thing
-this pod did was a `/說圖`/`/說音`/`/說影` job, `DRAMA_IDLE_MINUTES` (10, and
-`pipeline.drama` touches activity after every still and clip, so a half-hour
-drama never looks idle) after a `/短劇`, or `CHAT_IDLE_MINUTES` (15)
-after a `/himonkey` reply — the longest of the five, because a chat
-conversation pauses and resumes in a way a render request does not, and it
-is sized against the reopen fixed cost rather than any observed pause. The three numbers differ
-because the reloads do: 📏 Flux comes back into VRAM in ~15 s, H3's 32B text
-encoder in 60–90 s, so a video pod is worth holding longer.
-`UNDERSTANDING_IDLE_MINUTES` is `[speculative]` in a stronger sense than the
-other two — nothing has measured a lazy-load cost for any of the three
-understanding models yet, and they are not even the same size as each other,
-so one shared number is a starting point, not three considered answers.
+**The reaper's grace is whatever the last render recorded, and it never
+closes a pod with work waiting.** `funapp reap` runs every minute. The pod
+runtime keeps only the clock: `touch_activity(label, grace_minutes=)` writes
+the caller's number into the session state and `close_if_idle` reads it
+back (`DEFAULT_GRACE_MINUTES`, 10, if nothing was recorded). The table of
+what each kind earns is fun_workflow's `pipeline/idle.py`: image 5, video
+10, the three understanding kinds 5, drama 10 (and `pipeline.drama` touches
+activity after every still and clip, so a half-hour drama never looks
+idle), chat 15 — the longest, because a chat conversation pauses and
+resumes in a way a render request does not, and it is sized against the
+reopen fixed cost rather than any observed pause. The numbers differ because
+the reloads do: 📏 Flux comes back into VRAM in ~15 s, H3's 32B text encoder
+in 60–90 s, so a video pod is worth holding longer. The understanding grace
+is `[speculative]` in a stronger sense than the others — nothing has
+measured a lazy-load cost for any of the three understanding models yet,
+and they are not even the same size as each other, so one shared number is
+a starting point, not three considered answers.
 Tuned by how often the reaper log shows a pod closed and reopened within a
 few minutes. And a pod with anything queued is *held*, whatever the clock
 says: closing a pod a job is about to land on costs a cold open **and** the
