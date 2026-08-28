@@ -28,7 +28,21 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("git")
     .run_commands("pip install uv")
-    .add_local_dir(".", remote_path="/twin", copy=True)
+    .add_local_dir(
+        ".",
+        remote_path="/twin",
+        copy=True,
+        # SPEC.md §8 guardrail 2: data/adapters/transcripts/eval MUST NOT
+        # leave local storage. twin/.gitignore + the repo-root pre-commit
+        # hook only block that path into *version control* — this
+        # add_local_dir call is a completely separate channel that would
+        # otherwise bake those directories straight into a Modal image
+        # layer if they happened to be populated locally when this runs.
+        # .env is excluded because it holds real credentials (Gemini/R2/
+        # Kaggle) — this image already gets TWIN_GEMINI_* via the
+        # `twin-gemini` Modal Secret, not by shipping the plaintext file.
+        ignore=[".env", ".git", ".venv", "__pycache__", "data", "adapters", "transcripts", "eval"],
+    )
 )
 
 checkpoint_volume = modal.Volume.from_name("twin-checkpoints", create_if_missing=True)

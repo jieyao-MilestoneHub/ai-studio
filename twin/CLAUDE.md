@@ -14,14 +14,14 @@ get back an agent whose judgment, tool-use style, and proactivity — including
 the tendency *not* to act — resembles that person in situations they've never
 actually faced.
 
-**Status: Phase 0 (guardrails + package skeleton) is done; everything past
-that is still spec-only.** `twin/` now has a package skeleton —
-`twin/pyproject.toml`, `src/twin/`, its own `uv.lock` and import-linter
-contracts, entirely independent of the root package's — but every layer
-package (`core`, `config`, `ingest`, `memory`, `train`, `agent`, `harness`,
-`cli`) is an empty placeholder with no real logic yet, and `teacher.py` is a
-docstring-only stub. See `twin/PLAN.md` for phase-by-phase status. The
-subsystem's actual behavior is still fully described by three normative
+**Status: Phases 0, 1, and 4 (accounts/guardrails, L1 ingest skeleton, LoRA
+training vertical slice) are code-complete and tested; Phases 2, 3, 5+ are
+still spec-only.** `twin/` has its own package skeleton — `twin/pyproject.toml`,
+`src/twin/`, its own `uv.lock` and import-linter contracts, entirely
+independent of the root package's. See `twin/PLAN.md` for the authoritative
+phase-by-phase status — it is updated far more often than this file's prose
+is, so treat PLAN.md as current and this paragraph as a summary that can lag.
+The subsystem's normative behavior is still fully described by three
 documents in `twin/reference/`:
 
 | File | Role |
@@ -141,9 +141,13 @@ failures that don't surface until much later, if ever.
   run (see twin/PLAN.md's Phase 4 "已知偏離" notes).
 - Cross-cloud hub: Cloudflare R2 (zero egress, 10GB free tier) — fragments,
   trajectories, and adapters only; raw media never leaves local storage
-  (`SPEC.md` §7.2, §4.2). `train/checkpoint.py`'s sync logic is tested against
-  `file://` URIs only — no real R2 bucket exists yet (Phase 0's account
-  sign-up is still an open manual step). Adapter weights (both intermediate
+  (`SPEC.md` §7.2, §4.2). Account live and bucket `twin-checkpoints` created
+  2026-08-28; `train/checkpoint.py`'s bare `fsspec.core.url_to_fs(uri)` reaches
+  it correctly with zero code changes, purely via `AWS_ACCESS_KEY_ID`/
+  `AWS_SECRET_ACCESS_KEY`/`AWS_ENDPOINT_URL_S3`/`AWS_DEFAULT_REGION=auto` in
+  `twin/.env` — verified against the real bucket, not guessed. Those vars only
+  reach the real process env because `train.py` now calls `load_dotenv()`
+  (`Settings` alone never writes to `os.environ`). Adapter weights (both intermediate
   checkpoints and the final adapter) are encrypted before upload (`SPEC.md`
   §8: "Adapter 為個資...MUST 加密儲存") — see `core/encryption.py` and
   `Settings.adapter_encryption_key` (`TWIN_ADAPTER_ENCRYPTION_KEY`, no

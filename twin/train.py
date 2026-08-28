@@ -12,12 +12,24 @@ import argparse
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from twin.config.settings import get_settings
 from twin.train.run import TrainingConfig
 from twin.train.run import main as run_training
 
 
 def main() -> None:
+    # twin.config.settings.Settings reads .env for its own TWIN_* fields, but
+    # that parsing is internal to pydantic-settings — it never touches
+    # os.environ. checkpoint.py's fsspec/boto3 calls (R2) read raw
+    # AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_ENDPOINT_URL_S3 directly
+    # from the real process environment, so .env MUST also be exported here
+    # or those credentials are silently invisible to everything except
+    # get_settings() itself (verified against a live R2 bucket 2026-08-28:
+    # this is the actual failure mode without this line).
+    load_dotenv()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--resume", choices=["auto", "never"], default="auto")
     parser.add_argument("--config", type=Path, required=True, help="Path to a TrainingConfig JSON file")
