@@ -434,10 +434,12 @@ class _RuntimeHost:
             }
         return self._llms[live.pod_id]
 
-    def touch_activity(self, media_kind: str) -> None:
+    def touch_activity(self, kind: JobKind) -> None:
         from ai_studio.runtime import session as sess
 
-        sess.touch_activity(media_kind)
+        from fun_workflow.pipeline.idle import grace_for
+
+        sess.touch_activity(kind.value, grace_minutes=grace_for(kind))
 
     async def deliver(self, job: Any, asset: Path | None) -> str:
         """Push the finished media into the group that asked for it, @-ing them.
@@ -517,18 +519,13 @@ def _drama_caption(job: Any) -> str | None:
 
 
 @app.command("reap")
-def reap(
-    image_idle_minutes: int = typer.Option(None, help="Grace after an image render (default: runtime.session.IMAGE_IDLE_MINUTES)."),
-    video_idle_minutes: int = typer.Option(None, help="Grace after a video render (default: runtime.session.VIDEO_IDLE_MINUTES)."),
-    understanding_idle_minutes: int = typer.Option(None, help="Grace after an understanding job (default: runtime.session.UNDERSTANDING_IDLE_MINUTES)."),
-    chat_idle_minutes: int = typer.Option(None, help="Grace after a /himonkey reply (default: runtime.session.CHAT_IDLE_MINUTES)."),
-    drama_idle_minutes: int = typer.Option(None, help="Grace after a /短劇 artifact (default: runtime.session.DRAMA_IDLE_MINUTES)."),
-) -> None:
+def reap() -> None:
     """Close the pod once it has gone quiet. Schedule this every minute.
 
     `ai-studio session reap` with the one thing only this side knows: whether
     work is waiting in the queue. A pod with a job about to land on it is
-    never closed, whatever the clock says.
+    never closed, whatever the clock says. The grace was recorded by the
+    worker with its last render (`pipeline.idle`), so nothing is passed here.
     """
     _setup_logging("reap")
     from ai_studio.runtime import session as sess
@@ -537,14 +534,7 @@ def reap(
 
     with JobQueue() as queue:
         hold = bool(queue.pending())
-    decision = sess.close_if_idle(
-        image_idle_minutes=image_idle_minutes or sess.IMAGE_IDLE_MINUTES,
-        video_idle_minutes=video_idle_minutes or sess.VIDEO_IDLE_MINUTES,
-        understanding_idle_minutes=understanding_idle_minutes or sess.UNDERSTANDING_IDLE_MINUTES,
-        chat_idle_minutes=chat_idle_minutes or sess.CHAT_IDLE_MINUTES,
-        drama_idle_minutes=drama_idle_minutes or sess.DRAMA_IDLE_MINUTES,
-        hold=hold,
-    )
+    decision = sess.close_if_idle(hold=hold)
     console.print(str(decision))
     sess.log_reap(decision)
 

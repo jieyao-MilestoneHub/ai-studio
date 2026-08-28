@@ -664,22 +664,10 @@ def session_status() -> None:
 
 @session_app.command("reap")
 def session_reap(
-    image_idle_minutes: int = typer.Option(
-        None, help="Grace after an image render (default: runtime.session.IMAGE_IDLE_MINUTES)."
-    ),
-    video_idle_minutes: int = typer.Option(
-        None, help="Grace after a video render (default: runtime.session.VIDEO_IDLE_MINUTES)."
-    ),
-    understanding_idle_minutes: int = typer.Option(
-        None,
-        help="Grace after an understanding job (default: "
-        "runtime.session.UNDERSTANDING_IDLE_MINUTES).",
-    ),
-    chat_idle_minutes: int = typer.Option(
-        None, help="Grace after a /himonkey reply (default: runtime.session.CHAT_IDLE_MINUTES)."
-    ),
-    drama_idle_minutes: int = typer.Option(
-        None, help="Grace after a /短劇 artifact (default: runtime.session.DRAMA_IDLE_MINUTES)."
+    grace_minutes: float = typer.Option(
+        None, "--grace-minutes",
+        help="Grace when the last activity recorded none "
+        "(default: runtime.session.DEFAULT_GRACE_MINUTES).",
     ),
     hold: bool = typer.Option(
         False, "--hold/--no-hold",
@@ -689,21 +677,15 @@ def session_reap(
 ) -> None:
     """Close the pod once it has gone quiet. Schedule this every minute.
 
-    The grace depends on what the pod last rendered. Pass --hold when work
-    is waiting for the pod — it is then never closed, whatever the clock says.
+    The grace is whatever the caller of `touch_activity` recorded with its
+    last activity, else --grace-minutes. Pass --hold when work is waiting for
+    the pod — it is then never closed, whatever the clock says.
     """
     _setup_logging("reap")
     from ai_studio.runtime import session as sess
 
     decision = sess.close_if_idle(
-        image_idle_minutes=image_idle_minutes or sess.IMAGE_IDLE_MINUTES,
-        video_idle_minutes=video_idle_minutes or sess.VIDEO_IDLE_MINUTES,
-        understanding_idle_minutes=(
-            understanding_idle_minutes or sess.UNDERSTANDING_IDLE_MINUTES
-        ),
-        chat_idle_minutes=chat_idle_minutes or sess.CHAT_IDLE_MINUTES,
-        drama_idle_minutes=drama_idle_minutes or sess.DRAMA_IDLE_MINUTES,
-        hold=hold,
+        default_grace_minutes=grace_minutes or sess.DEFAULT_GRACE_MINUTES, hold=hold,
     )
     console.print(str(decision))
     sess.log_reap(decision)

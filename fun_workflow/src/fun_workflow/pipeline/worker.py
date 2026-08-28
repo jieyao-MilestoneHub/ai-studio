@@ -96,8 +96,9 @@ class WindowHost(Protocol):
         inference server, `pipeline.pod_llm.PodLlmClient`), or None to
         convert with the template fallback and no LLM at all."""
 
-    def touch_activity(self, media_kind: str) -> None:
-        """Reset the idle reaper's timer, recording what was just rendered."""
+    def touch_activity(self, kind: JobKind) -> None:
+        """Reset the idle reaper's timer, recording what was just rendered and
+        the grace it deserves (`pipeline.idle.grace_for`)."""
 
     async def deliver(self, job: Job, asset: Path | None) -> str:
         """Tell the group. `asset` is None when the job failed.
@@ -383,7 +384,7 @@ async def _run_one(
                 deadline=deadline, poll_interval_s=poll_interval_s,
                 # Per artifact, not per job: a drama is 15-30 minutes and the
                 # reaper's grace is 10. Every fetched still or clip is activity.
-                on_activity=lambda: host.touch_activity(JobKind.DRAMA.value),
+                on_activity=lambda: host.touch_activity(JobKind.DRAMA),
             )
         elif job.media_kind.is_understanding:
             result = await render_understanding(job, provider, deadline, poll_interval_s)
@@ -442,7 +443,7 @@ async def _run_one(
     report.seconds.append(time.monotonic() - started)
     # Without this a long render looks like idleness and the reaper closes the
     # window out from under the next job.
-    host.touch_activity(job.media_kind.value)
+    host.touch_activity(job.media_kind)
     finished = queue.by_id(job.id)
     _log.info(
         "job %d done in %.0fs -> %s", job.id, report.seconds[-1], result,

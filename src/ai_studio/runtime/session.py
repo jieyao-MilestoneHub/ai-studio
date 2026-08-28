@@ -220,9 +220,12 @@ class Session:
     provisioned: bool = False
     """Whether `deploy/pod_setup.sh` has been started on this pod. Set by
     `mark_provisioned`; the worker provisions once and then only waits."""
-    last_media_kind: str = ""
-    """What the last render was ("image"/"video"), so the reaper can give a
-    video pod -- whose model takes 90 s to reload -- a longer grace."""
+    last_activity_label: str = ""
+    """What the caller said it just did (free text, for the reaper log)."""
+    grace_minutes: float | None = None
+    """How long the caller wants this pod kept after that activity; None
+    means `DEFAULT_GRACE_MINUTES`. The caller knows what it rendered and what
+    the next request is likely to be; this side only keeps the clock."""
 
     @property
     def comfy_url(self) -> str:
@@ -708,40 +711,12 @@ def pull_pod_logs(session: Session, dest: Path, *, timeout_s: float = POD_LOG_PU
     return written
 
 
-IMAGE_IDLE_MINUTES = 5
-VIDEO_IDLE_MINUTES = 10
-UNDERSTANDING_IDLE_MINUTES = 5
-CHAT_IDLE_MINUTES = 15
-DRAMA_IDLE_MINUTES = 10
-"""How long a quiet pod is kept after its last render, by what it rendered.
-
-Numbers differ because the reloads cost differently: Flux comes back into
-VRAM in 📏 ~15 s, H3's 32B text encoder in 📏 60-90 s. `UNDERSTANDING_IDLE_MINUTES`
-is `[speculative]` -- nothing has measured a lazy-load cost for moondream3,
-Qwen3-Omni-Captioner, or Tarsier2 on this hardware yet, and the three are not
-even the same size, so one shared number is a starting point, not a
-considered answer. A pod is worth keeping only while the chance of the next
-request within the grace, times the reload it would save, beats the idle
-minutes -- and in a group chat the next message usually comes within five
-minutes or not for hours. The reaper log says how often a pod was closed and
-reopened within a few minutes, which is the number that tunes these.
-
-`CHAT_IDLE_MINUTES` is deliberately the longest grace, and for a different
-reason than the others: a `/himonkey` conversation's cadence is many short
-exchanges with ordinary pauses in between, and every reopen has a real fixed
-floor (`runtime.budget.MIN_SESSION_MINUTES` worth of billing) *and* consumes
-one of the day's `max_pod_opens_per_day` opens -- a ceiling that, once hit,
-blocks new video and image sessions too. A grace long enough to survive a
-conversation's ordinary pauses is both cheaper and safer for the rest of the
-service than one short enough to reopen repeatedly. `[speculative]`, same as
-`UNDERSTANDING_IDLE_MINUTES` -- retune from the reaper log once real chat
-traffic exists, not from this guess.
-
-`DRAMA_IDLE_MINUTES` equals the video grace because a drama's last GPU job is
-an H3 clip. What makes it safe for a 15-30 minute render is not the number:
-`pipeline.drama` calls `touch_activity("drama")` after *every* fetched still
-or clip, so the grace only ever measures a real gap, never a long render.
-"""
+DEFAULT_GRACE_MINUTES = 10.0
+"""How long a quiet pod is kept after its last activity when the caller
+recorded no grace of its own (`touch_activity(grace_minutes=...)`). Ten
+minutes covers H3's text-encoder reload (📏 60-90 s) many times over; the
+side that knows what it just rendered, and what the next request is likely
+to be, passes a better number."""
 
 
 class ReapDecision(str):
@@ -767,18 +742,15 @@ class ReapDecision(str):
 
 def close_if_idle(
     *,
-    image_idle_minutes: int = IMAGE_IDLE_MINUTES,
-    video_idle_minutes: int = VIDEO_IDLE_MINUTES,
-    understanding_idle_minutes: int = UNDERSTANDING_IDLE_MINUTES,
-    chat_idle_minutes: int = CHAT_IDLE_MINUTES,
-    drama_idle_minutes: int = DRAMA_IDLE_MINUTES,
+    default_grace_minutes: float = DEFAULT_GRACE_MINUTES,
     hold: bool = False,
     name: str = "ai-studio-window",
 ) -> ReapDecision:
-    """Close the pod when it has gone quiet; the grace depends on what it
-    last rendered. `hold=True` (work is waiting in the queue) never closes:
-    a pod with a job about to land on it is not idle, whatever the clock says
-    -- closing it there is the one move that costs a cold open *and* the wait.
+    """Close the pod when it has gone quiet. The grace is whatever the last
+    `touch_activity` recorded, else `default_grace_minutes`. `hold=True`
+    (the caller has work waiting) never closes: a pod with a job about to
+    land on it is not idle, whatever the clock says -- closing it there is
+    the one move that costs a cold open *and* the wait.
     """
     session = load_state()
     if session is None:
@@ -793,16 +765,8 @@ def close_if_idle(
     state = _read_state_raw()
     last = state.get("last_activity_at") or session.opened_at
     idle = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() / 60
-    overrides = {
-        "image": image_idle_minutes,
-        "video": video_idle_minutes,
-        "image_understand": understanding_idle_minutes,
-        "audio_understand": understanding_idle_minutes,
-        "video_understand": understanding_idle_minutes,
-        "chat": chat_idle_minutes,
-        "drama": drama_idle_minutes,
-    }
-    grace = overrides.get(str(state.get("last_media_kind") or ""), video_idle_minutes)
+    recorded = state.get("grace_minutes")
+    grace = float(recorded) if isinstance(recorded, int | float) and recorded > 0 else default_grace_minutes
     if hold:
         return ReapDecision(
             f"held: work pending ({idle:.0f}min idle, spent ${session.spent_usd():.2f})",
@@ -810,7 +774,7 @@ def close_if_idle(
         )
     if idle >= grace:
         return ReapDecision(
-            f"idle {idle:.0f}min >= {grace}; {close_session(name=name, reason='idle')}",
+            f"idle {idle:.0f}min >= {grace:g}; {close_session(name=name, reason='idle')}",
             action="closed", idle_min=idle, grace=grace, spent_usd=session.spent_usd(), pod_id=session.pod_id,
         )
     return ReapDecision(
@@ -955,14 +919,17 @@ def load_state() -> Session | None:
     return Session(**{k: v for k, v in raw.items() if k in known})
 
 
-def touch_activity(media_kind: str | None = None) -> None:
-    """Record that work just happened, so the idle timer restarts, and what
-    kind it was, so the reaper can pick the right grace."""
+def touch_activity(label: str | None = None, *, grace_minutes: float | None = None) -> None:
+    """Record that work just happened, so the idle timer restarts; optionally
+    what it was (for the log) and how long the pod is worth keeping after it
+    (the reaper's grace, until the next touch)."""
     raw = _read_state_raw()
     if raw:
         raw["last_activity_at"] = datetime.now(timezone.utc).isoformat()
-        if media_kind:
-            raw["last_media_kind"] = media_kind
+        if label:
+            raw["last_activity_label"] = label
+        if grace_minutes is not None:
+            raw["grace_minutes"] = float(grace_minutes)
         STATE_FILE.write_text(json.dumps(raw, indent=2), encoding="utf-8")
 
 

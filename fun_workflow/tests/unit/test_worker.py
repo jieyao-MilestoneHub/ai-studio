@@ -275,9 +275,9 @@ class FakeHost:
             MediaKind.CHAT: self.chat,
         }
 
-    def touch_activity(self, media_kind: str) -> None:
+    def touch_activity(self, kind: Any) -> None:
         self.touches += 1
-        self.touched_kinds.append(media_kind)
+        self.touched_kinds.append(kind.value)
 
     async def deliver(self, job: Any, asset: Any) -> str:
         if self.deliver_raises is not None:
