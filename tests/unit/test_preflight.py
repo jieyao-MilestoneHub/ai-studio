@@ -1,4 +1,4 @@
-"""The pre-launch checklist.
+"""The GPU side's pre-launch checklist, and the checklist machinery itself.
 
 There is no stub in this project, so this checklist is what stands between the
 implementation and the one affordable live run. That gives it an unusual
@@ -21,7 +21,6 @@ from ai_studio.cli import preflight
 from ai_studio.cli.main import app
 from ai_studio.cli.preflight import CheckResult, Status, run_all, stamp, summarise
 from ai_studio.config import settings as settings_mod
-from ai_studio.config.fun_settings import get_fun_settings
 from ai_studio.config.settings import get_settings
 
 runner = CliRunner()
@@ -48,11 +47,9 @@ def _no_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(settings_mod, "ENV_FILE", tmp_path / ".env")
     get_settings(refresh=True)
-    get_fun_settings(refresh=True)
     yield
     monkeypatch.undo()
     get_settings(refresh=True)
-    get_fun_settings(refresh=True)
 
 
 # ------------------------------------------------------- the checklist's honesty
@@ -61,17 +58,7 @@ def _no_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 def test_a_check_that_cannot_run_skips_rather_than_passing() -> None:
     """The failure mode that would make this whole module worse than nothing:
     "we could not verify this" rendering as "this is verified"."""
-    assert preflight.check_signature_and_dedupe().status is Status.SKIP
     assert preflight.check_placement().status is Status.SKIP
-
-
-def test_the_conversion_check_runs_offline_and_passes() -> None:
-    """The rewriter is gpt-oss on the pod, which does not exist before a
-    window; the check proves the queue -> prompt -> `_rendered` path with a
-    scripted reply instead of skipping, so it is a real assertion."""
-    result = preflight.check_queue_and_conversion()
-    assert result.status is Status.PASS, result.detail
-    assert "built_by=llm" in result.detail
 
 
 def test_every_skip_says_why() -> None:
@@ -82,10 +69,9 @@ def test_every_skip_says_why() -> None:
             assert result.detail.strip(), f"check {result.number} skipped silently"
 
 
-def test_green_means_all_nine_not_merely_no_failures() -> None:
-    """Phase 4's own definition of done is nine passes. A checklist that
-    reports "fine" with three unknowns on it is worse than no checklist,
-    because it gets believed."""
+def test_green_means_all_pass_not_merely_no_failures() -> None:
+    """A checklist that reports "fine" with three unknowns on it is worse
+    than no checklist, because it gets believed."""
     nine_pass = [CheckResult(n, f"c{n}", Status.PASS, "") for n in range(1, 10)]
     with_a_skip = [*nine_pass[:-1], CheckResult(9, "c9", Status.SKIP, "no key")]
     with_a_fail = [*nine_pass[:-1], CheckResult(9, "c9", Status.FAIL, "broken")]
@@ -103,7 +89,7 @@ def test_an_empty_result_list_is_never_green() -> None:
 def test_a_check_that_raises_becomes_a_failure_not_a_crash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One broken check must not cost you the other eight results."""
+    """One broken check must not cost you the other results."""
 
     def boom() -> CheckResult:
         raise RuntimeError("the disk fell off")
@@ -111,16 +97,16 @@ def test_a_check_that_raises_becomes_a_failure_not_a_crash(
     monkeypatch.setattr(preflight, "check_graphs", boom)
     results = run_all(run_suite=False)
 
-    assert len(results) == 9
+    assert len(results) == 4
     broken = [r for r in results if r.status is Status.FAIL]
     assert any("the disk fell off" in r.detail for r in broken)
 
 
-def test_all_nine_checks_run_in_plan_order() -> None:
+def test_all_checks_run_in_order() -> None:
     results = run_all(run_suite=False)
 
-    assert [r.number for r in results] == list(range(1, 10))
-    assert len({r.name for r in results}) == 9
+    assert [r.number for r in results] == list(range(1, 5))
+    assert len({r.name for r in results}) == 4
 
 
 # --------------------------------------------------------- the offline checks
@@ -137,57 +123,6 @@ def test_the_graphs_check_loads_every_workflow(monkeypatch: pytest.MonkeyPatch) 
     assert "flux_dev.json" in result.detail
 
 
-def test_the_range_check_proves_206_end_to_end() -> None:
-    """LINE's video message needs it and nothing about the failure says so."""
-    result = preflight.check_files_range()
-
-    assert result.status is Status.PASS
-    assert "bytes 0-99/1024" in result.detail
-
-
-def test_the_out_of_hours_check_is_the_one_that_guards_real_money() -> None:
-    """It runs at any hour because the clock is injected — otherwise it could
-    only be verified for two hours a day, which is when nobody is looking."""
-    result = preflight.check_out_of_hours()
-
-    assert result.status is Status.PASS, result.detail
-    assert "no pod created" in result.detail
-
-
-def test_the_out_of_hours_check_output_is_ascii() -> None:
-    """The reply it inspects is Chinese and the Windows console is cp950. A
-    detail string that quoted it would render as mojibake in the one place an
-    operator reads it."""
-    result = preflight.check_out_of_hours()
-
-    assert result.detail.isascii(), result.detail
-
-
-# ----------------------------------------------------------- the push guard
-
-
-def test_the_push_check_never_sends_unless_asked() -> None:
-    """The only check that messages real people and spends real quota. Opt-in
-    behind a flag, not merely gated on credentials being present."""
-    assert preflight.check_push(send=False).status is Status.SKIP
-    assert "pass --push" in preflight.check_push(send=False).detail
-
-
-def test_the_push_check_still_needs_credentials_when_asked() -> None:
-    result = preflight.check_push(send=True)
-
-    assert result.status is Status.SKIP
-    assert "LINE_CHANNEL_ACCESS_TOKEN" in result.detail
-
-
-def test_run_all_does_not_push_by_default() -> None:
-    """The default path must be unable to send anything, whatever is in .env."""
-    results = run_all(run_suite=False)
-    push = next(r for r in results if r.number == 5)
-
-    assert push.status is Status.SKIP
-
-
 # ------------------------------------------------------------------- the CLI
 
 
@@ -195,12 +130,12 @@ def test_preflight_is_a_real_command() -> None:
     result = runner.invoke(app, ["preflight", "--help"])
 
     assert result.exit_code == 0, result.output
-    assert "--push" in result.output
+    assert "--skip-suite" in result.output
 
 
 def test_the_command_exits_nonzero_when_it_is_not_green() -> None:
-    """This exit code is the Phase 7 gate. A zero here on a bare machine would
-    say "everything is proved" when six things were skipped."""
+    """A zero here on a bare machine would say "everything is proved" when
+    the placement check was skipped."""
     result = runner.invoke(app, ["preflight", "--skip-suite"])
 
     assert result.exit_code == 1
@@ -213,18 +148,18 @@ def test_the_command_exits_zero_when_every_check_passes(
     monkeypatch.setattr(
         preflight,
         "run_all",
-        lambda **_: [CheckResult(n, f"check {n}", Status.PASS, "ok") for n in range(1, 10)],
+        lambda **_: [CheckResult(n, f"check {n}", Status.PASS, "ok") for n in range(1, 5)],
     )
 
     result = runner.invoke(app, ["preflight", "--skip-suite"])
 
     assert result.exit_code == 0, result.output
-    assert "all nine green" in result.output
+    assert "all green" in result.output
 
 
 def test_the_command_never_opens_a_pod(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The whole premise of Phase 4 is that it costs nothing. `runpodctl` is
-    the only way a pod gets created, so nothing may shell out to it."""
+    """The whole premise is that it costs nothing. `runpodctl` is the only
+    way a pod gets created, so nothing may shell out to it."""
     from ai_studio.runtime import session as sess
 
     def forbidden(*args: str, **kwargs: object) -> dict[str, object]:

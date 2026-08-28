@@ -989,3 +989,33 @@ def _read_state_raw() -> dict[str, Any]:
         # shape we do not recognise risks reporting "nothing is billing".
         raise PodError(f"{STATE_FILE} is not a JSON object: {type(data).__name__}")
     return data
+
+
+REAP_LAST = Path("runs/.reap_last.json")
+
+def log_reap(decision: Any) -> None:
+    """DEBUG every minute (JSONL only), INFO only when the action changes.
+
+    The reaper fires every minute and used to be ~65 % of the host's journald
+    volume saying `held: work pending` (📏 2026-08-28); the transitions are
+    the information, the repeats are not."""
+    log = logging.getLogger("ai_studio.reap")
+    fields = {
+        "action": getattr(decision, "action", None), "idle_min": round(getattr(decision, "idle_min", 0.0), 1),
+        "grace": getattr(decision, "grace", None), "spent": round(getattr(decision, "spent_usd", 0.0), 2),
+        "pod_id": getattr(decision, "pod_id", None),
+    }
+    previous = None
+    try:
+        previous = json.loads(REAP_LAST.read_text(encoding="utf-8")).get("action")
+    except Exception:
+        previous = None
+    if fields["action"] != previous:
+        log.info("reap: %s", decision, extra=fields)
+        try:
+            REAP_LAST.parent.mkdir(parents=True, exist_ok=True)
+            REAP_LAST.write_text(json.dumps({"action": fields["action"]}), encoding="utf-8")
+        except OSError:
+            pass
+    else:
+        log.debug("reap: %s", decision, extra=fields)

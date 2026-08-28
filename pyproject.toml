@@ -22,9 +22,6 @@ dependencies = [
 
 [project.optional-dependencies]
 s3 = ["boto3>=1.34"]
-# The always-on side: LINE webhook, status page, file serving. Kept optional so
-# the generation pipeline installs without a web stack.
-line = ["fastapi>=0.115", "uvicorn[standard]>=0.30"]
 
 [project.scripts]
 ai-studio = "ai_studio.cli.main:app"
@@ -38,17 +35,14 @@ dev = [
     "import-linter>=2.0",
     "types-pyyaml>=6.0",
     "pre-commit>=3.7",
-    # The api/bots tests import fastapi.testclient directly, so the web stack has
-    # to be present for `uv sync --group dev` alone to collect the whole suite.
-    # Self-referencing the extra rather than repeating the pins keeps the two in
-    # step; `line` stays optional for runtime installs that skip the web stack.
-    "ai-studio[line]",
-    # `deploy/inference_server.py`'s /submit route uses File()/Form()/UploadFile,
-    # which FastAPI only supports with python-multipart installed -- without it,
-    # even importing the module (to unit-test its slot-safety logic) raises at
-    # the `@app.post("/submit")` decorator, before any test runs. Not otherwise
-    # a dependency of this package; the pod installs its own copy separately
-    # (see deploy/pod_setup.sh) since inference_server.py is standalone.
+    # `deploy/inference_server.py` is a standalone FastAPI app that runs on the
+    # pod; its /submit route uses File()/Form()/UploadFile, which FastAPI only
+    # supports with python-multipart installed -- without both, even importing
+    # the module (to unit-test its slot-safety logic) raises at the decorator.
+    # Neither is a dependency of this package; the pod installs its own copies
+    # (see deploy/pod_setup.sh). The web service that takes requests lives in
+    # fun_workflow/, with its own web stack.
+    "fastapi>=0.115",
     "python-multipart>=0.0.9",
 ]
 
@@ -160,31 +154,3 @@ name = "Swapping the model cannot touch editing"
 type = "forbidden"
 source_modules = ["ai_studio.render"]
 forbidden_modules = ["ai_studio.providers", "ai_studio.comfy"]
-
-[[tool.importlinter.contracts]]
-# No library layer may depend on the LINE/web side, so that side stays a leaf
-# and can be changed or dropped without touching the pipeline.
-#
-# `ai_studio.cli` is deliberately absent from the source list: it is the
-# composition root. Wiring the pieces together is its entire job, and it has to
-# import the app to be able to serve it. Every *library* module is still bound.
-name = "Phase-2 packages stay leaves"
-type = "forbidden"
-source_modules = [
-    "ai_studio.core",
-    "ai_studio.config",
-    "ai_studio.prompts",
-    "ai_studio.editing",
-    "ai_studio.storage",
-    "ai_studio.media",
-    "ai_studio.llm",
-    "ai_studio.gates",
-    "ai_studio.providers",
-    "ai_studio.comfy",
-    "ai_studio.inference",
-    "ai_studio.planner",
-    "ai_studio.render",
-    "ai_studio.pipeline",
-    "ai_studio.runtime",
-]
-forbidden_modules = ["ai_studio.api", "ai_studio.bots"]

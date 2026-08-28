@@ -4,15 +4,19 @@ What the always-on host accumulates and where it would otherwise go:
 
 - `logs/<service>/<day>.jsonl`, `logs/sessions/`, `logs/pods/` -- the trace;
   nothing rotated them (no logrotate on the box).
-- `runs/queue.sqlite3` -- the audit trail; WAL, never checkpointed, and
-  `sqlite3` the CLI is not installed, so `cp` would be undefined behaviour.
-- `runs/drama/<token>/state.json` + `render_manifest.json`, the spend ledger
-  and its retired months, `files/index.jsonl`.
+- the spend ledger and its retired months, the session, reap and pod-open
+  records under `runs/`;
+- whatever the caller adds (`extra_members`): the request side keeps its
+  drama state and delivery index here, and hands in its live WAL queue as
+  `sqlite` -- `sqlite3` the CLI is not installed, so `cp` would be
+  undefined behaviour, and a snapshot is the only honest copy.
 
-One run, every day at 03:00 Asia/Taipei (`deploy/jetson_setup.sh`):
+One run, every day at 03:00 Asia/Taipei (`funapp archive`, which wraps
+`run_archive` with the request side's own members):
 
-1. snapshot the queue with `sqlite3.Connection.backup()` (then checkpoint
-   the WAL so the live file stops growing);
+1. snapshot the sqlite database, if one was handed in, with
+   `sqlite3.Connection.backup()` (then checkpoint the WAL so the live file
+   stops growing);
 2. stream a tar of every member into `zstd -19 -T0`
    (`archive/<day>/ai-studio-<local stamp>.tar.zst`; `lzma` `.tar.xz` when
    `zstd` is not on PATH -- the tests take that path), and list it back;
@@ -27,8 +31,7 @@ One run, every day at 03:00 Asia/Taipei (`deploy/jetson_setup.sh`):
    after would find nothing left to read for those days;
 5. prune -- hot logs older than `log_hot_days` **only if a manifest names
    them** (never anything unarchived); archives older than
-   `archive_keep_days`; `runs/_dryrun`, `runs/_stub`, `out/` at 30 d; empty
-   `runs/drama/<token>` dirs; `chat_turns` rows older than 30 d; VACUUM.
+   `archive_keep_days`; `runs/_dryrun`, `runs/_stub`, `out/` at 30 d.
 
 Idempotent: a second run the same day finds the manifest, skips the tar and
 still prunes; the benchmark rollup tracks its own `days_included` per month
@@ -50,6 +53,7 @@ import sqlite3
 import subprocess
 import tarfile
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -63,8 +67,6 @@ from ai_studio.storage.retention import SweepResult, sweep_old_files
 _log = logging.getLogger("ai_studio.archive")
 
 RUNS_SWEEP_DAYS = 30.0
-CHAT_TURNS_KEEP_DAYS = 30.0
-"""Under log_dir, besides the per-service JSONL directories."""
 
 
 @dataclass(frozen=True)
@@ -90,8 +92,6 @@ class ArchiveResult:
     bytes_after: int = 0
     hot_deleted: int = 0
     archives_deleted: int = 0
-    chat_turns_deleted: int = 0
-    drama_dirs_removed: int = 0
     swept: dict[str, SweepResult] = field(default_factory=dict)
     benchmark_folded: dict[str, int] = field(default_factory=dict)
     """`{month: days newly folded in}` from `update_benchmark_report`."""
@@ -109,7 +109,7 @@ class ArchiveResult:
         benchmark_days = sum(self.benchmark_folded.values())
         return (
             f"{head}: {made}; pruned hot={self.hot_deleted} archives={self.archives_deleted} "
-            f"runs={swept} drama-dirs={self.drama_dirs_removed} chat_turns={self.chat_turns_deleted}; "
+            f"runs={swept}; "
             f"benchmark days folded={benchmark_days}"
         )
 
@@ -122,10 +122,11 @@ def local_today() -> date:
 
 
 def collect_members(
-    *, log_dir: Path, runs_dir: Path, files_dir: Path, today: date
+    *, log_dir: Path, runs_dir: Path, today: date, extra: Iterable[Path] = ()
 ) -> list[Path]:
     """Everything worth keeping that is not media. Today's JSONL files are
-    still being written to and are left for tomorrow's run."""
+    still being written to and are left for tomorrow's run. `extra` is what
+    a caller with more state wants kept too (missing paths are skipped)."""
     members: list[Path] = []
     if log_dir.is_dir():
         for service_dir in sorted(p for p in log_dir.iterdir() if p.is_dir()):
@@ -136,39 +137,38 @@ def collect_members(
                 day = jsonl.stem
                 if day < today.isoformat():
                     members.append(jsonl)
-    drama = runs_dir / "drama"
-    if drama.is_dir():
-        for token_dir in sorted(p for p in drama.iterdir() if p.is_dir()):
-            for name in ("state.json", "render_manifest.json"):
-                if (token_dir / name).is_file():
-                    members.append(token_dir / name)
-    for name in (".spend_ledger.json", ".session.json", ".reap_last.json"):
+    for name in (".spend_ledger.json", ".session.json", ".reap_last.json", ".pod_opens.json"):
         if (runs_dir / name).is_file():
             members.append(runs_dir / name)
     members += sorted(runs_dir.glob("spend-*.json"))
-    index = files_dir / "index.jsonl"
-    if index.is_file():
-        members.append(index)
+    members += [p for p in extra if p.is_file()]
     return members
 
 
 def plan_archive(
-    *, log_dir: Path, runs_dir: Path, files_dir: Path, archive_dir: Path, today: date | None = None
+    *,
+    log_dir: Path,
+    runs_dir: Path,
+    archive_dir: Path,
+    today: date | None = None,
+    sqlite: Path | None = None,
+    extra: Iterable[Path] = (),
 ) -> ArchivePlan:
+    """`sqlite` is a live WAL database to snapshot into the tar (a plain copy
+    of one is undefined behaviour); `extra` is more files to keep."""
     today = today or local_today()
     day_dir = archive_dir / today.isoformat()
     manifest = day_dir / "manifest.json"
     stamp = datetime.now(LOCAL_TZ).strftime("%Y-%m-%dT%H%M%S%z")
     suffix = ".tar.zst" if shutil.which("zstd") else ".tar.xz"
     tar_path = day_dir / f"ai-studio-{stamp}{suffix}"
-    members = collect_members(log_dir=log_dir, runs_dir=runs_dir, files_dir=files_dir, today=today)
-    db = runs_dir / "queue.sqlite3"
+    members = collect_members(log_dir=log_dir, runs_dir=runs_dir, today=today, extra=extra)
     return ArchivePlan(
         day=today.isoformat(),
         tar_path=tar_path,
         manifest_path=manifest,
         members=members,
-        sqlite_source=db if db.is_file() else None,
+        sqlite_source=sqlite if sqlite is not None and sqlite.is_file() else None,
         already_archived=manifest.is_file(),
     )
 
@@ -366,42 +366,6 @@ def prune_runs(*, runs_dir: Path, out_dir: Path, days: float = RUNS_SWEEP_DAYS, 
     return results
 
 
-def remove_empty_drama_dirs(runs_dir: Path, *, dry_run: bool = False) -> int:
-    drama = runs_dir / "drama"
-    if not drama.is_dir():
-        return 0
-    removed = 0
-    for token_dir in sorted(p for p in drama.iterdir() if p.is_dir()):
-        if not any(token_dir.rglob("*")) or all(p.is_dir() for p in token_dir.rglob("*")):
-            if not dry_run:
-                shutil.rmtree(token_dir, ignore_errors=True)
-            removed += 1
-    return removed
-
-
-def prune_chat_turns(db: Path, *, days: float = CHAT_TURNS_KEEP_DAYS, dry_run: bool = False) -> int:
-    """`chat_turns` is the rolling context window, not the audit trail (that
-    is `jobs`, which is never deleted). Rows older than `days` go; then a
-    VACUUM in this connection -- it fails harmlessly if a writer is busy."""
-    if not db.is_file():
-        return 0
-    cutoff = datetime.now(LOCAL_TZ).timestamp() - days * 86400
-    conn = sqlite3.connect(db, timeout=30.0)
-    try:
-        n = conn.execute("SELECT COUNT(*) FROM chat_turns WHERE created_at < ?", (cutoff,)).fetchone()[0]
-        if not dry_run and n:
-            conn.execute("DELETE FROM chat_turns WHERE created_at < ?", (cutoff,))
-            conn.commit()
-        if not dry_run:
-            try:
-                conn.execute("VACUUM")
-            except sqlite3.OperationalError as exc:
-                _log.warning("vacuum skipped: %s", exc)
-        return int(n)
-    finally:
-        conn.close()
-
-
 # ------------------------------------------------------------------ the run
 
 
@@ -410,16 +374,20 @@ def run_archive(
     root: Path,
     log_dir: Path,
     runs_dir: Path,
-    files_dir: Path,
     out_dir: Path,
     archive_dir: Path,
     hot_days: float,
     keep_days: float,
     today: date | None = None,
     dry_run: bool = False,
+    sqlite: Path | None = None,
+    extra_members: Iterable[Path] = (),
 ) -> ArchiveResult:
     today = today or local_today()
-    plan = plan_archive(log_dir=log_dir, runs_dir=runs_dir, files_dir=files_dir, archive_dir=archive_dir, today=today)
+    plan = plan_archive(
+        log_dir=log_dir, runs_dir=runs_dir, archive_dir=archive_dir, today=today,
+        sqlite=sqlite, extra=extra_members,
+    )
     result = ArchiveResult(plan=plan, dry_run=dry_run)
 
     if plan.already_archived:
@@ -470,9 +438,6 @@ def run_archive(
     result.hot_deleted = prune_hot(log_dir=log_dir, root=root, hot_days=hot_days, archived=archived, today=today, dry_run=dry_run)
     result.archives_deleted = prune_archives(archive_dir, keep_days=keep_days, today=today, dry_run=dry_run)
     result.swept = prune_runs(runs_dir=runs_dir, out_dir=out_dir, dry_run=dry_run)
-    result.drama_dirs_removed = remove_empty_drama_dirs(runs_dir, dry_run=dry_run)
-    if plan.sqlite_source is not None:
-        result.chat_turns_deleted = prune_chat_turns(plan.sqlite_source, dry_run=dry_run)
     _log.info(result.summary(), extra={"stage": "archive"})
     return result
 

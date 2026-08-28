@@ -18,7 +18,6 @@ from pathlib import Path
 import pytest
 
 from ai_studio.benchmark import report as bench
-from ai_studio.pipeline.queue import JobQueue
 from ai_studio.storage import archive as arc
 
 TODAY = date(2026, 8, 28)
@@ -49,23 +48,24 @@ def _tree(root: Path, *, today: date = TODAY) -> dict[str, Path]:
     stale = time.time() - 60 * 86400
     for key in ("session", "pod_log", "stale_dryrun", "stale_out"):
         os.utime(paths[key], (stale, stale))
-    (runs / "drama" / "empty-tok").mkdir(parents=True)
-    with JobQueue(runs / "queue.sqlite3") as q:
-        q.enqueue("evt-1", "Cgroup", "a cat", user_id="U1")
-        q.append_chat_turn("U1", "Cgroup", "user", "old")
-        conn = sqlite3.connect(runs / "queue.sqlite3")
-        conn.execute("UPDATE chat_turns SET created_at = ?", (stale,))
-        conn.commit()
-        conn.close()
-        q.append_chat_turn("U1", "Cgroup", "user", "fresh")
+    # A live WAL database, the shape the request side hands in: a plain copy
+    # of one is undefined behaviour, which is why the archive snapshots it.
+    conn = sqlite3.connect(runs / "queue.sqlite3")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE jobs (text TEXT)")
+    conn.execute("INSERT INTO jobs VALUES ('a cat')")
+    conn.commit()
+    conn.close()
     paths.update(log_dir=log_dir, runs=runs, files=files, out=out, archive=root / "archive")
     return paths
 
 
 def _run(root: Path, p: dict[str, Path], *, today: date = TODAY, dry_run: bool = False) -> arc.ArchiveResult:
     return arc.run_archive(
-        root=root, log_dir=p["log_dir"], runs_dir=p["runs"], files_dir=p["files"], out_dir=p["out"],
+        root=root, log_dir=p["log_dir"], runs_dir=p["runs"], out_dir=p["out"],
         archive_dir=p["archive"], hot_days=30, keep_days=365, today=today, dry_run=dry_run,
+        sqlite=p["runs"] / "queue.sqlite3",
+        extra_members=[p["drama_state"], p["drama_manifest"], p["index"], p["runs"] / "nope.json"],
     )
 
 
@@ -104,15 +104,9 @@ def test_a_run_archives_everything_and_prunes_only_what_it_proved(tmp_path: Path
     assert not p["old_jsonl"].exists() and not p["session"].exists() and not p["pod_log"].exists()
     assert p["recent_jsonl"].exists() and p["today_jsonl"].exists()
     assert result.hot_deleted == 3
-    # runs/out sweeps and the empty drama dir
+    # runs/out sweeps; extra members are kept, not pruned
     assert not p["stale_dryrun"].exists() and not p["stale_out"].exists()
-    assert not (p["runs"] / "drama" / "empty-tok").exists() and p["drama_state"].exists()
-    # chat_turns pruned, jobs intact
-    conn = sqlite3.connect(p["runs"] / "queue.sqlite3")
-    assert conn.execute("SELECT COUNT(*) FROM chat_turns").fetchone()[0] == 1
-    assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
-    conn.close()
-    assert result.chat_turns_deleted == 1
+    assert p["drama_state"].exists() and p["index"].exists()
 
 
 def test_the_snapshot_is_a_real_database_not_a_copy_of_a_wal_file(tmp_path: Path, monkeypatch) -> None:
