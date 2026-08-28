@@ -88,12 +88,22 @@ Phase 0（護欄）
 
 ### Phase 2 — S1 題庫 + Wave 1 作答（**專案第 0 天**）
 
-- 一次批次 Teacher 呼叫，依 §3.2 的題型比例（30/25/25/20：價值取捨/偏好/反應傾向/回想），從 Phase 1 的 held-out 碎片產生 60–80 題情境題。
-- 最簡單的作答與計時工具（試算表即可）。
+**狀態：程式部分已完成（2026-08-28）。真實一批題庫生成＋真實 Wave 1 作答仍待辦——見下方「仍待辦」，這是全計畫唯一會真正啟動 14 天時鐘的動作，故意留給使用者主動觸發，不是這輪程式化實作的一部分。**
 
-**依據**：EVAL.md §1.2、§3.2、§3.3。
-**驗收**：`R1` 已記錄，題庫已凍結／雜湊，時間戳存在——此時間戳即為專案第 0 天。
-**類型**：程式（少量）+ 人工（作答本身）——**全計畫最重要的一個驗收點**。
+- [x] `harness/suites/s1.py::build_item_bank()`：一次批次 Teacher 呼叫（D9 少次、大批，函式內最多呼叫一次，無重試邏輯），依 §3.2 的題型比例（30/25/25/20：價值取捨/偏好/反應傾向/回想，SHOULD、非強制精確；prompt 內以目標總數 70 題換算成建議題數 21/18/17/14）從 Phase 1 的 `Split.HELDOUT` 碎片產生情境題；拒絕引用碎片集合以外的 `source_fragment_ids`（`TeacherError`）、拒絕非 held-out 來源碎片（`HarnessError`，引用 §3.1/§9/反模式 #7）、拒絕總題數落在 60–80 之外、拒絕重複題目。`item_id` 為內容雜湊（比照 `harness/shard.py::sample_id` 的做法，對 item_type/prompt/options/source_fragment_ids 取 sha256），使題庫層級的雜湊天然對內容敏感。
+- [x] `harness/item_bank.py`（新模組）：`S1BankManifest`／`S1WaveManifest`、`bank_hash()`（複用 `core.hashing.dataset_hash`）、`write_item_bank_once()`／`read_and_verify_item_bank()`（凍結後任何竄改皆可偵測）、`write_wave_manifest_once()`——`S1WaveManifest.completed_at` 就是「專案第 0 天」的存證產物，寫在 `twin/eval/s1/`（既有 SPEC §8 護欄 2 gitignored 目錄）。
+- [x] `harness/schema.py` 新增 `S1Answer`（`item_id`/`wave`/`answer`/`answered_at`，`answer` 恆為選項原文，非自由輸入，供 Phase 6 的 R1/R2 精確比對）。
+- [x] `examples/build_s1_item_bank.py`：一次性產生＋凍結題庫的驅動腳本，印出題型分布供人眼比對 SHOULD 比例，明確 `y/N` 確認後才凍結（凍結前找不到 fragment store 會給出可行動的錯誤訊息，不是裸 traceback）。
+- [x] `examples/collect_s1_answers.py`：`--wave {1,2}` 互動式作答蒐集，作答前先驗證題庫雜湊未被竄改，逐題以選項編號記錄（非自由輸入）、每題即寫檔（可斷點續答），Wave 1 全部答完的瞬間寫入 `r1_manifest.json`——那個時間戳即為第 0 天。
+- [x] 測試：`test_harness_suites_s1.py`（11 個測試，含拒絕規則、`item_id` 決定性、恰好一次 Teacher 呼叫）、`test_harness_item_bank.py`（6 個測試，含凍結後竄改偵測、fail-fast 不留半寫狀態）、`test_harness_schema.py` 補 `S1Answer` 往返測試。移除 `test_harness_suites_are_thin.py` 裡 S1 的 pin 測試（S2/S3/S4 維持不動）。`uv run pytest`／`lint-imports`／`ruff`／`mypy` 全過。
+
+**依據**：EVAL.md §1.2、§3.1、§3.2、§3.3、§9、§12 反模式 #7。
+**驗收**：`R1` 已記錄，題庫已凍結／雜湊，時間戳存在——此時間戳即為專案第 0 天。**已具備程式機制**（write-once + hash 驗證），**真實一輪尚未執行**。
+**類型**：程式（已完成）+ 人工（作答本身，仍待辦）——**全計畫最重要的一個驗收點**。
+
+**仍待辦（人工＋一次性操作）**：
+1. Phase 1 的真實 LINE 匯出 ingest（仍是本項目最上游的缺口——`twin/data/` 目前沒有任何 `fragments.jsonl`，兩支新腳本都會在這裡卡住並給出明確訊息）。
+2. 上述完成後，跑 `uv run python examples/build_s1_item_bank.py`（真的花 1 次 Gemini 配額）、`uv run python examples/collect_s1_answers.py --wave 1`——這一步完成的瞬間就是專案第 0 天，14 天倒數開始，之後才輪到 `--wave 2`（Phase 6）。
 
 ### Phase 3 — AI 訪談員、訪談本身、後處理（與 Phase 1/2 平行，須在 14 天內完成）
 

@@ -5,12 +5,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
 
 from twin.core.enums import ExposureEvidence, GroundTruthSource, NegativeClass, Split
 from twin.core.trajectory import Exposure, NoActionStep, Trajectory
 from twin.harness.schema import (
     HarnessError,
     RawEvalSample,
+    S1Answer,
     StrippedSample,
     TaskVerifier,
     reject_synthesized_for_eval,
@@ -53,3 +55,19 @@ def test_reject_synthesized_for_eval_raises_on_synthesized_data() -> None:
         reject_synthesized_for_eval(
             [_trajectory(GroundTruthSource.OBSERVED), _trajectory(GroundTruthSource.TEACHER_SYNTHESIZED)]
         )
+
+
+def test_s1_answer_round_trips_through_json() -> None:
+    answer = S1Answer(item_id="a" * 16, wave=1, answer="option text", answered_at=datetime(2026, 8, 28, tzinfo=UTC))
+    assert S1Answer.model_validate_json(answer.model_dump_json()) == answer
+
+
+def test_s1_answer_is_frozen() -> None:
+    answer = S1Answer(item_id="a" * 16, wave=1, answer="x", answered_at=datetime(2026, 8, 28, tzinfo=UTC))
+    with pytest.raises(ValidationError):
+        answer.answer = "y"  # type: ignore[misc]
+
+
+def test_s1_answer_wave_must_be_1_or_2() -> None:
+    with pytest.raises(ValidationError):
+        S1Answer(item_id="a" * 16, wave=3, answer="x", answered_at=datetime(2026, 8, 28, tzinfo=UTC))  # type: ignore[arg-type]

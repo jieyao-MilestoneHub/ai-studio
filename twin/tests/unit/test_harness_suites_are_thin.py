@@ -6,12 +6,10 @@ from __future__ import annotations
 
 import pytest
 
-from twin.harness.suites import s1, s2, s3, s4
+from twin.harness.suites import s2, s3, s4
 
-
-def test_s1_build_item_bank_is_not_yet_implemented() -> None:
-    with pytest.raises(NotImplementedError, match="Phase 2"):
-        s1.build_item_bank(held_out_fragment_ids=[], teacher=object())
+# s1 is no longer pinned here — twin/PLAN.md Phase 2 landed real behavior;
+# see tests/unit/test_harness_suites_s1.py.
 
 
 def test_s2_run_held_out_tasks_is_not_yet_implemented() -> None:

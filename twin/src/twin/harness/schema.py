@@ -6,6 +6,7 @@ is ever delegated to an LLM's judgment about shape or content.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -67,6 +68,20 @@ class S1Item(BaseModel):
     prompt: str
     options: list[str] | None
     source_fragment_ids: list[str]
+
+
+class S1Answer(BaseModel):
+    """EVAL.md §3.2 Wave 1/Wave 2 (R1/R2): one recorded answer to a frozen
+    `S1Item`. `answer` MUST be verbatim one of that item's own `options` —
+    never free text — so Phase 6's `agreement(R1, R2)` is an exact-match
+    comparison, not fuzzy string matching."""
+
+    model_config = ConfigDict(frozen=True)
+
+    item_id: str
+    wave: Literal[1, 2]
+    answer: str
+    answered_at: datetime
 
 
 class VerifiedTaskResult(BaseModel):
@@ -147,6 +162,7 @@ __all__ = [
     "HarnessError",
     "JudgedItem",
     "RawEvalSample",
+    "S1Answer",
     "S1Item",
     "S1Metrics",
     "S2Metrics",
