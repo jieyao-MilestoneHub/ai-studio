@@ -8,6 +8,16 @@ layer. Instead a provider publishes a `ProviderCapabilities` snapshot into
 `provider_manifest.json`, and everyone downstream reads the snapshot.
 
 Dependency inverted: nothing above `core` needs to know a provider exists.
+
+Shared shape across the four spec files (`provider_spec`,
+`image_provider_spec`, `understanding_spec`, `chat_spec`), so a reader of
+any one knows the others: a `*Capabilities` model with `native_aspect` /
+`supports` where the output has a canvas; a `*Request`; a `*Job` with
+`is_terminal` (state will not change again), `elapsed_s` (submit to last
+poll) and `with_state` (an immutable copy with the new state and timestamp);
+and a `*Asset` with `aspect` where there is an image. The methods are
+undocumented in the other three files on purpose -- they mean the same
+thing everywhere.
 """
 
 from __future__ import annotations

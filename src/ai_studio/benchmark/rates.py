@@ -21,6 +21,9 @@ from ai_studio.core.observability import LOCAL_TZ
 
 @dataclass(frozen=True)
 class GpuRate:
+    """What the open pod rents for: the tier, its hourly rate, its card and
+    where it is -- the live half of any score display.
+    """
     tier: str
     usd_per_hr: float
     vram_gb: int

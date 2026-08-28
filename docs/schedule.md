@@ -1,22 +1,17 @@
-# The service window
+# The pod's lifecycle
 
-One pod, one window a day. The window exists because a session's fixed cost is
-~20 minutes (boot, 51GB weight download, node install) while a clip is ~5
-minutes — so opening a pod per request would spend 80% of the money on setup.
+One pod, opened by the first request and closed minutes after the last
+render. There is no daily window and no business hours (decision
+2026-08-27): with the model weights on a network volume a cold open is a
+ComfyUI restart (~1 minute), so there is nothing left to amortise by
+batching requests into a fixed slot. What protects money instead is the
+monthly budget guard, the daily open cap and the three closers described
+below.
 
-Since the LINE bot's image trigger (`/圖片`, see [line-bot.md](../fun_workflow/docs/line-bot.md))
-shares this same pod, both model sets — H3 and Flux.1-dev — download on every
-open. See [runpod.md](runpod.md) for the updated download math (~72–78GB
-combined, up from H3's ~54.7GB alone).
-
-## The window
-
-| | |
-|---|---|
-| Local | **11:00 – 13:00** Asia/Taipei |
-| UTC | 03:00 – 05:00 |
-| Length | 2.0 h |
-| Capacity | ~100 usable minutes ÷ ~5 min = **~20 clips/day**, ~600/month |
+Since the image trigger (`/圖片`, see [line-bot.md](../fun_workflow/docs/line-bot.md))
+shares this same pod, both model sets — H3 and Flux.1-dev — live on the same
+volume. See [runpod.md](runpod.md) for the download math (~72–78GB combined,
+up from H3's ~54.7GB alone; a one-time cost per volume, not per open).
 
 One FIFO queue serves both the video trigger (`/影片`, and `/圖影` for image-to-video) and the image
 trigger (`/圖片`, see [line-bot.md](../fun_workflow/docs/line-bot.md)) — `funapp worker`

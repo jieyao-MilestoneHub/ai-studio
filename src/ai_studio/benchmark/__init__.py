@@ -3,7 +3,9 @@ per GPU tier -- the numbers this project exists to collect.
 
 `records` defines the log line a render emits; `report` folds those lines
 into `runs/benchmark/<YYYY-MM>.json`; `rates` reads that file and the open
-session back out for display. Nothing in here opens a pod.
+session back out for display; `measured` is every figure the docs mark 📏,
+as data; `export` writes the timestamped snapshots under `assets/metrics/`
+and renders README's metrics block. Nothing in here opens a pod.
 """
 
 from ai_studio.benchmark.rates import GpuRate, live_rate, month_report, tier_stats

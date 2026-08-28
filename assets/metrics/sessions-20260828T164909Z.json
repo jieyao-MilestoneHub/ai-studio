@@ -1,0 +1,146 @@
+{
+  "generated_at": "2026-08-28T16:49:09+00:00",
+  "kind": "sessions",
+  "note": "Pod sessions from the spend ledger (this calendar month) joined with logs/sessions/ by tier. De-identified: no pod ids, no request content.",
+  "data": {
+    "tiers": {
+      "RTX 4090/SECURE": {
+        "sessions": 18,
+        "gpu_minutes": 590.98,
+        "gpu_hours": 9.85,
+        "usd": 7.289,
+        "minutes_min": 8.21,
+        "minutes_median": 20.99,
+        "minutes_max": 118.7,
+        "usd_per_hr": [
+          0.74
+        ],
+        "gpu": [
+          "NVIDIA GeForce RTX 4090"
+        ],
+        "datacenters": [
+          "EUR-IS-1"
+        ],
+        "vram_gb": [
+          24
+        ],
+        "quantisation": [
+          "int8"
+        ],
+        "closed_because": {
+          "idle": 1
+        }
+      }
+    },
+    "sessions": [
+      {
+        "date": "2026-08-26",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 14.35,
+        "usd": 0.1769
+      },
+      {
+        "date": "2026-08-26",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 32.21,
+        "usd": 0.3973
+      },
+      {
+        "date": "2026-08-27",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 45.32,
+        "usd": 0.5589
+      },
+      {
+        "date": "2026-08-27",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 8.5,
+        "usd": 0.1048
+      },
+      {
+        "date": "2026-08-27",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 8.37,
+        "usd": 0.1033
+      },
+      {
+        "date": "2026-08-27",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 8.69,
+        "usd": 0.1072
+      },
+      {
+        "date": "2026-08-27",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 8.21,
+        "usd": 0.1013
+      },
+      {
+        "date": "2026-08-27",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 18.73,
+        "usd": 0.231
+      },
+      {
+        "date": "2026-08-27",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 31.11,
+        "usd": 0.3837
+      },
+      {
+        "date": "2026-08-27",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 17.02,
+        "usd": 0.21
+      },
+      {
+        "date": "2026-08-27",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 13.91,
+        "usd": 0.1716
+      },
+      {
+        "date": "2026-08-27",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 8.81,
+        "usd": 0.1087
+      },
+      {
+        "date": "2026-08-27",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 44.5,
+        "usd": 0.5489
+      },
+      {
+        "date": "2026-08-27",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 46.54,
+        "usd": 0.574
+      },
+      {
+        "date": "2026-08-27",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 110.7,
+        "usd": 1.3654
+      },
+      {
+        "date": "2026-08-28",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 118.7,
+        "usd": 1.4639
+      },
+      {
+        "date": "2026-08-28",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 32.06,
+        "usd": 0.3954
+      },
+      {
+        "date": "2026-08-28",
+        "tier": "RTX 4090/SECURE",
+        "minutes": 23.25,
+        "usd": 0.2867
+      }
+    ]
+  }
+}

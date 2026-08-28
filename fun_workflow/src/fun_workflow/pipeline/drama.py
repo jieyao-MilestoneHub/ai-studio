@@ -357,6 +357,7 @@ def _count_missing(state: DramaState, shots: int) -> dict[str, int]:
 
 
 def load_state(run_dir: Path) -> DramaState:
+    """The drama's resumable state from `<run_dir>/state.json`, or a fresh one."""
     path = Path(run_dir) / "state.json"
     if not path.is_file():
         return DramaState()
@@ -370,6 +371,9 @@ def load_state(run_dir: Path) -> DramaState:
 
 
 def save_state(run_dir: Path, state: DramaState) -> None:
+    """Write the state atomically; every artifact is recorded the moment it
+    exists so a requeued drama never pays for it twice.
+    """
     now = utc_now_iso()
     state.updated_at = now
     if not state.created_at:

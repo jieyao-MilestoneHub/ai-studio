@@ -204,9 +204,9 @@ a failed conversion and is retried, not truncated — CLIP-L reads 77 tokens.
 - Failure falls back to submitting the original text with
   `built_by="template (llm failed: …)"` recorded on the job. A worse picture
   beats no picture, and the record is what explains it afterwards.
-- This does add the image path to the LLM serverless cost line in
-  [line-bot.md](line-bot.md#cost), which it previously did not touch. One
-  ~400-token completion per image.
+- The rewrite is one ~400-token completion per image by gpt-oss-20b on the
+  same pod, batched with the other pending rewrites so N requests pay one
+  model swap (`fun_workflow/pipeline/worker.py::prepare`).
 
 `QUALITY_SUFFIX` is appended by `render()` and is deliberately generic
 ("highly detailed, sharp focus, natural lighting, photorealistic"). Anything
