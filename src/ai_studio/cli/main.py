@@ -257,11 +257,11 @@ def metrics_export(
 
 @metrics_app.command("readme")
 def metrics_readme(
-    readme: Path = typer.Option(Path("README.md"), "--readme"),
+    readme: Path = typer.Option(Path("assets/metrics/README.md"), "--readme"),
     metrics: Path = typer.Option(Path("assets/metrics"), "--metrics", help="Snapshot directory."),
 ) -> None:
-    """Re-render README's `<!-- metrics:start -->` block from the latest
-    snapshot of each kind. Only that block changes."""
+    """Re-render the `<!-- metrics:start -->` block in assets/metrics/README.md
+    from the latest snapshot of each kind. Only that block changes."""
     from ai_studio.benchmark.export import latest, render_markdown, update_readme
 
     snapshots = latest(metrics)

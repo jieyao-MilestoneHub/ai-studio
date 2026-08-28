@@ -13,7 +13,7 @@ Three kinds, each a JSON file named `<kind>-<UTC stamp>Z.json`:
 
 `render_markdown` turns the latest snapshot of each kind into the block
 `ai-studio metrics readme` writes between `<!-- metrics:start -->` and
-`<!-- metrics:end -->` in README.md. Nothing in here reads the pod runtime:
+`<!-- metrics:end -->` in `assets/metrics/README.md`. Nothing in here reads the pod runtime:
 the CLI hands the ledger and the session records in.
 """
 
@@ -160,7 +160,8 @@ def _num(value: Any, places: int = 1) -> str:
 
 
 def render_markdown(snapshots: Mapping[str, Mapping[str, Any]], *, metrics_dir: str = "assets/metrics") -> str:
-    """The README block. Honest about gaps: a kind with no snapshot says so."""
+    """The tables for assets/metrics/README.md. Honest about gaps: a kind with
+    no snapshot says so."""
     out: list[str] = []
     stamps = sorted({str(s.get("generated_at", "")) for s in snapshots.values()})
     out.append(f"_Snapshot {stamps[-1] if stamps else 'none'} — RunPod Secure Cloud, our own runs only. "
