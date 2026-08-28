@@ -183,6 +183,11 @@ class ClipAsset(BaseModel):
     provider: str
     job_id: str
     cost_usd: float = Field(default=0.0, ge=0)
+    peak_vram_gb: float | None = None
+    """Peak VRAM ComfyUI's own `/system_stats` reported while this job was in
+    flight (see `comfy/jobs.py::poll_job`). None when the backend never
+    exposed it (the stub provider) or a sample failed -- a benchmark metric
+    missing one point is fine; a render that fails because of one is not."""
 
     @property
     def aspect(self) -> float:

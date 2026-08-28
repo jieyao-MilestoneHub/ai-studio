@@ -105,7 +105,11 @@ async def test_poll_reports_completion_from_history(provider: FluxComfyUIProvide
             "outputs": {"13": {"images": [{"filename": "out.png", "subfolder": "", "type": "output"}]}},
         }
 
+    async def fake_system_stats() -> dict[str, Any]:
+        return {"devices": [{"type": "cuda", "vram_total": 25_000_000_000, "vram_free": 5_000_000_000}]}
+
     provider.client.history = fake_history  # type: ignore[method-assign]
+    provider.client.system_stats = fake_system_stats  # type: ignore[method-assign]
 
     job = ImageJob(
         provider="flux", job_id="prompt-1", shot_id="job1", state=JobState.QUEUED,
@@ -114,6 +118,8 @@ async def test_poll_reports_completion_from_history(provider: FluxComfyUIProvide
     updated = await provider.poll(job)
     assert updated.state is JobState.COMPLETED
     assert updated.raw["output"]["filename"] == "out.png"
+    # `poll_job` samples VRAM via /system_stats on every poll (comfy/jobs.py).
+    assert updated.raw["peak_vram_bytes"] == 20_000_000_000
 
 
 @pytest.mark.asyncio

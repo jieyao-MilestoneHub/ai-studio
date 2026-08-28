@@ -120,6 +120,8 @@ class ImageAsset(BaseModel):
     provider: str
     job_id: str
     cost_usd: float = Field(default=0.0, ge=0)
+    peak_vram_gb: float | None = None
+    """Same meaning as `ClipAsset.peak_vram_gb` -- see `comfy/jobs.py::poll_job`."""
 
     @property
     def aspect(self) -> float:

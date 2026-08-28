@@ -151,6 +151,7 @@ async def drain_window(
     window_end: datetime,
     files_dir: Path,
     gpu_tier: str | None = None,
+    gpu_usd_per_hr: float | None = None,
     poll_interval_s: float = 15.0,
     max_clips: int | None = None,
     on_activity: Any = None,
@@ -197,7 +198,7 @@ async def drain_window(
             report.stopped_early = "three consecutive failures; the pod looks broken"
             break
 
-        job = queue.claim_next(gpu_tier=gpu_tier)
+        job = queue.claim_next(gpu_tier=gpu_tier, usd_per_hr=gpu_usd_per_hr)
         if job is None:
             break
 
@@ -331,8 +332,19 @@ async def render_clip(
         raise ProviderError(f"generation failed: {clip_job.error or clip_job.state.value}")
 
     dest = files_dir / f"{job.token}.mp4"
-    await provider.fetch(clip_job, dest)
-    _log.info("fetched clip", extra={"stage": "render", "seconds": round(time.monotonic() - _submitted, 1), "polls": _polls})
+    asset = await provider.fetch(clip_job, dest)
+    _log.info(
+        "fetched clip",
+        extra={
+            "stage": "render",
+            "seconds": round(time.monotonic() - _submitted, 1),
+            "polls": _polls,
+            "cost_usd": asset.cost_usd,
+            "vram_gb": asset.peak_vram_gb,
+            "frames": frames,
+            "gpu_tier": job.gpu_tier,
+        },
+    )
     return dest
 
 
@@ -378,8 +390,18 @@ async def render_image(
         raise ProviderError(f"generation failed: {image_job.error or image_job.state.value}")
 
     dest = files_dir / f"{job.token}.{caps.output_format}"
-    await provider.fetch(image_job, dest)
-    _log.info("fetched image", extra={"stage": "render", "seconds": round(time.monotonic() - _submitted, 1), "polls": _polls})
+    asset = await provider.fetch(image_job, dest)
+    _log.info(
+        "fetched image",
+        extra={
+            "stage": "render",
+            "seconds": round(time.monotonic() - _submitted, 1),
+            "polls": _polls,
+            "cost_usd": asset.cost_usd,
+            "vram_gb": asset.peak_vram_gb,
+            "gpu_tier": job.gpu_tier,
+        },
+    )
     return dest
 
 

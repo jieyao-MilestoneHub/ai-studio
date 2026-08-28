@@ -351,6 +351,8 @@ def _render(job: Job, position: int | None, base_url: str) -> str:
         rows.append(("佇列位次", f"第 {position} 位"))
     if job.gpu_tier:
         rows.append(("使用的 GPU", html.escape(job.gpu_tier)))
+    if job.gpu_usd_per_hr:
+        rows.append(("GPU 租用價格", f"${job.gpu_usd_per_hr:.3f}/hr"))
     model_name, model_url = model_for(job.media_kind)
     rows.append((
         "開源模型",

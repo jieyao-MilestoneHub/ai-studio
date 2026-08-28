@@ -212,9 +212,11 @@ async def tick(
     )
 
     kind = next_kind(queue, state)
-    job = queue.claim_next(gpu_tier=getattr(session, "tier_label", None), media_kind=kind)
+    tier_label = getattr(session, "tier_label", None)
+    usd_per_hr = getattr(session, "cost_per_hr", None)
+    job = queue.claim_next(gpu_tier=tier_label, usd_per_hr=usd_per_hr, media_kind=kind)
     if job is None and kind is not None:
-        job = queue.claim_next(gpu_tier=getattr(session, "tier_label", None))
+        job = queue.claim_next(gpu_tier=tier_label, usd_per_hr=usd_per_hr)
     if job is None:
         # Nothing claimable: either everything is still queued behind a
         # deferred rewrite (see prepare) or someone else took it between the

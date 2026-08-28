@@ -202,6 +202,7 @@ class FakeChatProvider:
 class FakeSession:
     pod_id = "pod-1"
     tier_label = "L40S/SECURE"
+    cost_per_hr = 1.004
 
 
 class FakeHost:
@@ -395,6 +396,21 @@ async def test_a_parsed_request_opens_a_pod_and_renders(queue, tmp_path: Path) -
     assert host.opens == 1 and host.waits == 1
     assert queue.by_token(job.token).state is JobState.DONE
     assert Path(queue.by_token(job.token).output_path).is_file()
+
+
+@pytest.mark.asyncio
+async def test_a_claim_persists_the_sessions_hourly_rate_alongside_the_tier(
+    queue, tmp_path: Path
+) -> None:
+    """`/q/{token}` shows this later; see `Job.gpu_usd_per_hr`."""
+    job = _parsed(queue)
+    host = FakeHost()
+
+    await _tick(queue, host, tmp_path)
+
+    claimed = queue.by_token(job.token)
+    assert claimed.gpu_tier == FakeSession.tier_label
+    assert claimed.gpu_usd_per_hr == FakeSession.cost_per_hr
 
 
 @pytest.mark.asyncio

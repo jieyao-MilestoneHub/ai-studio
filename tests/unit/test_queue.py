@@ -87,6 +87,30 @@ def test_only_a_parsed_job_is_claimable(q: JobQueue) -> None:
     assert claimed.prompt == PROMPT
 
 
+def test_claim_persists_the_claiming_sessions_hourly_rate(q: JobQueue) -> None:
+    """`/q/{token}` shows this later, possibly long after the session that
+    served the job has closed -- so it has to be stored at claim time, not
+    looked up live. See `Job.gpu_usd_per_hr`."""
+    job = _add(q)
+    q.set_parsed(job.id, PROMPT)
+
+    claimed = q.claim_next(gpu_tier="L40S/COMMUNITY", usd_per_hr=1.004)
+    assert claimed is not None
+    assert claimed.gpu_usd_per_hr == 1.004
+    assert q.by_token(job.token).gpu_usd_per_hr == 1.004
+
+
+def test_claim_without_a_rate_leaves_it_unset(q: JobQueue) -> None:
+    """The manual `session drain` path may not always have a rate to pass;
+    the page must simply omit the row rather than show a stale one."""
+    job = _add(q)
+    q.set_parsed(job.id, PROMPT)
+
+    claimed = q.claim_next(gpu_tier="L40S/COMMUNITY")
+    assert claimed is not None
+    assert claimed.gpu_usd_per_hr is None
+
+
 def test_claim_is_atomic_so_the_same_job_is_never_served_twice(q: JobQueue) -> None:
     job = _add(q)
     q.set_parsed(job.id, PROMPT)

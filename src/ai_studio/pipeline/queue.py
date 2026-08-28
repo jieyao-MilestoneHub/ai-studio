@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     cost_usd    REAL,
     error       TEXT,
     gpu_tier    TEXT,
+    gpu_usd_per_hr REAL,
     created_at  REAL    NOT NULL,
     parsed_at   REAL,
     started_at  REAL,
@@ -180,6 +181,14 @@ class Job:
     still tracked only at the session level (`runtime.budget.SpendLedger`)."""
     error: str | None
     gpu_tier: str | None
+    gpu_usd_per_hr: float | None
+    """The claimed GPU tier's hourly rental rate at claim time, in dollars.
+
+    Persisted rather than looked up live: the `Session` that served this job
+    may have long since closed by the time someone opens `/q/{token}`, so a
+    live read would silently go blank. Not accumulated spend -- see
+    `Job.cost_usd` for that, which stays populated only for chat jobs today.
+    """
     created_at: float
     parsed_at: float | None
     started_at: float | None
@@ -234,6 +243,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         cost_usd=row["cost_usd"],
         error=row["error"],
         gpu_tier=row["gpu_tier"],
+        gpu_usd_per_hr=row["gpu_usd_per_hr"],
         created_at=row["created_at"],
         parsed_at=row["parsed_at"],
         started_at=row["started_at"],
@@ -284,6 +294,8 @@ class JobQueue:
             conn.execute("ALTER TABLE jobs ADD COLUMN message_id TEXT")
         if "reply_message_id" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN reply_message_id TEXT")
+        if "gpu_usd_per_hr" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN gpu_usd_per_hr REAL")
 
     def _connect(self) -> sqlite3.Connection:
         """One connection per thread, all pointing at the same file.
@@ -394,30 +406,40 @@ class JobQueue:
         return _row_to_job(row) if row else None
 
     def claim_next(
-        self, gpu_tier: str | None = None, *, media_kind: MediaKind | None = None
+        self,
+        gpu_tier: str | None = None,
+        *,
+        usd_per_hr: float | None = None,
+        media_kind: MediaKind | None = None,
     ) -> Job | None:
         """Atomically take the oldest `parsed` job and mark it `running`.
 
         One statement, so two drainers cannot both claim the same job and pay
         for the same clip twice. `media_kind` narrows it to one kind -- the
         worker's model-affinity claim, which keeps the checkpoint already on
-        the card busy instead of swapping (see `worker.next_kind`).
+        the card busy instead of swapping (see `worker.next_kind`). `usd_per_hr`
+        is the claiming session's live hourly rate for `gpu_tier`, persisted
+        alongside it so `/q/{token}` can show what the GPU actually rents for
+        without a live lookup -- see `Job.gpu_usd_per_hr`.
         """
         if media_kind is None:
             cur = self._conn.execute(
-                "UPDATE jobs SET state=?, started_at=?, attempts=attempts+1, gpu_tier=?"
+                "UPDATE jobs SET state=?, started_at=?, attempts=attempts+1, gpu_tier=?,"
+                " gpu_usd_per_hr=?"
                 " WHERE id = (SELECT id FROM jobs WHERE state=? ORDER BY created_at LIMIT 1)"
                 " RETURNING *",
-                (JobState.RUNNING.value, time.time(), gpu_tier, JobState.PARSED.value),
+                (JobState.RUNNING.value, time.time(), gpu_tier, usd_per_hr,
+                 JobState.PARSED.value),
             )
         else:
             cur = self._conn.execute(
-                "UPDATE jobs SET state=?, started_at=?, attempts=attempts+1, gpu_tier=?"
+                "UPDATE jobs SET state=?, started_at=?, attempts=attempts+1, gpu_tier=?,"
+                " gpu_usd_per_hr=?"
                 " WHERE id = (SELECT id FROM jobs WHERE state=? AND media_kind=?"
                 "            ORDER BY created_at LIMIT 1)"
                 " RETURNING *",
-                (JobState.RUNNING.value, time.time(), gpu_tier, JobState.PARSED.value,
-                 media_kind.value),
+                (JobState.RUNNING.value, time.time(), gpu_tier, usd_per_hr,
+                 JobState.PARSED.value, media_kind.value),
             )
         row = cur.fetchone()
         return _row_to_job(row) if row else None

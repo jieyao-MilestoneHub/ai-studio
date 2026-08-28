@@ -56,15 +56,49 @@ class _JobLike(Protocol):
 J = TypeVar("J", bound=_JobLike)
 
 
+async def _sample_peak_vram_bytes(client: ComfyClient, previous: Any) -> int | None:
+    """Best-effort VRAM sample from ComfyUI's own `/system_stats`, folded into
+    a running max across a job's polls -- real usage observed during a real
+    render, not a synthetic benchmark. A failed sample must never fail the
+    render it is riding along on, so a `ProviderError` here (the pod
+    unreachable, a 5xx) is swallowed and the running peak carried forward
+    unchanged, the same way `cancel_job` already swallows an interrupt that
+    fails.
+
+    Reads the first CUDA device's `vram_total - vram_free`, matching
+    ComfyUI's `/system_stats` shape as of the pod's pinned version (see
+    `deploy/pod_setup.sh`) -- confirm this against a live pod (`ai-studio
+    generate` against a real session) before trusting the numbers it
+    produces for anything beyond a rough benchmark signal.
+    """
+    baseline = int(previous) if isinstance(previous, int | float) else 0
+    try:
+        stats = await client.system_stats()
+    except ProviderError:
+        return baseline or None
+    devices = stats.get("devices")
+    if not isinstance(devices, list):
+        return baseline or None
+    for device in devices:
+        if not isinstance(device, dict) or device.get("type") != "cuda":
+            continue
+        total, free = device.get("vram_total"), device.get("vram_free")
+        if isinstance(total, int | float) and isinstance(free, int | float):
+            return max(baseline, int(total) - int(free))
+    return baseline or None
+
+
 async def poll_job(client: ComfyClient, job: J) -> J:
     """Refresh a job's state from ComfyUI's `/history` and `/queue`."""
     now = time.time()
+    peak_vram = await _sample_peak_vram_bytes(client, job.raw.get("peak_vram_bytes"))
+    raw = {**job.raw, "peak_vram_bytes": peak_vram}
     entry = await client.history(job.job_id)
 
     if entry is None:
         position = await client.queue_position(job.job_id)
         state = JobState.QUEUED if position is not None else JobState.RUNNING
-        return job.with_state(state, now=now, queue_position=position)  # type: ignore[no-any-return]
+        return job.with_state(state, now=now, queue_position=position, raw=raw)  # type: ignore[no-any-return]
 
     status, error = ComfyClient.status_of(entry)
     if status == "success":
@@ -74,13 +108,14 @@ async def poll_job(client: ComfyClient, job: J) -> J:
                 JobState.FAILED,
                 now=now,
                 error="ComfyUI reported success but produced no output files",
+                raw=raw,
             )
         return job.with_state(  # type: ignore[no-any-return]
-            JobState.COMPLETED, now=now, raw={**job.raw, "output": outputs[0].__dict__}
+            JobState.COMPLETED, now=now, raw={**raw, "output": outputs[0].__dict__}
         )
     if status == "error":
-        return job.with_state(JobState.FAILED, now=now, error=error or "execution error")  # type: ignore[no-any-return]
-    return job.with_state(JobState.RUNNING, now=now)  # type: ignore[no-any-return]
+        return job.with_state(JobState.FAILED, now=now, error=error or "execution error", raw=raw)  # type: ignore[no-any-return]
+    return job.with_state(JobState.RUNNING, now=now, raw=raw)  # type: ignore[no-any-return]
 
 
 async def cancel_job(client: ComfyClient) -> None:

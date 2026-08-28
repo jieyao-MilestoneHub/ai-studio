@@ -177,3 +177,102 @@ def test_a_verification_gap_discards_the_tar_and_raises(tmp_path: Path, monkeypa
         _run(tmp_path, p)
     assert not list((tmp_path / "archive").rglob("*.tar.*"))
     assert p["old_jsonl"].exists(), "nothing pruned when the archive could not be proved"
+
+
+# ------------------------------------------------------------- benchmarking
+
+
+def _write_jsonl(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+
+_CLIP_RECORD = {
+    "stage": "render", "msg": "fetched clip", "kind": "video", "gpu_tier": "RTX 4090/COMMUNITY",
+    "seconds": 300.0, "cost_usd": 0.06, "vram_gb": 20.5, "frames": 124,
+}
+
+
+def test_update_benchmark_report_folds_real_renders_by_kind_and_tier(tmp_path: Path) -> None:
+    log_dir, runs_dir = tmp_path / "logs", tmp_path / "runs"
+    _write_jsonl(
+        log_dir / "worker" / "2026-08-20.jsonl",
+        [
+            _CLIP_RECORD,
+            {**_CLIP_RECORD, "seconds": 320.0, "cost_usd": 0.065, "vram_gb": 21.0},
+            # A non-render line in the same file must not be counted.
+            {"stage": "claim", "msg": "claimed", "kind": "video", "gpu_tier": "RTX 4090/COMMUNITY"},
+        ],
+    )
+    folded = arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
+    assert folded == {"2026-08": 1}
+
+    payload = json.loads((runs_dir / "benchmark" / "2026-08.json").read_text(encoding="utf-8"))
+    assert payload["days_included"] == ["2026-08-20"]
+    group = payload["groups"]["video/RTX 4090/COMMUNITY"]
+    assert group["count"] == 2
+    assert group["seconds_mean"] == pytest.approx(310.0)
+    # The stored mean is rounded to 3dp (see `_with_means`), so compare at
+    # that same precision rather than the raw float.
+    assert group["frames_per_s_mean"] == round((124 / 300 + 124 / 320) / 2, 3)
+
+
+def test_update_benchmark_report_folds_each_day_at_most_once(tmp_path: Path) -> None:
+    log_dir, runs_dir = tmp_path / "logs", tmp_path / "runs"
+    _write_jsonl(log_dir / "worker" / "2026-08-20.jsonl", [_CLIP_RECORD])
+
+    first = arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
+    second = arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
+
+    assert first == {"2026-08": 1}
+    assert second == {}, "the day is already in days_included; nothing new to fold"
+    group = json.loads((runs_dir / "benchmark" / "2026-08.json").read_text(encoding="utf-8"))["groups"]
+    assert group["video/RTX 4090/COMMUNITY"]["count"] == 1
+
+
+def test_a_months_total_survives_its_source_log_being_pruned(tmp_path: Path) -> None:
+    """Sums, not a recompute from raw JSONL: `prune_hot` deletes the day
+    file this same run tars away, and the month's total must not shrink the
+    next time this runs."""
+    log_dir, runs_dir = tmp_path / "logs", tmp_path / "runs"
+    jsonl = log_dir / "worker" / "2026-08-20.jsonl"
+    _write_jsonl(jsonl, [_CLIP_RECORD])
+    arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
+
+    jsonl.unlink()  # what prune_hot would have done weeks later
+    folded = arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
+
+    assert folded == {}
+    group = json.loads((runs_dir / "benchmark" / "2026-08.json").read_text(encoding="utf-8"))["groups"]
+    assert group["video/RTX 4090/COMMUNITY"]["count"] == 1
+
+
+def test_update_benchmark_report_dry_run_writes_nothing(tmp_path: Path) -> None:
+    log_dir, runs_dir = tmp_path / "logs", tmp_path / "runs"
+    _write_jsonl(log_dir / "worker" / "2026-08-20.jsonl", [_CLIP_RECORD])
+
+    folded = arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY, dry_run=True)
+
+    assert folded == {"2026-08": 1}
+    assert not (runs_dir / "benchmark").exists()
+
+
+def test_update_benchmark_report_ignores_todays_still_open_file(tmp_path: Path) -> None:
+    log_dir, runs_dir = tmp_path / "logs", tmp_path / "runs"
+    _write_jsonl(log_dir / "worker" / f"{TODAY.isoformat()}.jsonl", [_CLIP_RECORD])
+
+    assert arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY) == {}
+
+
+def test_run_archive_folds_benchmarks_from_the_same_jsonl_it_tars(tmp_path: Path, monkeypatch) -> None:
+    """End-to-end: a real `archive` run, not just a direct call, produces
+    the rollup from the exact worker log it is about to tar away."""
+    monkeypatch.setattr(arc.shutil, "which", lambda name: None)
+    p = _tree(tmp_path)
+    p["old_jsonl"].write_text(json.dumps(_CLIP_RECORD) + "\n", encoding="utf-8")
+
+    result = _run(tmp_path, p)
+
+    assert result.benchmark_folded
+    group = json.loads((p["runs"] / "benchmark" / "2026-07.json").read_text(encoding="utf-8"))["groups"]
+    assert group["video/RTX 4090/COMMUNITY"]["count"] == 1

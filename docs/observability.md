@@ -76,6 +76,7 @@ the per-minute `held:` line was ~65 % of journald volume before.
 | `runs/drama/<token>/render_manifest.json` | assembly | `generated_at`, token, job id, spend, face-repair verdict, stage timings, every ffmpeg argv |
 | `files/index.jsonl` | the worker, on completion | `{ts, token, job_id, kind, path, bytes, sha256}` — the only map from a random filename back to its request |
 | `runs/spend-<YYYY-MM>.json` | the ledger, on month rollover | the retired month (it used to be discarded on the 1st) |
+| `runs/benchmark/<YYYY-MM>.json` | `ai-studio archive`, daily | per-`(kind, gpu_tier)` count and mean seconds/VRAM/cost/frames-per-s, folded from every real `/影片`/`/圖片` job's "fetched clip"/"fetched image" line — see below |
 | pod `setup.log` / `inference.log` | `pod_setup.sh`, `inference_server.py` | UTC ISO timestamps on every line since 2026-08-28 |
 
 ## Backup: `ai-studio archive`
@@ -93,7 +94,21 @@ needs a destination added (rclone/rsync the `archive/` tree).
 3. list the archive back; a missing member discards the tar and raises.
 4. `manifest.json`: `ts`, host, git sha, every member's size + sha256, bytes
    before/after.
-5. prune — **only what a manifest names**: hot logs older than
+5. fold every real render's JSONL line collected in step 2 into
+   `runs/benchmark/<YYYY-MM>.json` — real GPU performance from actual
+   `/影片`/`/圖片` traffic, never a synthetic benchmark run (see
+   `providers.comfyui.MEASURED_LATENCY_S`, currently `[reported]`, and
+   `docs/model-h3.md`'s own 📏 methodology, which this is meant to feed —
+   promoting a number out of this file into either of those is still a
+   person's call, not automatic). Each local day is folded in exactly once,
+   tracked in the file's own `days_included`, as running sums rather than a
+   recompute from raw JSONL — so a month's totals survive step 6 deleting
+   the source logs weeks later. **Must run before step 6**, not after: a
+   backlog older than `AI_STUDIO_LOG_HOT_DAYS` gets tarred, proven and
+   deleted in that one step, so folding after it would find nothing left to
+   read for those days. `ai-studio archive --dry-run` reports how many days
+   it would fold without writing anything.
+6. prune — **only what a manifest names**: hot logs older than
    `AI_STUDIO_LOG_HOT_DAYS` (30); archives older than
    `AI_STUDIO_ARCHIVE_KEEP_DAYS` (365); `runs/_dryrun`, `runs/_stub`, `out/`
    at 30 d; empty `runs/drama/<token>` dirs; `chat_turns` older than 30 d
