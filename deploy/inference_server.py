@@ -107,10 +107,9 @@ _log = logging.getLogger("inference_server")
 
 UPLOAD_DIR = Path("/workspace/inference_uploads")
 MAX_OUTPUT_CHARS = 1600
-"""Two model answers under headings for /說影 (📏 ~700 chars each at
-max_new_tokens 384/512) need more than the old 1000; the LINE text limit is
-5000. `UnderstandingCapabilities.max_output_chars` on the client side is the
-other half of this ceiling."""
+"""Per answer (📏 ~700 chars at max_new_tokens 384/512 for the audio/video
+models). A runaway generation cannot return an unbounded response; the
+caller applies its own, usually tighter, ceiling on top."""
 MAX_JSON_OUTPUT_CHARS = 8000
 """For `json_only` jobs (the prompt rewriter): an H3 shot plan is well over
 1000 characters, and truncating it mid-object would fail every conversion."""
@@ -124,21 +123,15 @@ class GenerationOptions:
     backend that does not understand one ignores it.
 
     `system` is the harmony developer/system instruction block for gpt-oss
-    (persona for /himonkey; "you are a prompt engineer, reply with JSON" for
-    the rewriter). `json_only` switches to greedy decoding, trims the reply
-    to its outermost braces, and lifts the output cap to MAX_JSON_OUTPUT_CHARS.
+    (a chat persona; "you are a prompt engineer, reply with JSON" for the
+    rewriter). `json_only` switches to greedy decoding, trims the reply to
+    its outermost braces, and lifts the output cap to MAX_JSON_OUTPUT_CHARS.
     """
 
     system: str | None = None
     max_new_tokens: int | None = None
     reasoning_effort: str | None = None
     json_only: bool = False
-
-"""Ceiling on a returned description/reply -- mirrors
-`ai_studio.core.understanding_spec.UnderstandingCapabilities.max_output_chars`
-/ `ai_studio.core.chat_spec.ChatCapabilities.max_output_chars` on the other
-side of the wire; kept here too so a runaway generation cannot return an
-unbounded response."""
 
 
 # --------------------------------------------------------------- backends
@@ -163,29 +156,6 @@ class ModelBackend(Protocol):
     ) -> str: ...
 
 
-AUDIO_DEFAULT_QUESTION = (
-    "請只用繁體中文,依下列格式條列描述這段聲音,不要加開場白:\n"
-    "類型:(人聲說話 / 唱歌 / 音樂 / 環境音 / 混合)\n"
-    "內容:(若有人說話或唱歌,盡量逐字寫出說的內容;若是音樂,寫出樂器、曲風、節奏、有無人聲)\n"
-    "細節:(說話者人數與性別、語言、語氣情緒;背景聲、環境、音質)\n"
-    "一句話總結:"
-)
-"""What /說音 asks when the user adds no question. One language, a fixed
-shape: 📏 2026-08-27 a two-language ask came back with the English half
-dropped. Byte-identical to `ai_studio.prompts.understanding.AUDIO_DEFAULT_QUESTION`
-(this file cannot import the package); a unit test pins the two together."""
-
-VIDEO_DEFAULT_QUESTION = (
-    "請只用繁體中文(台灣用字,不要簡體字)描述這段影片,依下列項目條列,不要加開場白:\n"
-    "場景:(地點、時間、天氣、環境)\n"
-    "人物/主體:(人數、外觀、衣著)\n"
-    "動作與變化:(依時間順序,開頭 → 中段 → 結尾 發生了什麼)\n"
-    "畫面文字:(字幕、招牌、標誌上的文字,逐字寫出;沒有就寫「無」)\n"
-    "鏡頭:(靜止或移動、拍攝角度、有無剪接)\n"
-    "一句話總結:"
-)
-"""What /說影 asks when the user adds no question. 📏 2026-08-27 the model
-wrote 声音 once without the 台灣用字 instruction."""
 
 
 class MoondreamBackend:
@@ -297,7 +267,9 @@ class Qwen2AudioBackend:
         import librosa
 
         assert media_path is not None  # only "chat" jobs ever omit it
-        question = prompt or AUDIO_DEFAULT_QUESTION
+        if not prompt:
+            raise ValueError("the audio modality needs a prompt; the caller supplies the question")
+        question = prompt
         conversation = [{
             "role": "user",
             "content": [{"type": "audio", "audio_url": str(media_path)}, {"type": "text", "text": question}],
@@ -374,7 +346,9 @@ class Qwen25VLVideoBackend:
         from qwen_vl_utils import process_vision_info
 
         assert media_path is not None  # only "chat" jobs ever omit it
-        question = prompt or VIDEO_DEFAULT_QUESTION
+        if not prompt:
+            raise ValueError("the video modality needs a prompt; the caller supplies the question")
+        question = prompt
         messages = [{
             "role": "user",
             "content": [
@@ -560,10 +534,14 @@ def _final_channel(text: str) -> str:
         return text.rsplit(stripped, 1)[1].strip()
     if "<|channel|>analysis" in text or text.startswith("analysis"):
         # The budget ran out inside the thinking channel. Leaking that trace
-        # as the reply is the failure this function exists to prevent; say
-        # what happened instead.
-        return "(想太久了,這次沒有寫出回答 -- 請再問一次,或問短一點)"
+        # as the reply is the failure this function exists to prevent; the
+        # caller decides what to tell its user.
+        raise ReasoningExhausted("the reply ended inside the analysis channel")
     return text.strip()
+
+
+class ReasoningExhausted(Exception):
+    """gpt-oss spent its whole token budget thinking and wrote no answer."""
 
 
 _BACKENDS: dict[str, type[ModelBackend]] = {
@@ -587,8 +565,21 @@ class Job:
     """JSON-encoded (role, content) pairs, oldest first -- chat only. See
     `GptOssChatBackend.infer()`."""
     options: GenerationOptions = field(default_factory=lambda: GenerationOptions())
+    audio_prompt: str | None = None
+    """Video only: the question for the audio model on the extracted track.
+    The frame model gets `prompt`. Both come from the caller."""
     state: str = "queued"  # queued | running | completed | failed
     result_text: str | None = None
+    """image / audio / chat: the one answer. None for video, which returns
+    `result` instead."""
+    result: dict[str, Any] | None = None
+    """video: {"visual": str, "audio": str | None, "has_audio_track": bool}.
+    Two models, two answers; how they are presented is the caller's."""
+    truncated: bool = False
+    """An answer hit MAX_OUTPUT_CHARS / MAX_JSON_OUTPUT_CHARS and was cut."""
+    reasoning_exhausted: bool = False
+    """chat: the model thought until its budget ran out and wrote nothing;
+    `result_text` is "" and the caller words the apology."""
     error: str | None = None
 
 
@@ -739,19 +730,6 @@ async def _ensure_loaded(modality: str) -> ModelBackend:
         return backend
 
 
-AUDIO_TRACK_SILENT = "(這段影片沒有聲音軌)"
-VIDEO_AUDIO_QUESTION = (
-    "請只用繁體中文(台灣用字,不要簡體字),條列描述這段影片的聲音,不要加開場白。"
-    "每一項都要填,沒有的就寫「無」:\n"
-    "類型:(人聲說話 / 唱歌 / 音樂 / 環境音或雜訊 / 電子音或提示音 / 混合 -- 選一個最接近的)\n"
-    "內容:(若有人說話或唱歌,盡量逐字寫出;若是音樂,寫出樂器、曲風、節奏;若是環境音或電子音,描述是什麼聲音、持續還是間斷)\n"
-    "細節:(說話者人數與語氣、背景聲、音量與音質)"
-)
-"""What the audio model is asked about a video's track when the user gave no
-question of their own. Shorter than AUDIO_DEFAULT_QUESTION: this is half of
-an answer, the frames are the other half."""
-
-
 def _has_audio_track(path: Path) -> bool:
     """ffprobe: does the container carry an audio stream? A silent clip must
     skip the audio pass and say so, not run the model on nothing."""
@@ -801,28 +779,40 @@ async def _infer_with(modality: str, media_path: Path | None, prompt: str | None
         )
 
 
+def _cap(job: Job, text: str) -> str:
+    cap = MAX_JSON_OUTPUT_CHARS if job.options.json_only else MAX_OUTPUT_CHARS
+    if len(text) > cap:
+        job.truncated = True
+    return text[:cap]
+
+
 async def _run_job(job: Job) -> None:
     job.state = "running"
     try:
         if job.modality == "video" and job.media_path is not None:
-            # /說影 sees AND hears: Qwen2.5-VL only samples frames
-            # (process_vision_info), so on its own it describes a silent
-            # film. Run it on the frames, then -- if the clip has a track --
-            # evict to Qwen2-Audio and run that on the ffmpeg-extracted
-            # audio (one swap, 📏 ~27 s), and join the two under headings.
-            # The user's own question, if any, goes to both models; a bare
-            # trigger gets each model's engineered default.
+            # The video modality sees AND hears: Qwen2.5-VL only samples
+            # frames (process_vision_info), so on its own it describes a
+            # silent film. Run it on the frames with `prompt`, then -- if the
+            # clip has a track -- evict to Qwen2-Audio and run that on the
+            # ffmpeg-extracted audio with `audio_prompt` (one swap, 📏 ~27 s).
+            # Two answers go back separately; the caller presents them.
             visual = await _infer_with("video", job.media_path, job.prompt, job)
-            if _has_audio_track(job.media_path):
+            has_track = _has_audio_track(job.media_path)
+            heard: str | None = None
+            if has_track:
                 track = await asyncio.to_thread(_extract_track, job.media_path)
-                heard = await _infer_with("audio", track, job.prompt or VIDEO_AUDIO_QUESTION, job)
-            else:
-                heard = AUDIO_TRACK_SILENT
-            result = f"【畫面】\n{visual.strip()}\n\n【聲音】\n{heard.strip()}"
+                heard = await _infer_with("audio", track, job.audio_prompt, job)
+            job.result = {
+                "visual": _cap(job, visual.strip()),
+                "audio": _cap(job, heard.strip()) if heard is not None else None,
+                "has_audio_track": has_track,
+            }
         else:
-            result = await _infer_with(job.modality, job.media_path, job.prompt, job)
-        cap = MAX_JSON_OUTPUT_CHARS if job.options.json_only else MAX_OUTPUT_CHARS
-        job.result_text = result[:cap]
+            try:
+                job.result_text = _cap(job, await _infer_with(job.modality, job.media_path, job.prompt, job))
+            except ReasoningExhausted:
+                job.result_text = ""
+                job.reasoning_exhausted = True
         job.state = "completed"
     except Exception as exc:  # a job's own failure must not crash the server
         _log.exception("job %s failed", job.job_id)
@@ -857,6 +847,7 @@ async def submit(
     media: UploadFile | None = File(None),
     modality: str = Form(...),
     prompt: str | None = Form(None),
+    audio_prompt: str | None = Form(None),
     history: str | None = Form(None),
     system: str | None = Form(None),
     max_new_tokens: int | None = Form(None),
@@ -865,6 +856,15 @@ async def submit(
 ) -> JSONResponse:
     if modality not in _BACKENDS:
         raise HTTPException(400, f"unknown modality {modality!r}, expected one of {list(_BACKENDS)}")
+    # The question is the caller's. This server holds no default wording:
+    # image without a prompt is moondream's caption path (a model skill, not
+    # copy); audio and video need theirs, and video needs one per model.
+    if modality in ("audio", "video", "chat") and not prompt:
+        raise HTTPException(400, f"modality {modality!r} requires a prompt")
+    if modality == "video" and not audio_prompt:
+        raise HTTPException(400, "modality 'video' requires an audio_prompt for the audio model")
+    if modality != "video" and audio_prompt:
+        raise HTTPException(400, f"audio_prompt is only meaningful for modality 'video', not {modality!r}")
 
     # Chat has no media to upload -- every other modality still requires one.
     media_path: Path | None = None
@@ -886,7 +886,7 @@ async def submit(
     )
     job = Job(
         job_id=job_id, modality=modality, media_path=media_path, prompt=prompt,
-        history=history, options=options,
+        audio_prompt=audio_prompt, history=history, options=options,
     )
     _jobs[job_id] = job
     # Fire-and-forget: the caller polls. A cold model load can plausibly
@@ -903,7 +903,14 @@ async def poll(job_id: str) -> dict[str, Any]:
     job = _jobs.get(job_id)
     if job is None:
         raise HTTPException(404, f"unknown job {job_id}")
-    return {"state": job.state, "result_text": job.result_text, "error": job.error}
+    return {
+        "state": job.state,
+        "result_text": job.result_text,
+        "result": job.result,
+        "truncated": job.truncated,
+        "reasoning_exhausted": job.reasoning_exhausted,
+        "error": job.error,
+    }
 
 
 @app.post("/cancel/{job_id}")

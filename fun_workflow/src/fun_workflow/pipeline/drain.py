@@ -48,6 +48,8 @@ from fun_workflow.config.settings import get_fun_settings
 from fun_workflow.pipeline.convert_worker import DEFAULT_DURATION_S, snap_frames
 from fun_workflow.pipeline.drama import render_drama
 from fun_workflow.pipeline.queue import Job, JobQueue, JobState
+from fun_workflow.prompts.chat import CHAT_THOUGHT_TOO_LONG
+from fun_workflow.prompts.understanding import compose_answer
 
 _log = logging.getLogger("ai_studio.drain")
 
@@ -417,17 +419,19 @@ async def render_understanding(
     if not job.input_media_path:
         raise AIStudioError("understanding job has no input_media_path to describe")
 
-    # The question was built at conversion (prompts/understanding.py): the
-    # engineered default, or the user's own question rewritten. None means
-    # "no question" -- the server's caption path for a photo. A row parsed
-    # before this key existed also lands on None and still runs.
+    # The questions were built at conversion (prompts/understanding.py): the
+    # engineered defaults, or the user's own question rewritten. None means
+    # "no question" -- the server's caption path for a photo. Video carries a
+    # second question for the audio model.
     plan = job.prompt or {}
     question = plan.get("_question") or None
+    audio_question = plan.get("_audio_question") or None
     request = UnderstandingRequest(
         shot_id=f"job{job.id}",
         modality=job.media_kind,
         input_media_path=job.input_media_path,
         prompt=str(question) if question else None,
+        audio_prompt=str(audio_question) if audio_question else None,
     )
 
     _submitted = time.monotonic()
@@ -449,7 +453,7 @@ async def render_understanding(
 
     asset = await provider.fetch(understanding_job)
     _log.info("fetched understanding", extra={"stage": "render", "seconds": round(time.monotonic() - _submitted, 1), "polls": _polls, "cost_usd": getattr(asset, "cost_usd", None)})
-    return str(asset.result_text)
+    return compose_answer(asset)
 
 
 async def render_chat(
@@ -513,7 +517,7 @@ async def render_chat(
 
     asset = await provider.fetch(chat_job)
     _log.info("fetched chat", extra={"stage": "render", "seconds": round(time.monotonic() - _submitted, 1), "polls": _polls, "cost_usd": getattr(asset, "cost_usd", None)})
-    result = str(asset.result_text)
+    result = CHAT_THOUGHT_TOO_LONG if asset.reasoning_exhausted else str(asset.result_text)
     queue.record_chat_cost(job.id, asset.cost_usd)
     if job.user_id:
         queue.append_chat_turn(job.user_id, job.group_id, "user", job.text)

@@ -671,6 +671,60 @@ def archive(
     console.print(f"{result.summary()}; drama-dirs={removed_dirs} chat_turns={turns}")
 
 
+_QUESTION_KINDS = {
+    "image": MediaKind.IMAGE_UNDERSTAND,
+    "audio": MediaKind.AUDIO_UNDERSTAND,
+    "video": MediaKind.VIDEO_UNDERSTAND,
+}
+
+
+@app.command("rewrite-question")
+def rewrite_question(
+    text: str = typer.Argument("", help="The member's words after the trigger; empty for the bare-trigger default."),
+    kind: str = typer.Option(..., "--kind", "-k", help=f"One of: {', '.join(_QUESTION_KINDS)}."),
+) -> None:
+    """Print the question(s) an understanding job would send, rewritten on an open pod.
+
+    The live smoke test of prompts/understanding.py against gpt-oss-20b --
+    no LINE, no render. With empty text it needs no pod at all: the defaults
+    are printed as-is.
+    """
+    try:
+        asyncio.run(_rewrite_question(text, kind))
+    except AIStudioError as exc:
+        console.print(f"[red]{type(exc).__name__}:[/red] {exc}")
+        raise typer.Exit(1) from None
+
+
+async def _rewrite_question(text: str, kind: str) -> None:
+    from ai_studio.inference.client import InferenceClient
+    from ai_studio.pipeline.pod_llm import PodLlmClient
+
+    from fun_workflow.prompts.understanding import convert_question
+
+    modality = _QUESTION_KINDS.get(kind)
+    if modality is None:
+        raise AIStudioError(f"--kind must be one of {', '.join(_QUESTION_KINDS)}, got {kind!r}")
+    llm: Any = None
+    if text.strip():
+        settings = get_settings()
+        llm = PodLlmClient(
+            InferenceClient(settings.inference_url, timeout_s=settings.inference_timeout_s),
+            job_timeout_s=settings.inference_job_timeout_s,
+        )
+    started = time.monotonic()
+    try:
+        prompt, audio_prompt, how = await convert_question(text, llm, modality=modality)
+    finally:
+        if llm is not None:
+            await llm.aclose()
+    console.print(f"[bold]built_by[/bold] {how}   {time.monotonic() - started:.1f}s")
+    console.print(prompt or "(no question: caption path)", highlight=False, markup=False)
+    if audio_prompt:
+        console.print("[bold]audio_prompt[/bold]")
+        console.print(audio_prompt, highlight=False, markup=False)
+
+
 @app.command("preflight")
 def preflight_cmd(
     skip_suite: bool = typer.Option(False, "--skip-suite", help="Skip check 1 (pytest/ruff/lint-imports/mypy)."),

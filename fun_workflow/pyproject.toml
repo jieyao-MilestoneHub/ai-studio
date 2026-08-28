@@ -97,6 +97,14 @@ layers = [
     "fun_workflow.core",
 ]
 
+[[tool.importlinter.contracts]]
+# Prompt building does no I/O, same rule as upstream: the wording the group
+# reads and the questions the models get are pure functions.
+name = "Prompt building does no I/O"
+type = "forbidden"
+source_modules = ["fun_workflow.prompts"]
+forbidden_modules = ["fun_workflow.pipeline", "fun_workflow.storage", "fun_workflow.api", "fun_workflow.bots"]
+
 # import-linter cannot forbid a *subpackage* of an external package, so the
 # two rules that mention ai_studio.runtime / ai_studio.cli live in
 # tests/unit/test_layering.py instead: only fun_workflow.cli may import them.

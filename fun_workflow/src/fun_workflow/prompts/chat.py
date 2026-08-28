@@ -8,8 +8,13 @@ which is where persona and style belong (OpenAI's harmony guide). Until
 "ChatGPT" and wrote for a document, not a group chat.
 
 Pure text; carried to the pod as the `system` form field by
-`pipeline.drain.render_chat` -> `providers.chat.ChatProvider`.
+`pipeline.drain.render_chat` -> `ai_studio.providers.chat`.
 """
+
+CHAT_THOUGHT_TOO_LONG = "(想太久了,這次沒有寫出回答 -- 請再問一次,或問短一點)"
+"""Said instead of an empty reply when gpt-oss spent its whole budget in the
+analysis channel (`ChatAsset.reasoning_exhausted`). The pod reports the
+fact; what the group reads is decided here."""
 
 CHAT_DEVELOPER_PROMPT = """\
 # Instructions

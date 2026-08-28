@@ -13,12 +13,12 @@ from ai_studio.config.settings import get_settings
 from ai_studio.core.enums import MediaKind
 from ai_studio.core.errors import AIStudioError
 from ai_studio.prompts import flux as flux_prompts
-from ai_studio.prompts import understanding as understanding_prompts
 from ai_studio.prompts.convert import LlmClient, convert
 from ai_studio.prompts.flux import FluxPrompt
 from ai_studio.prompts.h3 import I2VA_INSTRUCTION, H3Mode, H3Prompt
 
 from fun_workflow.pipeline.queue import Job, JobQueue, JobState
+from fun_workflow.prompts import understanding as understanding_prompts
 from fun_workflow.prompts.chat import CHAT_DEVELOPER_PROMPT
 from fun_workflow.prompts.drama import ScreenplayError, screenplay_payload, write_screenplay
 
@@ -144,11 +144,14 @@ async def convert_job(
         # *question*: the engineered default when the trigger came bare, or
         # the user's own question rewritten into the model's best form
         # (structured mode) / sent as typed (raw mode). None means the image
-        # caption path on the server -- see prompts/understanding.py.
-        question, how = await understanding_prompts.convert_question(
+        # caption path on the server; video carries a second question for
+        # the audio model -- see prompts/understanding.py.
+        question, audio_question, how = await understanding_prompts.convert_question(
             job.text, client if mode_setting == "structured" else None, modality=job.media_kind
         )
-        queue.set_parsed(job.id, {"_built_by": how, "_question": question})
+        queue.set_parsed(
+            job.id, {"_built_by": how, "_question": question, "_audio_question": audio_question}
+        )
         return how
 
     length = clamp_duration(job.requested_seconds) if job.requested_seconds else duration_s

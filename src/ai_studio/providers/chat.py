@@ -98,7 +98,11 @@ class ChatProvider:
             return job.with_state(
                 JobState.COMPLETED,
                 now=now,
-                raw={**job.raw, "result_text": payload.get("result_text") or ""},
+                raw={
+                    **job.raw,
+                    "result_text": payload.get("result_text") or "",
+                    "reasoning_exhausted": bool(payload.get("reasoning_exhausted")),
+                },
             )
         if state == "failed":
             return job.with_state(
@@ -126,6 +130,7 @@ class ChatProvider:
             provider=self.name,
             job_id=job.job_id,
             result_text=result_text[: self._caps.max_output_chars],
+            reasoning_exhausted=bool(job.raw.get("reasoning_exhausted")),
             cost_usd=round(self._hourly_usd * elapsed / 3600.0, 6),
         )
 

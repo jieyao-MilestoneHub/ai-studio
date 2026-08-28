@@ -64,9 +64,19 @@ class InferenceClient:
     # ---------------------------------------------------------------- submit
 
     async def submit_job(
-        self, modality: str, input_path: Path | str, prompt: str | None = None
+        self,
+        modality: str,
+        input_path: Path | str,
+        prompt: str | None = None,
+        *,
+        audio_prompt: str | None = None,
     ) -> str:
         """Upload the media file and enqueue a description job. Returns a job id.
+
+        `prompt` is the question for the model (required by the server for
+        audio and video; absent for image means the caption path);
+        `audio_prompt` is video-only, the question for the second model on
+        the extracted track. The server holds no default wording.
 
         The server accepts the request immediately and does the actual
         model-load-then-infer in a background task, exactly why submit/poll
@@ -82,7 +92,11 @@ class InferenceClient:
             response = await self._client.post(
                 "/submit",
                 files={"media": (source.name, data)},
-                data={"modality": modality, **({"prompt": prompt} if prompt else {})},
+                data={
+                    "modality": modality,
+                    **({"prompt": prompt} if prompt else {}),
+                    **({"audio_prompt": audio_prompt} if audio_prompt else {}),
+                },
             )
         except httpx.HTTPError as exc:
             raise ProviderSubmitError(
@@ -114,9 +128,7 @@ class InferenceClient:
         """Enqueue a chat turn. Returns a job id. Sibling to `submit_job()`,
         not an overload of it: chat has no media to upload, and `history` is
         a distinct field from `prompt` rather than folded into it -- the same
-        one-field-one-meaning discipline `pipeline.queue.complete_text()` (a
-        sibling to `complete()`, not an optional parameter on it) already
-        follows.
+        one-field-one-meaning discipline the rest of this client follows.
         """
         try:
             response = await self._client.post(

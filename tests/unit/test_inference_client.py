@@ -103,6 +103,26 @@ async def test_submit_job_raises_when_no_job_id_is_returned(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_submit_job_sends_both_questions_for_video(tmp_path: Path) -> None:
+    """The server holds no default wording, so the caller's two questions
+    must both cross the wire, as distinct fields."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"x")
+    seen: dict = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = request.content
+        seen["has_prompt"] = b'name="prompt"\r\n\r\nframes?' in body
+        seen["has_audio_prompt"] = b'name="audio_prompt"\r\n\r\nsound?' in body
+        return httpx.Response(200, json={"job_id": "job-1"})
+
+    client = _client(handler)
+    await client.submit_job("video", source, "frames?", audio_prompt="sound?")
+    assert seen == {"has_prompt": True, "has_audio_prompt": True}
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_submit_chat_job_posts_modality_chat_with_no_file() -> None:
     """No `files=` on this call, unlike `submit_job()` -- chat has nothing to
     upload, so the body is plain form-urlencoded, not multipart."""

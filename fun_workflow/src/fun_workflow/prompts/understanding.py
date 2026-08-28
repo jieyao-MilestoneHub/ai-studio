@@ -1,18 +1,25 @@
-"""Questions for the understanding models: the engineered defaults, and the
-rewriter that turns a group member's own question into each model's best form.
+"""Questions for the understanding models, and how their answers read in the
+group: the engineered defaults, the rewriter that turns a member's own
+question into each model's best form, and `compose_answer`.
 
-Pure, like the rest of `prompts`: the only outside contact is the `LlmClient`
-protocol from `convert.py`, injected by the pipeline. The LLM behind it is
-gpt-oss-20b on the pod (`pipeline.pod_llm.PodLlmClient`) -- never a serverless
-endpoint (decision 2026-08-27).
+Pure: the only outside contact is the `LlmClient` protocol from
+`ai_studio.prompts.convert`, injected by the pipeline. The LLM behind it is
+gpt-oss-20b on the pod (`ai_studio.pipeline.pod_llm.PodLlmClient`).
+
+The pod server holds no wording at all -- every question is sent with the
+request (`UnderstandingRequest.prompt` / `.audio_prompt`), and the video
+modality's two answers come back as `UnderstandingAsset.sections` for this
+module to join. What the group reads is decided here, on the side that
+knows who is reading.
 
 Why per-model shapes, from each model's docs and its first live run:
 
 - `/說影` is two models: Qwen2.5-VL on the frames, then Qwen2-Audio on the
-  ffmpeg-extracted track (composed in `deploy/inference_server.py::_run_job`,
-  headings 【畫面】/【聲音】). Qwen2.5-VL alone is deaf -- `process_vision_info`
-  samples frames only -- so a user asking「他說了什麼」would have got a guess
-  from lip shapes. The same question reaches both models.
+  ffmpeg-extracted track, joined under 【畫面】/【聲音】 by `compose_answer`.
+  Qwen2.5-VL alone is deaf -- `process_vision_info` samples frames only --
+  so a user asking「他說了什麼」would have got a guess from lip shapes. A
+  user's own question reaches both models; a bare trigger sends each model
+  its own default (`VIDEO_DEFAULT_QUESTION` / `VIDEO_AUDIO_QUESTION`).
 - moondream3-preview answers **only in English** (📏 2026-08-27, asked three
   ways). It has two skills: `caption(length=...)` for a description with no
   question, and `query(question)` for a specific one. So the default sends
@@ -23,20 +30,16 @@ Why per-model shapes, from each model's docs and its first live run:
   one language, a fixed shape.
 - Qwen2.5-VL-7B-Instruct likewise; 📏 it drifted to 简体 once without the
   台灣用字 instruction.
-
-`AUDIO_DEFAULT_QUESTION` and `VIDEO_DEFAULT_QUESTION` are duplicated verbatim
-in `deploy/inference_server.py` (which cannot import this package). A unit
-test pins the two copies together.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
-
 from ai_studio.core.enums import MediaKind
+from ai_studio.core.understanding_spec import UnderstandingAsset
 from ai_studio.prompts.convert import ConversionError, LlmClient, extract_json
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 AUDIO_DEFAULT_QUESTION = (
     "請只用繁體中文,依下列格式條列描述這段聲音,不要加開場白:\n"
@@ -56,11 +59,25 @@ VIDEO_DEFAULT_QUESTION = (
     "一句話總結:"
 )
 
-DEFAULT_QUESTIONS: dict[MediaKind, str | None] = {
-    MediaKind.IMAGE_UNDERSTAND: None,  # caption(length="long") on the server
-    MediaKind.AUDIO_UNDERSTAND: AUDIO_DEFAULT_QUESTION,
-    MediaKind.VIDEO_UNDERSTAND: VIDEO_DEFAULT_QUESTION,
+VIDEO_AUDIO_QUESTION = (
+    "請只用繁體中文(台灣用字,不要簡體字),條列描述這段影片的聲音,不要加開場白。"
+    "每一項都要填,沒有的就寫「無」:\n"
+    "類型:(人聲說話 / 唱歌 / 音樂 / 環境音或雜訊 / 電子音或提示音 / 混合 -- 選一個最接近的)\n"
+    "內容:(若有人說話或唱歌,盡量逐字寫出;若是音樂,寫出樂器、曲風、節奏;若是環境音或電子音,描述是什麼聲音、持續還是間斷)\n"
+    "細節:(說話者人數與語氣、背景聲、音量與音質)"
+)
+"""What the audio model is asked about a video's track when the user gave no
+question of their own. Shorter than AUDIO_DEFAULT_QUESTION: this is half of
+an answer, the frames are the other half."""
+
+AUDIO_TRACK_SILENT = "(這段影片沒有聲音軌)"
+
+DEFAULT_QUESTIONS: dict[MediaKind, tuple[str | None, str | None]] = {
+    MediaKind.IMAGE_UNDERSTAND: (None, None),  # caption(length="long") on the server
+    MediaKind.AUDIO_UNDERSTAND: (AUDIO_DEFAULT_QUESTION, None),
+    MediaKind.VIDEO_UNDERSTAND: (VIDEO_DEFAULT_QUESTION, VIDEO_AUDIO_QUESTION),
 }
+"""`(prompt, audio_prompt)` a bare trigger sends. Only video has a second."""
 
 _IMAGE_REWRITE = """\
 You turn a group-chat question about a photo (usually Traditional Chinese)
@@ -135,12 +152,19 @@ class _Question(BaseModel):
     question: str = Field(min_length=1, max_length=400)
 
 
-def default_question(modality: MediaKind) -> str | None:
-    """The engineered question a bare trigger sends. Raises on a kind that is
-    not an understanding kind -- fail loudly, never a blank prompt."""
+def default_questions(modality: MediaKind) -> tuple[str | None, str | None]:
+    """The engineered `(prompt, audio_prompt)` a bare trigger sends. Raises on
+    a kind that is not an understanding kind -- fail loudly, never a blank
+    prompt."""
     if modality not in DEFAULT_QUESTIONS:
         raise ValueError(f"{modality!r} is not an understanding kind")
     return DEFAULT_QUESTIONS[modality]
+
+
+def _for_both_models(modality: MediaKind, question: str) -> tuple[str, str | None]:
+    """A user's own question goes to every model the modality runs: for video
+    that is the frame model and the audio model alike."""
+    return question, (question if modality is MediaKind.VIDEO_UNDERSTAND else None)
 
 
 async def convert_question(
@@ -149,11 +173,12 @@ async def convert_question(
     *,
     modality: MediaKind,
     attempts: int = 2,
-) -> tuple[str | None, str]:
-    """The question to send for one understanding job. Returns `(question, how)`.
+) -> tuple[str | None, str | None, str]:
+    """The questions to send for one understanding job. Returns
+    `(prompt, audio_prompt, how)`; `audio_prompt` is None except for video.
 
     `how` is one of `understanding-default` (no user text: the engineered
-    default, or None for the image caption path), `understanding-raw` (user
+    defaults, or None for the image caption path), `understanding-raw` (user
     text, no client: sent as typed), `understanding-llm` / `understanding-
     llm-retry` (rewritten), or `understanding-template (llm failed: ...)`
     (user text sent as typed, with the failure attached). Never raises on a
@@ -164,9 +189,10 @@ async def convert_question(
         raise ValueError(f"{modality!r} is not an understanding kind")
     text = text.strip()
     if not text:
-        return default_question(modality), "understanding-default"
+        prompt, audio_prompt = default_questions(modality)
+        return prompt, audio_prompt, "understanding-default"
     if client is None:
-        return text, "understanding-raw"
+        return *_for_both_models(modality, text), "understanding-raw"
 
     user = f"User's question: {text}\nReply with the JSON object only."
     last_error = ""
@@ -175,9 +201,19 @@ async def convert_question(
             reply = await client.complete(REWRITE_SYSTEM[modality], user, max_tokens=300)
             payload: dict[str, Any] = extract_json(reply)
             question = _Question(**payload).question.strip()
-            return question, ("understanding-llm" if attempt == 0 else "understanding-llm-retry")
+            how = "understanding-llm" if attempt == 0 else "understanding-llm-retry"
+            return *_for_both_models(modality, question), how
         except (ConversionError, ValidationError, TypeError) as exc:
             last_error = str(exc)
         except Exception as exc:  # network, timeout, anything at all
             last_error = f"{type(exc).__name__}: {exc}"
-    return text, f"understanding-template (llm failed: {last_error[:200]})"
+    return *_for_both_models(modality, text), f"understanding-template (llm failed: {last_error[:200]})"
+
+
+def compose_answer(asset: UnderstandingAsset) -> str:
+    """What the group reads. One answer as-is; the video modality's two
+    answers under headings, with a note where the clip had no sound."""
+    if asset.sections is None:
+        return str(asset.result_text or "")
+    heard = asset.sections.audio if asset.sections.audio is not None else AUDIO_TRACK_SILENT
+    return f"【畫面】\n{asset.sections.visual.strip()}\n\n【聲音】\n{heard.strip()}"

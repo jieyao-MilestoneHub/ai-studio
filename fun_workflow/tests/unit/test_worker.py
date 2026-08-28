@@ -299,7 +299,12 @@ def _parsed(
         f"evt-{text}-{kind.value}", "Cgroup", text, user_id="U1", media_kind=kind,
         input_media_path=input_media_path,
     )
-    q.set_parsed(job.id, PROMPT)
+    plan = PROMPT
+    if kind is MediaKind.AUDIO_UNDERSTAND:
+        plan = {**PROMPT, "_question": "what is this?"}
+    elif kind is MediaKind.VIDEO_UNDERSTAND:
+        plan = {**PROMPT, "_question": "frames?", "_audio_question": "sound?"}
+    q.set_parsed(job.id, plan)
     return q.by_token(job.token)
 
 

@@ -385,21 +385,33 @@ def understand(
     provider: str = typer.Option("stub-understanding", "--provider", "-p"),
     prompt: str | None = typer.Option(
         None, "--prompt", "-q",
-        help="A question for the model, sent as typed. Omit for the engineered default.",
+        help="The question for the model, sent as typed. Required for audio and video; "
+        "omit for image to get the model's caption.",
+    ),
+    audio_prompt: str | None = typer.Option(
+        None, "--audio-prompt",
+        help="Video only: the question for the second model, which listens to the track.",
     ),
 ) -> None:
     """Describe one photo/audio/video clip. The offline smoke test for an
     understanding provider -- the `generate`/`--provider stub` of the
-    understanding path: no GPU, no RunPod account, no money."""
+    understanding path: no GPU, no RunPod account, no money.
+
+    This package holds no question wording: you supply it."""
     try:
-        asyncio.run(_understand(path, kind, provider, prompt=prompt))
+        asyncio.run(_understand(path, kind, provider, prompt=prompt, audio_prompt=audio_prompt))
     except AIStudioError as exc:
         console.print(f"[red]{type(exc).__name__}:[/red] {exc}")
         raise typer.Exit(1) from None
 
 
 async def _understand(
-    path: Path, kind: str, provider_name: str, *, prompt: str | None = None
+    path: Path,
+    kind: str,
+    provider_name: str,
+    *,
+    prompt: str | None = None,
+    audio_prompt: str | None = None,
 ) -> None:
     from ai_studio.core.understanding_spec import UnderstandingRequest
 
@@ -408,6 +420,12 @@ async def _understand(
         raise AIStudioError(f"--kind must be one of {', '.join(_UNDERSTAND_KINDS)}, got {kind!r}")
     if not path.is_file():
         raise AIStudioError(f"no such file: {path}")
+    if kind in ("audio", "video") and not prompt:
+        raise AIStudioError(f"--prompt is required for --kind {kind}: this tool has no default question")
+    if kind == "video" and not audio_prompt:
+        raise AIStudioError("--audio-prompt is required for --kind video (the question for the audio model)")
+    if kind != "video" and audio_prompt:
+        raise AIStudioError("--audio-prompt only applies to --kind video")
 
     settings = get_settings()
     backend: Any = get_provider(provider_name, modality=modality)
@@ -419,7 +437,7 @@ async def _understand(
 
     request = UnderstandingRequest(
         shot_id=new_run_id(), modality=modality, input_media_path=str(path),
-        prompt=prompt or None,
+        prompt=prompt or None, audio_prompt=audio_prompt or None,
     )
     try:
         job = await backend.submit(request)
@@ -445,9 +463,14 @@ async def _understand(
     finally:
         await backend.aclose()
 
-    console.print(
-        f"\n[green]{asset.modality.value}[/green]  cost ${asset.cost_usd:.4f}\n{asset.result_text}"
-    )
+    console.print(f"\n[green]{asset.modality.value}[/green]  cost ${asset.cost_usd:.4f}"
+                  f"{'  (truncated)' if asset.truncated else ''}")
+    if asset.sections is None:
+        console.print(asset.result_text or "", markup=False, highlight=False)
+    else:
+        console.print(f"visual: {asset.sections.visual}", markup=False, highlight=False)
+        audio = asset.sections.audio if asset.sections.audio is not None else "(no audio track)"
+        console.print(f"audio:  {audio}", markup=False, highlight=False)
 
 
 def _setup_logging(service: str) -> None:
@@ -461,7 +484,7 @@ def _setup_logging(service: str) -> None:
     configure_logging(service=service, log_dir=settings.log_dir, level=settings.log_level)
 
 
-_REWRITE_KINDS = ("video", "image", "image-q", "audio-q", "video-q")
+_REWRITE_KINDS = ("video", "image")
 
 
 @app.command("rewrite")
@@ -472,10 +495,10 @@ def rewrite(
 ) -> None:
     """Run the prompt rewriter on an open pod and print what the model would get.
 
-    The live smoke test of prompts/convert.py, prompts/flux.py and
-    prompts/understanding.py against gpt-oss-20b -- no LINE, no render. Needs
-    a pod with the inference server up (AI_STUDIO_INFERENCE_URL); evicting
-    ComfyUI's checkpoint is left to you (it is the worker's job in service).
+    The live smoke test of prompts/convert.py and prompts/flux.py against
+    gpt-oss-20b -- no render. Needs a pod with the inference server up
+    (AI_STUDIO_INFERENCE_URL); evicting ComfyUI's checkpoint is left to you
+    (it is the worker's job in service).
     """
     try:
         asyncio.run(_rewrite(text, kind, seconds))
@@ -488,7 +511,6 @@ async def _rewrite(text: str, kind: str, seconds: float) -> None:
     from ai_studio.inference.client import InferenceClient
     from ai_studio.pipeline.pod_llm import PodLlmClient
     from ai_studio.prompts import flux as flux_prompts
-    from ai_studio.prompts import understanding as und
     from ai_studio.prompts.convert import convert
     from ai_studio.prompts.h3 import H3Mode
 
@@ -504,17 +526,9 @@ async def _rewrite(text: str, kind: str, seconds: float) -> None:
         if kind == "video":
             h3, how = await convert(text, llm, duration_s=seconds, mode=H3Mode.T2VA)
             out = h3.render()
-        elif kind == "image":
+        else:
             fx, how = await flux_prompts.convert(text, llm)
             out = fx.render()
-        else:
-            modality = {
-                "image-q": MediaKind.IMAGE_UNDERSTAND,
-                "audio-q": MediaKind.AUDIO_UNDERSTAND,
-                "video-q": MediaKind.VIDEO_UNDERSTAND,
-            }[kind]
-            question, how = await und.convert_question(text, llm, modality=modality)
-            out = question or "(no question: caption path)"
     finally:
         await llm.aclose()
     console.print(f"[bold]built_by[/bold] {how}   {time.monotonic() - started:.1f}s")

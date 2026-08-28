@@ -40,8 +40,8 @@ class ChatCapabilities(BaseModel):
     max_output_chars: int = Field(
         default=1000,
         gt=0,
-        description="Ceiling on the returned reply, so it fits LINE's "
-        "MAX_TEXT_CHARS (bots/line/push.py) with room for the wrapper text.",
+        description="Ceiling on the returned reply. The caller's delivery "
+        "channel decides the number; 1000 is a conservative default.",
     )
     cost_per_call_usd: float = Field(default=0.0, ge=0)
     expected_latency_s: float = Field(default=20.0, gt=0)
@@ -112,4 +112,7 @@ class ChatAsset(BaseModel):
     provider: str
     job_id: str
     result_text: str
+    reasoning_exhausted: bool = False
+    """The model thought until its budget ran out and wrote no answer;
+    `result_text` is "". The caller words what to say about that."""
     cost_usd: float = Field(default=0.0, ge=0)
