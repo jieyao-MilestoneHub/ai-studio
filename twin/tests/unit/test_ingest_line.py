@@ -1,7 +1,14 @@
 """LINE export parsing and Fragment assembly. Phase 1's acceptance criteria
 (twin/PLAN.md §2 Phase 1): fragments produced by ingest MUST cover 100% of
 MUST fields, none MUST be missing event_time, and the heldout window's time
-MUST actually be later than train's."""
+MUST actually be later than train's.
+
+The fixture below matches the real, confirmed format (twin/PLAN.md Phase 1,
+2026-08-29) — dot-separated dates with a trailing spelled-out weekday,
+space-delimited fields, and LINE's two recall-notice shapes — not the
+earlier, unverified slash/tab/Japanese-header guess this module used before
+a real export was checked against it.
+"""
 
 from __future__ import annotations
 
@@ -13,42 +20,80 @@ from twin.core.enums import Modality, SourceClass, Split
 from twin.ingest.fragment import fragments_from_line_export
 from twin.ingest.sources.line import parse_line_export
 
+# "Alice Chen" (a two-word display name) exercises the real, observed shape
+# that makes a bare space ambiguous between "the rest of the sender's name"
+# and "the start of the message" — this is why known_senders is required at
+# all, not just a formality.
 SAMPLE_EXPORT = """\
-[LINE] Test Chat のトーク履歴
-保存日時：2026/08/27 10:00
+2026.01.15 星期四
+09:00 Alice Chen 早安
+09:01 Bob 早
+09:02 Bob已收回訊息
+09:03 已收回訊息
 
-2026/01/15(木)
-09:00\tAlice\t早安
-09:01\tBob\t早
-
-2026/06/20(土)
-14:30\tAlice\t今天要不要出門
-14:32\tBob\t好啊
-14:33\tBob\t幾點
+2026.06.20 星期六
+14:30 Alice Chen 今天要不要出門
+14:32 Bob 好啊
+14:33 Bob 幾點
 """
 
+KNOWN_SENDERS = ["Alice Chen", "Bob"]
 DEFAULT_TRAIN_CUTOFF = datetime(2026, 6, 1)
 
 
 def test_parse_line_export_yields_all_messages() -> None:
-    messages = list(parse_line_export(SAMPLE_EXPORT))
-    assert len(messages) == 5
-    assert messages[0].sender == "Alice"
+    messages = list(
+        parse_line_export(SAMPLE_EXPORT, known_senders=KNOWN_SENDERS, principal_display_name="Alice Chen")
+    )
+    assert len(messages) == 7
+    assert messages[0].sender == "Alice Chen"
     assert messages[0].content == "早安"
     assert messages[0].sent_at == datetime(2026, 1, 15, 9, 0)
     assert messages[-1].sent_at == datetime(2026, 6, 20, 14, 33)
 
 
+def test_parse_line_export_disambiguates_a_sender_with_an_internal_space() -> None:
+    messages = list(
+        parse_line_export(SAMPLE_EXPORT, known_senders=KNOWN_SENDERS, principal_display_name="Alice Chen")
+    )
+    assert messages[0].sender == "Alice Chen"
+    assert messages[0].content == "早安"  # not "Chen 早安"
+
+
+def test_parse_line_export_handles_recall_by_another_participant() -> None:
+    messages = list(
+        parse_line_export(SAMPLE_EXPORT, known_senders=KNOWN_SENDERS, principal_display_name="Alice Chen")
+    )
+    recalled = messages[2]
+    assert recalled.sender == "Bob"
+    assert recalled.content == "[已收回訊息]"
+    assert recalled.sent_at == datetime(2026, 1, 15, 9, 2)
+
+
+def test_parse_line_export_handles_recall_by_the_principal_with_no_name_shown() -> None:
+    messages = list(
+        parse_line_export(SAMPLE_EXPORT, known_senders=KNOWN_SENDERS, principal_display_name="Alice Chen")
+    )
+    recalled = messages[3]
+    assert recalled.sender == "Alice Chen"
+    assert recalled.content == "[已收回訊息]"
+
+
 def test_parse_line_export_folds_multiline_messages() -> None:
-    text = SAMPLE_EXPORT.replace("14:33\tBob\t幾點", "14:33\tBob\t幾點\n見面")
-    messages = list(parse_line_export(text))
+    text = SAMPLE_EXPORT.replace("14:33 Bob 幾點", "14:33 Bob 幾點\n見面")
+    messages = list(parse_line_export(text, known_senders=KNOWN_SENDERS, principal_display_name="Alice Chen"))
     assert messages[-1].content == "幾點\n見面"
 
 
+def test_parse_line_export_rejects_empty_known_senders() -> None:
+    with pytest.raises(ValueError, match="known_senders is empty"):
+        list(parse_line_export(SAMPLE_EXPORT, known_senders=[], principal_display_name="Alice Chen"))
+
+
 def test_parse_line_export_raises_on_unrecognised_line() -> None:
-    text = "2026/01/15(木)\nnot a valid message line\n"
+    text = "2026.01.15 星期四\nnot a valid message line\n"
     with pytest.raises(ValueError, match="unrecognised line"):
-        list(parse_line_export(text))
+        list(parse_line_export(text, known_senders=KNOWN_SENDERS, principal_display_name="Alice Chen"))
 
 
 class TestFragmentsFromLineExport:
@@ -60,7 +105,8 @@ class TestFragmentsFromLineExport:
             fragments_from_line_export(
                 SAMPLE_EXPORT,
                 principal_id="p1",
-                principal_display_name="Alice",
+                principal_display_name="Alice Chen",
+                known_senders=KNOWN_SENDERS,
                 train_cutoff=train_cutoff,
                 sealed_cutoff=train_cutoff.replace(year=2027),
             )
@@ -84,7 +130,7 @@ class TestFragmentsFromLineExport:
         """SPEC.md §4.9/§8 guardrail 1: tagging MUST happen at ingest — Alice
         (the principal here) is not a third party in her own export."""
         fragments = self._assemble()
-        alice_fragments = [f for f in fragments if f.content.startswith("Alice:")]
+        alice_fragments = [f for f in fragments if f.content.startswith("Alice Chen:")]
         assert alice_fragments
         assert all(f.third_party_spans == [] for f in alice_fragments)
 
