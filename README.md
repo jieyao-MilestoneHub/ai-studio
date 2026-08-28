@@ -1,107 +1,84 @@
 # ai-studio
 
-Run open-weight video, image, and understanding models on rented GPUs. Measure them honestly, and experiment through a practical client — from LINE groups to real-world workloads.
+**What can one rented GPU do, and what can free compute do after that?**
 
-Digital twins are just a side quest. We explore how far free resources can take you toward training your own, before you have the compute to fine-tune a large LLM.
+Open-weight video, image, vision-language and chat models on a single
+24 GB card, deployed with hard money guards and measured on our own runs —
+plus a side quest: can a person, in August 2026, fine-tune a usable digital
+twin of themselves on free-tier compute alone?
 
-## Where it came from
+## Why
 
-The project started on 2026-08-24 as a single question: can one person run
-**MiniMax H3**, an open video model, on a rented GPU for pocket money and
-turn what it produces into something edited rather than merely generated?
-The first commit was the generation path on RunPod plus an editing grammar
-borrowed from [`Hao0321/video-autopilot-kit`](docs/attribution.md) — rules a
-gate can fail a build on, instead of taste applied by hand.
+- **One GPU, six models.** MiniMax H3 (video), Flux.1-dev (image),
+  moondream3, Qwen2-Audio, Qwen2.5-VL (understanding) and gpt-oss-20b (chat
+  and prompt rewriting) share one RTX 4090, one model resident at a time.
+  The question is what that card actually delivers — seconds, VRAM, dollars —
+  not what a model card says.
+- **Free compute next.** `twin/` takes the same discipline to the other end
+  of the budget: Qwen3-8B + LoRA on the free tiers of Modal, Kaggle and
+  Lightning, judged by a spec with acceptance criteria written before the
+  first training run.
+- **Numbers are graded.** 📏 measured by us, `[reported]` quoted,
+  `[speculative]` inferred. Only the first kind is exported, with a
+  timestamp, to [`assets/metrics/`](assets/metrics/README.md).
 
-The next day a LINE group became the reason to keep the pod busy: a message
-in the chat, a clip back a few minutes later. That side grew fast —
-image generation with **Flux.1-dev**, photo/audio/video understanding with
-**moondream3**, **Qwen2-Audio** and **Qwen2.5-VL**, chat and prompt
-rewriting with **gpt-oss-20b**, a one-minute drama pipeline — all on one
-24 GB card, one model resident at a time.
+## What is inside
 
-Every step cost real money, and every claim about a model's speed or memory
-was either something we had measured or something we had read. Keeping
-those two apart became a rule of the repository, and then its purpose.
+| package | what it does |
+|---|---|
+| **`ai-studio`** (root) | The GPU side. Opens a RunPod pod on demand, provisions ComfyUI and a small inference server over SSH, serves the six models behind one `submit / poll / fetch / cancel` protocol, guards spend before a pod exists, records every render. Knows nothing about who asked. |
+| [**`fun_workflow/`**](fun_workflow/README.md) | The request side, built on it: a LINE group's webhook, queue and worker; `/短劇` one-minute dramas; `/himonkey` chat; a status page per result showing which GPU rendered it and what it rents for. |
+| [**`twin/`**](twin/README.md) | The side quest: a personal digital-twin agent framework — one person's history and interviews in, an agent with their judgment and restraint out. Spec-first, with hard guardrails around the personal data it ingests. |
 
-## What it is for
+Three independent Python packages in one repository, each with its own
+lockfile, tests and layering contracts. `fun_workflow` depends on
+`ai-studio`; nothing depends on `twin`.
 
-1. **Deploy open models on a rented GPU safely.** One pod, opened on demand
-   and closed minutes after the last render; a licence-aware placement
-   ladder; per-run, per-month and per-day money guards that run *before* a
-   pod exists. Every expensive mistake on a GPU cloud is a quiet one, and
-   this codebase is built to make them loud.
-2. **Measure what each GPU actually does.** Every real render logs its
-   seconds, cost and peak VRAM; a daily job folds them into a per-GPU-tier
-   report; snapshots of the results are committed under
-   [`assets/metrics/`](assets/metrics/) with a timestamp in every file name.
-   Figures are graded — 📏 measured by us, `[reported]` quoted,
-   `[speculative]` inferred — and only the first kind is ever exported.
-3. **Give a group chat something to play with**, and show them, on the page
-   each result links to, which GPU rendered it and what that GPU rents for.
+## Quick start
 
-## The repository
-
-A monorepo of three independent Python packages, each with its own
-`pyproject.toml`, lockfile, tests and layering contracts:
-
-| package | role | start here |
-|---|---|---|
-| **`ai-studio`** (root) | The GPU side: the pod, the models behind one provider protocol, the money guards, the measurements. It knows nothing about who asked for a render. | this file · [`docs/`](docs/) · [`CLAUDE.md`](CLAUDE.md) |
-| [**`fun_workflow/`**](fun_workflow/) | The request side: the LINE webhook, the queue, the worker that opens the pod, `/短劇` dramas, `/himonkey` chat, the status pages. Installs ai-studio from `..`. | [`fun_workflow/README.md`](fun_workflow/README.md) |
-| [**`twin/`**](twin/) | The side quest: a personal digital-twin agent framework, built on free compute (Modal, Kaggle, Lightning) as far as that goes before fine-tuning a large model needs more. Its own stack and spec. | [`twin/README.md`](twin/README.md) |
-
-The boundary between the first two is enforced, not described: only
-`fun_workflow`'s command line may touch the pod runtime, and nothing in
-ai-studio names a chat trigger, a delivery limit or a feature. What ai-studio
-deliberately does not know, and where each of those things lives instead, is
-listed in [`CLAUDE.md`](CLAUDE.md#architecture).
-
-## Using it
-
-**Without a GPU** — both packages run offline against synthetic providers
-that honour the real protocol:
+No GPU, no account, no cost:
 
 ```bash
 uv sync --group dev
-uv run ai-studio doctor                                 # python, ffmpeg + filters, credentials, disk
+uv run ai-studio doctor                                   # python, ffmpeg + filters, credentials, disk
 uv run ai-studio generate "a baker opening the shutters" --provider stub
 uv run ai-studio understand photo.jpg --kind image
 
 cd fun_workflow && uv sync --group dev
-uv run funapp drama-dryrun                              # the whole /短劇 pipeline with stub models and real ffmpeg
+uv run funapp drama-dryrun                                # the whole drama pipeline, stub models, real ffmpeg
 ```
 
-**With a GPU** — put a RunPod key in `.env` (see `.env.example`), then:
+With a RunPod key in `.env` (`.env.example` lists every name):
 
 ```bash
-uv run ai-studio pod capacity        # what the licence-safe ladder can get right now, no spend
-uv run ai-studio session open        # one pod, provisioned over SSH, terminates itself at the lease end
-uv run ai-studio session status      # tier, $/hr, elapsed, spent
+uv run ai-studio pod capacity        # what the licence-safe ladder can get right now — no spend
+uv run ai-studio session open        # one pod, self-terminating at its lease end
 uv run ai-studio session close       # terminates; a stopped pod would still bill its disk
+uv run ai-studio bench               # this month's measurements per GPU tier
 ```
 
-**As a bot** — `fun_workflow/README.md` covers the eleven triggers, the
-LINE credentials, and the one-command installers for an always-on box.
+## How it stays honest and cheap
 
-**The numbers** — `uv run ai-studio bench` prints this month's measurements;
-`uv run ai-studio metrics export` writes a timestamped snapshot under
-`assets/metrics/`, and `metrics readme` renders the tables in
-[`assets/metrics/README.md`](assets/metrics/README.md).
+- Every expensive mistake on a GPU cloud is a quiet one, so per-run,
+  per-month and per-day ceilings are checked *before* a pod is created, and
+  a quiet pod is reaped minutes after its last render.
+- Placement is a licence decision: MiniMax H3 excludes several
+  jurisdictions, so the capacity ladder names only datacenters where it may
+  run. Flux.1-dev is non-commercial.
+- The pod-side server holds no wording: every question travels with the
+  request, so the same GPU code serves any client.
+- Layering is enforced by `import-linter`, not described; what ai-studio
+  deliberately does not know is listed in [`CLAUDE.md`](CLAUDE.md).
 
-## Reading on
+## Docs
 
-| | |
-|---|---|
-| [docs/architecture.md](docs/architecture.md) | the layers and the one invariant everything hangs off |
-| [docs/schedule.md](docs/schedule.md) · [docs/runpod.md](docs/runpod.md) | the pod's lifecycle and the money; the deployment runbook |
-| [docs/observability.md](docs/observability.md) | tracing a request across services; the archive; the benchmark fold |
-| `docs/model-*.md` | one per model: weights, licence, what we measured and what we have not |
-| [docs/editing-grammar.md](docs/editing-grammar.md) | the editing rules — specified, not yet implemented |
-| [fun_workflow/docs/](fun_workflow/docs/) | the bot in full; the drama pipeline |
+[architecture](docs/architecture.md) · [pod lifecycle & money](docs/schedule.md) ·
+[RunPod runbook](docs/runpod.md) · [observability](docs/observability.md) ·
+[measurements](assets/metrics/README.md) · one doc per model under
+[`docs/`](docs/) · [the bot](fun_workflow/docs/line-bot.md) ·
+[the twin spec](twin/reference/SPEC.md)
 
 ## Licence
 
-MIT — [LICENSE](LICENSE). MiniMax H3's licence excludes several
-jurisdictions and Flux.1-dev's is non-commercial; see the model docs before
-you deploy. Derived-work attribution in [NOTICE](NOTICE).
+MIT — [LICENSE](LICENSE); model licences differ, see each model's doc.
+Derived-work attribution in [NOTICE](NOTICE).
