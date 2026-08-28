@@ -44,7 +44,7 @@ Phase 0（護欄）
 
 ### Phase 0 — 護欄與帳號（阻塞項）
 
-**狀態：程式部分已完成（2026-08-27）。人工帳號部分：GCP、Modal、Cloudflare R2、Kaggle 已完成（2026-08-28）；Lightning AI 仍待辦，見下方「仍待辦」。**
+**狀態：程式部分已完成（2026-08-27）。人工帳號部分：GCP、Modal、Cloudflare R2、Kaggle、Lightning AI 帳號註冊皆已完成（2026-08-28）；Lightning AI 的 CLI/SSH 串接（`launch/lightning.sh` 的實際動詞集）仍待驗證，見下方「仍待辦」。**
 
 - [x] 修改 repo 根目錄 `.gitignore`：加入 `twin/data/`、`twin/adapters/`、`twin/transcripts/`、`twin/eval/`（**目前缺失，本次規劃已核實**）。實作時改用 `twin/` 前綴而非原文的裸露路徑——`twin/.gitignore`（巢狀）已完整涵蓋這四個目錄，根目錄這份純屬 defense-in-depth，加前綴可避免未來 repo 其他地方出現同名目錄時被誤傷；不加任何測試斷言這份根目錄副本的存在，真正的防線是 `twin/.gitignore` 與 pre-commit hook。
 - [x] 新增 `twin/.gitignore`（同樣四個路徑，裸露寫法，範圍限定 `twin/` 之下，git 支援巢狀 `.gitignore`），外加 twin 自己的 build 產物樣式（`__pycache__/`、`.venv/`、`dist/` 等，見 §3.7）。
@@ -55,16 +55,16 @@ Phase 0（護欄）
   - **Modal 已完成（2026-08-28）**：帳號註冊、`uv run modal setup` 完成 CLI 認證（workspace `jieyao-milestonehub`，token 存於 `~/.modal.toml`），以 `modal profile current`／`modal app list` 驗證過。`modal` 補進 twin 依賴（`launch/modal_app.py` 原本 `import modal` 但套件從未被安裝，此輪修正）；同時修正 `launch/modal_app.py` 的 `add_local_dir` 少了 `ignore=`：`copy=True` 會把整個本機目錄烤進 image layer，這是 SPEC.md §8 護欄 2（`data/adapters/transcripts/eval` 不可離開本機）以外的獨立管道——git 的 `.gitignore`／pre-commit hook 完全管不到它——已加 `ignore=[".env", ".git", ".venv", "__pycache__", "data", "adapters", "transcripts", "eval"]`。
   - **Cloudflare R2 已完成（2026-08-28）**：bucket `twin-checkpoints` 已建立（原本帳號裡沒有任何 bucket，用使用者提供的 access key/secret 透過 `checkpoint.py` 的 `_fs_and_path()` 直接建立）。**已核實而非猜測**：`_fs_and_path()` 是裸 `fsspec.core.url_to_fs(uri)`，沒有帶 `endpoint_url` 之類的額外設定，實測確認純靠 `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_ENDPOINT_URL_S3`/`AWS_DEFAULT_REGION=auto` 四個環境變數即可正確路由到 R2 endpoint，**不需要改 `checkpoint.py` 本身**。但發現這四個變數必須真正進到 process 的 `os.environ`——`twin.config.settings.Settings` 讀 `.env`只餵給 pydantic 內部欄位，從不寫回 `os.environ`——所以在 `train.py` 加了一行 `load_dotenv()`（新增 `python-dotenv` 依賴），已用「完全比照 train.py 實際行為、shell 不手動 export」的方式重新驗證過一次，確認可行。`TWIN_CHECKPOINT_STORE_URI=s3://twin-checkpoints` 寫入 `twin/.env`。
   - **Kaggle 已完成（2026-08-28）**：帳號註冊。**過程中發現一個文件陷阱**：先前用網路搜尋查到的「kaggle.json 存 username+key」是官方文件標示的 **Legacy** 認證法；實際裝進來的 `kaggle==2.2.4` CLI 要求的是單一 bearer token，存在 `~/.kaggle/access_token`（或 `KAGGLE_API_TOKEN` 環境變數）——已用真實 `kaggle kernels list --mine` 呼叫驗證通過（列出使用者既有的 kernel）。Token 存於機器層級的 `~/.kaggle/access_token`，不進 `twin/.env`（`launch/kaggle.sh` 直接呼叫 CLI，不經過 `train.py` 的 `load_dotenv()`），性質上跟 Modal 的 `~/.modal.toml` 一樣是本機認證檔案。
-  - **Lightning AI 仍待辦**（理由同上，人工帳號步驟；優先序原本就排在 Modal/Kaggle 之後）。
+  - **Lightning AI 帳號已完成（2026-08-28）**：Free plan（up to 30 credits/月）。建立流程本身提供了兩個先前「已知偏離」清單裡標成未核實的資訊，這次是從實際 signup 畫面讀到的，不是猜的：(a) 免費層有 T4（36 free hrs，遠多於 L40S/A100/H100/H200 的 2-5 hrs）——選 T4，跟 Modal/Kaggle 的算力等級一致，也是 `probe_lora_rank.py` 校準的目標硬體；(b) 「80% off on interruptible (spot)」字樣證實 Lightning 的 spot/preemptible 是**選配**，不像 Modal 是無條件套用——這代表 SPEC.md §7.3「MUST 優先使用 spot/preemptible」在 Lightning 上必須是主動勾選的設定，跑真正的訓練前要記得選 interruptible，不是預設就滿足。**`launch/lightning.sh` 的實際 CLI 動詞集本身仍未核實**——這次只完成帳號註冊＋方案選擇（Advanced／Local IDE／T4），還沒有 SSH 憑證，串接 CLI 屬於獨立的、之後才需要做的工作。
 - [x] `twin/` 套件骨架：`twin/pyproject.toml`、`twin/src/twin/`、`twin/uv.lock`（獨立於 root 的 import-linter 契約，見 §3.2）。9 層（`twin.cli`/`harness`/`agent`/`memory`/`train`/`ingest`/`teacher`/`config`/`core`）皆為空殼 package（僅 module docstring，無邏輯——Fragment/Trajectory/teacher.py 的 Gemini 綁定等留給 Phase 1）；`uv run lint-imports` 6 條契約全數通過。§3.2 原文的 `forbidden_modules = ["google.genai", "google.generativeai"]` 在實作時發現 import-linter 不支援 external package 的子模組層級封鎖，改為封鎖整個 `google` namespace（效果等同、範圍更嚴格，因為 twin 目前沒有理由 import 任何其他 `google.*`）；並補上 `include_external_packages = true`（契約引用外部套件如 `modal`/`kaggle`/`google` 時的必要設定，§3.2 原文未列出，屬本輪實作補完）。CLI 端點 `twin` 目前僅一個 `version` 子命令（其餘 noun 隨各自 phase 落地，見 §3.4）；空的 `typer.Typer()` 無任何 command 時無法被呼叫，因此加了一個空的 `@app.callback()` 以維持多子命令模式，供未來 `ingest`/`interview`/... 使用同一個 group 型 CLI。
 
 **依據**：SPEC.md §5.2/D8、§7.1、§7.2、§7.3、§8 護欄 2/3。
 **驗收**：對 `data/` 底下的測試檔案 commit 會被 hook 擋下（**已用真實 commit 嘗試驗證，見上**）；GCP console 確認無 billing 帳號（**已完成 2026-08-28**）；README 已有聲明（**已完成**）。
-**類型**：程式（已完成）+ 人工（GCP／Modal／R2／Kaggle 已完成 2026-08-28；Lightning 仍待辦）。
+**類型**：程式（已完成）+ 人工（GCP／Modal／R2／Kaggle／Lightning 帳號註冊皆已完成 2026-08-28；Lightning 的 CLI/SSH 串接仍待辦）。
 
 **仍待辦（人工）**：
 1. ~~建立 Teacher 專用 GCP 專案並確認未綁 billing。~~ **已完成 2026-08-28**。
-2. ~~開通 Cloudflare R2、Kaggle/Lightning AI 帳號。~~ **Modal／R2／Kaggle 已完成 2026-08-28，見上；Lightning AI 仍待辦**。
+2. ~~開通 Modal、Cloudflare R2、Kaggle/Lightning AI 帳號。~~ **五個帳號皆已完成 2026-08-28，見上**。Lightning AI 目前只完成帳號＋方案選擇，還沒有 SSH 憑證，`launch/lightning.sh` 的 CLI 動詞集也還沒對照真實帳號核實過——留給真的要用 Lightning 跑訓練時再做。
 （1）的專案憑證是 `teacher.py` 實際發出第一次真實 Gemini 呼叫的前提——**該呼叫已於 2026-08-28 成功執行，見 Phase 1「仍待辦」第 2 項**；Phase 4 的訓練算力需要（2）——**R2 的真實 bucket 已就緒（見上），Modal 也已認證，Phase 4「仍待辦」清單裡「真實訓練跑」的帳號面前提已排除，剩下的是硬體 probe 與精簡軌跡集本身**。實作發現：介面本身、`GeminiTeacher` 綁定、D9 的 RPD ledger 皆不需要真實憑證即可寫出並測試（google-genai SDK 的呼叫用 dependency-injected client 驗證，見 Phase 1）。
 
 ### Phase 1 — L1 骨架 + 最小可用 ingest（產出第一個真實 held-out 時段）
