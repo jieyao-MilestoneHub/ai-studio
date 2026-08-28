@@ -10,13 +10,13 @@ from __future__ import annotations
 from typing import Any
 
 from ai_studio.config.settings import get_settings
-from ai_studio.core.enums import MediaKind
 from ai_studio.core.errors import AIStudioError
 from ai_studio.prompts import flux as flux_prompts
 from ai_studio.prompts.convert import LlmClient, convert
 from ai_studio.prompts.flux import FluxPrompt
 from ai_studio.prompts.h3 import I2VA_INSTRUCTION, H3Mode, H3Prompt
 
+from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline.queue import Job, JobQueue, JobState
 from fun_workflow.prompts import understanding as understanding_prompts
 from fun_workflow.prompts.chat import CHAT_DEVELOPER_PROMPT
@@ -83,10 +83,10 @@ def raw_payload(job: Job, *, duration_s: float = DEFAULT_DURATION_S) -> dict[str
     the first frame. `duration_s` and `mode` are here because the render
     reads them from the plan, the same as for a structured one.
     """
-    if job.media_kind is MediaKind.DRAMA:
+    if job.media_kind is JobKind.DRAMA:
         raise AIStudioError("a drama has no raw form; it needs the screenwriter")
     text = job.text.strip()
-    if job.media_kind is MediaKind.IMAGE:
+    if job.media_kind is JobKind.IMAGE:
         return {"text": text, "_rendered": text, "_built_by": "raw"}
     mode = H3Mode.I2VA if job.first_frame_path else H3Mode.T2VA
     rendered = f"{I2VA_INSTRUCTION}\n\n{text}" if mode is H3Mode.I2VA else text
@@ -119,14 +119,14 @@ async def convert_job(
 
     mode_setting = prompt_mode or get_settings().prompt_mode
 
-    if job.media_kind is MediaKind.CHAT:
+    if job.media_kind is JobKind.CHAT:
         # The user's words are never rewritten (a chat is a chat), but the
         # reply gets the engineered developer prompt -- persona, language,
         # length -- which `drain.render_chat` carries as `extra["system"]`.
         queue.set_parsed(job.id, {"_built_by": "chat", "_system": CHAT_DEVELOPER_PROMPT})
         return "chat"
 
-    if job.media_kind is MediaKind.DRAMA:
+    if job.media_kind is JobKind.DRAMA:
         # The screenwriter, in any prompt mode: a drama has nothing to be
         # "raw" from, and there is no template that is six shots of a story.
         # A failure here is terminal and *told* -- `worker.prepare` delivers
@@ -160,7 +160,7 @@ async def convert_job(
         return "raw"
 
     prompt: FluxPrompt | H3Prompt
-    if job.media_kind is MediaKind.IMAGE:
+    if job.media_kind is JobKind.IMAGE:
         prompt, how = await flux_prompts.convert(job.text, client)
     else:
         # A cached photo makes this image-to-video: the picture is the first
@@ -205,9 +205,9 @@ def needs_llm(job: Job, prompt_mode: str) -> bool:
     go verbatim); an understanding job needs it only when the user added a
     question; generation needs it only in structured mode.
     """
-    if job.media_kind is MediaKind.CHAT:
+    if job.media_kind is JobKind.CHAT:
         return False
-    if job.media_kind is MediaKind.DRAMA:
+    if job.media_kind is JobKind.DRAMA:
         return True  # the screenwriter is the feature, whatever the mode
     if prompt_mode != "structured":
         return False

@@ -24,10 +24,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, ClassVar, Protocol
 
-from ai_studio.core.enums import MediaKind
-
 from fun_workflow.bots.line.content import ContentClient, LineContentError
 from fun_workflow.bots.line.verify import verify
+from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline.queue import Job, JobQueue, JobState
 
 _log = logging.getLogger("ai_studio.webhook")
@@ -336,7 +335,7 @@ class WebhookHandler:
         if self._over_daily_cap(user_id, media_kind):
             limit = (
                 self.max_chat_messages_per_user_per_day
-                if media_kind is MediaKind.CHAT
+                if media_kind is JobKind.CHAT
                 else self.max_jobs_per_user_per_day
             )
             await self._safe_reply(
@@ -347,7 +346,7 @@ class WebhookHandler:
             _log.warning("refused: daily cap", extra={"user": user_id, "kind": media_kind.value, "reason": "daily cap"})
             return Outcome("rate_limited", detail=str(user_id))
 
-        if media_kind is MediaKind.DRAMA and self._over_drama_cap():
+        if media_kind is JobKind.DRAMA and self._over_drama_cap():
             await self._safe_reply(
                 reply_token,
                 f"今天的短劇額度({self.max_dramas_per_day} 部)已經用完,明天再來。"
@@ -553,7 +552,7 @@ class WebhookHandler:
         prompt: str,
         reply_token: str,
         *,
-        media_kind: MediaKind = MediaKind.VIDEO,
+        media_kind: JobKind = JobKind.VIDEO,
         first_frame_path: str | None = None,
         requested_seconds: float | None = None,
         input_media_path: str | None = None,
@@ -601,16 +600,16 @@ class WebhookHandler:
         measured a cold load yet, and pretending chat is always instant
         would be the same silent optimism this method exists to avoid.
         """
-        if job.media_kind is MediaKind.CHAT:
+        if job.media_kind is JobKind.CHAT:
             eta = "已經在線上,幾秒內回覆" if self.is_warm() else "暖機中,第一句回覆可能要等幾分鐘"
-        elif job.media_kind is MediaKind.DRAMA:
+        elif job.media_kind is JobKind.DRAMA:
             # [speculative] until the first real drama: 3 screenwriter calls,
             # 8 Flux stills, 6 H3 clips, then a CPU concat -- see docs/drama.md.
             eta = "短劇要慢慢做,約 25 到 40 分鐘" + ("" if self.is_warm() else "(含暖機)") + ",完成後會貼到群組"
         elif job.media_kind.is_understanding:
             # 📏 2026-08-27: 27-65 s to load the model, seconds to answer.
             eta = "辨識約 1 到 2 分鐘(含載入模型)"
-            if job.media_kind is MediaKind.IMAGE_UNDERSTAND:
+            if job.media_kind is JobKind.IMAGE_UNDERSTAND:
                 eta += ",這個看圖模型只會用英文回答"
         else:
             eta = "圖約 30 秒、影片約 2 分鐘" if self.is_warm() else "暖機中:圖約 3 分鐘、影片約 5 分鐘"
@@ -626,9 +625,9 @@ class WebhookHandler:
         cost is the pod's, not one member's. 0 disables."""
         if not self.max_dramas_per_day:
             return False
-        return self.queue.accepted_kind_today(MediaKind.DRAMA) >= self.max_dramas_per_day
+        return self.queue.accepted_kind_today(JobKind.DRAMA) >= self.max_dramas_per_day
 
-    def _over_daily_cap(self, user_id: str | None, media_kind: MediaKind) -> bool:
+    def _over_daily_cap(self, user_id: str | None, media_kind: JobKind) -> bool:
         """Has this user used up today's allowance?
 
         Chat has its own separate counter
@@ -645,7 +644,7 @@ class WebhookHandler:
         """
         if not user_id:
             return False
-        if media_kind is MediaKind.CHAT:
+        if media_kind is JobKind.CHAT:
             if not self.max_chat_messages_per_user_per_day:
                 return False
             return self.queue.accepted_chat_today(user_id) >= self.max_chat_messages_per_user_per_day
@@ -716,7 +715,7 @@ class WebhookHandler:
 
     # -------------------------------------------------------------- helpers
 
-    def _strip_trigger(self, text: str) -> tuple[str, MediaKind, str | None, float | None] | None:
+    def _strip_trigger(self, text: str) -> tuple[str, JobKind, str | None, float | None] | None:
         """The prompt after the trigger, which kind it asked for, which
         pending-media cache (if any) it claims, and any requested length in
         seconds — or None if it is not a request at all. Exactly one spelling
@@ -740,20 +739,20 @@ class WebhookHandler:
         if text[:1] == "\uff0f":
             text = "/" + text[1:]
         for prefix, kind, wants_media in (
-            (self.i2v_trigger, MediaKind.VIDEO, "image"),
-            (self.i2i_trigger, MediaKind.IMAGE, "image"),
-            (self.trigger, MediaKind.VIDEO, None),
-            (self.image_trigger, MediaKind.IMAGE, None),
-            (self.describe_image_trigger, MediaKind.IMAGE_UNDERSTAND, "image"),
-            (self.describe_audio_trigger, MediaKind.AUDIO_UNDERSTAND, "audio"),
-            (self.describe_video_trigger, MediaKind.VIDEO_UNDERSTAND, "video"),
-            (self.chat_trigger, MediaKind.CHAT, None),
-            (self.drama_trigger, MediaKind.DRAMA, None),
+            (self.i2v_trigger, JobKind.VIDEO, "image"),
+            (self.i2i_trigger, JobKind.IMAGE, "image"),
+            (self.trigger, JobKind.VIDEO, None),
+            (self.image_trigger, JobKind.IMAGE, None),
+            (self.describe_image_trigger, JobKind.IMAGE_UNDERSTAND, "image"),
+            (self.describe_audio_trigger, JobKind.AUDIO_UNDERSTAND, "audio"),
+            (self.describe_video_trigger, JobKind.VIDEO_UNDERSTAND, "video"),
+            (self.chat_trigger, JobKind.CHAT, None),
+            (self.drama_trigger, JobKind.DRAMA, None),
         ):
             if text.startswith(prefix):
                 rest = text[len(prefix) :]
                 seconds: float | None = None
-                if kind is MediaKind.VIDEO:
+                if kind is JobKind.VIDEO:
                     match = _LENGTH_RE.match(rest)
                     if match:
                         seconds = float(match.group(1))
@@ -761,37 +760,37 @@ class WebhookHandler:
                 return rest.strip(), kind, wants_media, seconds
         return None
 
-    _DESCRIBE_EXAMPLE: ClassVar[dict[MediaKind, str]] = {
-        MediaKind.IMAGE_UNDERSTAND: "這是什麼品種的狗",
-        MediaKind.AUDIO_UNDERSTAND: "他在唱什麼歌",
-        MediaKind.VIDEO_UNDERSTAND: "他最後做了什麼",
+    _DESCRIBE_EXAMPLE: ClassVar[dict[JobKind, str]] = {
+        JobKind.IMAGE_UNDERSTAND: "這是什麼品種的狗",
+        JobKind.AUDIO_UNDERSTAND: "他在唱什麼歌",
+        JobKind.VIDEO_UNDERSTAND: "他最後做了什麼",
     }
 
-    def _media_trigger(self, media_kind: MediaKind, wants_media: str) -> str:
+    def _media_trigger(self, media_kind: JobKind, wants_media: str) -> str:
         """Which trigger word claims this pending media -- for refusal/usage text."""
-        if media_kind is MediaKind.IMAGE_UNDERSTAND:
+        if media_kind is JobKind.IMAGE_UNDERSTAND:
             return self.describe_image_trigger
-        if media_kind is MediaKind.AUDIO_UNDERSTAND:
+        if media_kind is JobKind.AUDIO_UNDERSTAND:
             return self.describe_audio_trigger
-        if media_kind is MediaKind.VIDEO_UNDERSTAND:
+        if media_kind is JobKind.VIDEO_UNDERSTAND:
             return self.describe_video_trigger
-        return self.i2v_trigger if media_kind is MediaKind.VIDEO else self.i2i_trigger
+        return self.i2v_trigger if media_kind is JobKind.VIDEO else self.i2i_trigger
 
     _MEDIA_NOUN: ClassVar[dict[str, str]] = {"image": "照片", "audio": "語音", "video": "影片"}
     _MEDIA_VERB: ClassVar[dict[str, str]] = {
         "image": "傳一張照片", "audio": "傳一段語音訊息", "video": "傳一段影片",
     }
-    _STATUS_GLYPH: ClassVar[dict[MediaKind, str]] = {
-        MediaKind.IMAGE: "🖼",
-        MediaKind.IMAGE_UNDERSTAND: "🔎🖼",
-        MediaKind.AUDIO_UNDERSTAND: "🔎🎧",
-        MediaKind.VIDEO_UNDERSTAND: "🔎🎬",
-        MediaKind.CHAT: "💬",
-        MediaKind.DRAMA: "🎭",
+    _STATUS_GLYPH: ClassVar[dict[JobKind, str]] = {
+        JobKind.IMAGE: "🖼",
+        JobKind.IMAGE_UNDERSTAND: "🔎🖼",
+        JobKind.AUDIO_UNDERSTAND: "🔎🎧",
+        JobKind.VIDEO_UNDERSTAND: "🔎🎬",
+        JobKind.CHAT: "💬",
+        JobKind.DRAMA: "🎭",
     }
     """`_status()`'s per-kind glyph. VIDEO falls back to `.get(..., '🎬')`."""
 
-    def _usage(self, media_kind: MediaKind, wants_media: str | None) -> str:
+    def _usage(self, media_kind: JobKind, wants_media: str | None) -> str:
         if media_kind.is_understanding:
             assert wants_media is not None  # every understanding kind wants media
             trigger = self._media_trigger(media_kind, wants_media)
@@ -800,16 +799,16 @@ class WebhookHandler:
                 f"用法:先{self._MEDIA_VERB[wants_media]},再輸入 {trigger};"
                 f"後面可以加想問的話,例如「{trigger} {example}」"
             )
-        if media_kind is MediaKind.CHAT:
+        if media_kind is JobKind.CHAT:
             return f"用法:{self.chat_trigger} <想說的話>"
-        if media_kind is MediaKind.DRAMA:
+        if media_kind is JobKind.DRAMA:
             return f"用法:{self.drama_trigger} <一句故事前提>,例如「{self.drama_trigger} 一個夜市老闆娘發現攤位下藏著一封信」"
         if wants_media:
             return f"用法:先傳一張照片,再說 {self._media_trigger(media_kind, wants_media)} <想看的畫面>"
-        trigger = self.trigger if media_kind is MediaKind.VIDEO else self.image_trigger
+        trigger = self.trigger if media_kind is JobKind.VIDEO else self.image_trigger
         return f"用法:{trigger} <想看的畫面>"
 
-    def _no_pending_media(self, media_kind: MediaKind, wants_media: str) -> str:
+    def _no_pending_media(self, media_kind: JobKind, wants_media: str) -> str:
         trigger = self._media_trigger(media_kind, wants_media)
         noun = self._MEDIA_NOUN[wants_media]
         verb = self._MEDIA_VERB[wants_media]
@@ -985,12 +984,12 @@ class WebhookHandler:
         url = f"{self.base_url}/files/{name}"
         poster = f"{Path(name).stem}_poster.jpg"
         has_poster = self.files_dir is not None and (self.files_dir / poster).is_file()
-        if job.media_kind is MediaKind.VIDEO:
+        if job.media_kind is JobKind.VIDEO:
             if not has_poster:
                 return None
             return {"type": "video", "originalContentUrl": url,
                     "previewImageUrl": f"{self.base_url}/files/{poster}"}
-        if job.media_kind is MediaKind.IMAGE:
+        if job.media_kind is JobKind.IMAGE:
             preview = f"{self.base_url}/files/{poster}" if has_poster else url
             return {"type": "image", "originalContentUrl": url, "previewImageUrl": preview}
         return None

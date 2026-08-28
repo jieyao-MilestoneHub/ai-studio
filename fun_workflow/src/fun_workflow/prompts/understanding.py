@@ -36,10 +36,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ai_studio.core.enums import MediaKind
 from ai_studio.core.understanding_spec import UnderstandingAsset
 from ai_studio.prompts.convert import ConversionError, LlmClient, extract_json
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from fun_workflow.core.kinds import JobKind
 
 AUDIO_DEFAULT_QUESTION = (
     "請只用繁體中文,依下列格式條列描述這段聲音,不要加開場白:\n"
@@ -72,10 +73,10 @@ an answer, the frames are the other half."""
 
 AUDIO_TRACK_SILENT = "(這段影片沒有聲音軌)"
 
-DEFAULT_QUESTIONS: dict[MediaKind, tuple[str | None, str | None]] = {
-    MediaKind.IMAGE_UNDERSTAND: (None, None),  # caption(length="long") on the server
-    MediaKind.AUDIO_UNDERSTAND: (AUDIO_DEFAULT_QUESTION, None),
-    MediaKind.VIDEO_UNDERSTAND: (VIDEO_DEFAULT_QUESTION, VIDEO_AUDIO_QUESTION),
+DEFAULT_QUESTIONS: dict[JobKind, tuple[str | None, str | None]] = {
+    JobKind.IMAGE_UNDERSTAND: (None, None),  # caption(length="long") on the server
+    JobKind.AUDIO_UNDERSTAND: (AUDIO_DEFAULT_QUESTION, None),
+    JobKind.VIDEO_UNDERSTAND: (VIDEO_DEFAULT_QUESTION, VIDEO_AUDIO_QUESTION),
 }
 """`(prompt, audio_prompt)` a bare trigger sends. Only video has a second."""
 
@@ -137,10 +138,10 @@ Rules:
   characters.
 """
 
-REWRITE_SYSTEM: dict[MediaKind, str] = {
-    MediaKind.IMAGE_UNDERSTAND: _IMAGE_REWRITE,
-    MediaKind.AUDIO_UNDERSTAND: _AUDIO_REWRITE,
-    MediaKind.VIDEO_UNDERSTAND: _VIDEO_REWRITE,
+REWRITE_SYSTEM: dict[JobKind, str] = {
+    JobKind.IMAGE_UNDERSTAND: _IMAGE_REWRITE,
+    JobKind.AUDIO_UNDERSTAND: _AUDIO_REWRITE,
+    JobKind.VIDEO_UNDERSTAND: _VIDEO_REWRITE,
 }
 
 
@@ -152,7 +153,7 @@ class _Question(BaseModel):
     question: str = Field(min_length=1, max_length=400)
 
 
-def default_questions(modality: MediaKind) -> tuple[str | None, str | None]:
+def default_questions(modality: JobKind) -> tuple[str | None, str | None]:
     """The engineered `(prompt, audio_prompt)` a bare trigger sends. Raises on
     a kind that is not an understanding kind -- fail loudly, never a blank
     prompt."""
@@ -161,17 +162,17 @@ def default_questions(modality: MediaKind) -> tuple[str | None, str | None]:
     return DEFAULT_QUESTIONS[modality]
 
 
-def _for_both_models(modality: MediaKind, question: str) -> tuple[str, str | None]:
+def _for_both_models(modality: JobKind, question: str) -> tuple[str, str | None]:
     """A user's own question goes to every model the modality runs: for video
     that is the frame model and the audio model alike."""
-    return question, (question if modality is MediaKind.VIDEO_UNDERSTAND else None)
+    return question, (question if modality is JobKind.VIDEO_UNDERSTAND else None)
 
 
 async def convert_question(
     text: str,
     client: LlmClient | None,
     *,
-    modality: MediaKind,
+    modality: JobKind,
     attempts: int = 2,
 ) -> tuple[str | None, str | None, str]:
     """The questions to send for one understanding job. Returns

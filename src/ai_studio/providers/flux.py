@@ -102,6 +102,7 @@ class FluxComfyUIProvider:
     """Drives a ComfyUI instance running Flux.1-dev."""
 
     name = "flux"
+    residency_group = "comfyui"
 
     def __init__(
         self,

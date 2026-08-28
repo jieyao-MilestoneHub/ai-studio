@@ -95,6 +95,7 @@ class UnderstandingProvider:
     """
 
     name = "understanding"
+    residency_group = "inference"
 
     def __init__(
         self,

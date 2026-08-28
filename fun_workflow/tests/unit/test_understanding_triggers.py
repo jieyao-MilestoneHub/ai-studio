@@ -12,12 +12,12 @@ import json
 from pathlib import Path
 
 import pytest
-from ai_studio.core.enums import MediaKind
 
 from fun_workflow.bots.line.content import LineContentError, NullContentClient
 from fun_workflow.bots.line.reply import NullReplyClient
 from fun_workflow.bots.line.verify import sign
 from fun_workflow.bots.line.webhook import IMAGE_PAIRING_TTL_S, WebhookHandler
+from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline.queue import JobQueue
 
 SECRET = "test-channel-secret"
@@ -89,7 +89,7 @@ async def test_a_photo_then_describe_image_becomes_an_understanding_job(tmp_path
     assert outcome.action == "accepted"
     job = outcome.job
     assert job is not None
-    assert job.media_kind is MediaKind.IMAGE_UNDERSTAND
+    assert job.media_kind is JobKind.IMAGE_UNDERSTAND
     assert job.input_media_path is not None
     assert job.first_frame_path is None
     assert Path(job.input_media_path).read_bytes() == b"fake-jpeg-bytes"
@@ -145,7 +145,7 @@ async def test_describe_image_does_not_shadow_or_get_shadowed_by_i2v_i2i(tmp_pat
 
     await _send(handler, _media_event("image", message_id="img-1", event_id="evt-img"))
     (outcome,) = await _send(handler, _text_event("/說圖"))
-    assert outcome.job is not None and outcome.job.media_kind is MediaKind.IMAGE_UNDERSTAND
+    assert outcome.job is not None and outcome.job.media_kind is JobKind.IMAGE_UNDERSTAND
 
     # The photo was already claimed -- a second photo-consuming trigger finds
     # nothing cached.
@@ -173,7 +173,7 @@ async def test_an_audio_clip_then_describe_audio_becomes_an_understanding_job(
     assert outcome.action == "accepted"
     job = outcome.job
     assert job is not None
-    assert job.media_kind is MediaKind.AUDIO_UNDERSTAND
+    assert job.media_kind is JobKind.AUDIO_UNDERSTAND
     assert job.input_media_path is not None
     assert Path(job.input_media_path).read_bytes() == b"fake-audio-bytes"
     queue.close()
@@ -246,7 +246,7 @@ async def test_a_video_clip_then_describe_video_becomes_an_understanding_job(
     assert outcome.action == "accepted"
     job = outcome.job
     assert job is not None
-    assert job.media_kind is MediaKind.VIDEO_UNDERSTAND
+    assert job.media_kind is JobKind.VIDEO_UNDERSTAND
     assert job.input_media_path is not None
     assert Path(job.input_media_path).read_bytes() == b"fake-video-bytes"
     queue.close()

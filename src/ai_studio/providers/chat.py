@@ -52,6 +52,7 @@ class ChatProvider:
     """
 
     name = "chat"
+    residency_group = "inference"
 
     def __init__(
         self,

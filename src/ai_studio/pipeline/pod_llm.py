@@ -10,7 +10,7 @@ role until 2026-08-27, 📏 183 s cold; it was retired and its client deleted.)
 
 **The caller owns the GPU slot.** One 24 GB card holds one model; this client
 does not know which one is resident and never evicts anything. `pipeline.
-worker.prepare` calls `make_room_for(MediaKind.CHAT, providers)` once, then
+worker calls `make_room_for(<the chat provider>, providers)` once, then
 rewrites every pending job while gpt-oss is loaded -- N clips pay one load,
 not N. Calling `complete()` while ComfyUI's checkpoint is resident is not an
 error; it is just a slow first call (📏 57-68 s load) and, if the card is

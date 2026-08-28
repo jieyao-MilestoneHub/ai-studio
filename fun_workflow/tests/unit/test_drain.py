@@ -20,6 +20,7 @@ from ai_studio.core.errors import AIStudioError, ProviderError
 from ai_studio.core.image_provider_spec import ImageAsset, ImageProviderCapabilities
 from ai_studio.core.provider_spec import ClipAsset, ClipJob, ProviderCapabilities
 
+from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline.drain import (
     STOP_CLAIMING_BEFORE_S,
     drain_window,
@@ -53,7 +54,7 @@ PROMPT = {"_rendered": "integrated_multimodal_description: [Shot 1] a cat", "_bu
 IMAGE_PROMPT = {"_rendered": "a cat", "_built_by": "template"}
 
 
-def _video(provider: Any) -> dict[MediaKind, Any]:
+def _video(provider: Any) -> dict[JobKind, Any]:
     """Wrap a single video provider as the `providers` dict `drain_window` now
     expects — most tests here only ever exercise one media kind."""
     return {MediaKind.VIDEO: provider}
@@ -61,6 +62,7 @@ def _video(provider: Any) -> dict[MediaKind, Any]:
 
 class FakeProvider:
     """Completes instantly, or fails on demand."""
+    residency_group = "comfyui"
 
     def __init__(self, *, fail_with: Exception | None = None, never_finish: bool = False) -> None:
         self.fail_with = fail_with
@@ -103,6 +105,7 @@ class FakeProvider:
 
 class FakeImageProvider:
     """The image-side counterpart to `FakeProvider`. Completes instantly."""
+    residency_group = "comfyui"
 
     def __init__(self) -> None:
         self.submitted: list[str] = []
@@ -139,6 +142,7 @@ class FakeImageProvider:
 class FakeChatProvider:
     """The chat counterpart to `FakeProvider`/`FakeImageProvider`. Completes
     instantly, or hangs past the window's close on demand."""
+    residency_group = "inference"
 
     def __init__(self, *, never_finish: bool = False, result_text: str = "hi there") -> None:
         self.never_finish = never_finish
@@ -231,9 +235,9 @@ async def test_max_clips_bounds_a_measurement_run(ready) -> None:
 async def test_video_and_image_jobs_share_the_queue_and_dispatch_correctly(tmp_path: Path) -> None:
     """One shared pod, one FIFO queue — dispatch is entirely by media_kind."""
     with JobQueue(tmp_path / "q.sqlite3") as q:
-        video_job, _ = q.enqueue("evt-v", "Cgroup", "貓", media_kind=MediaKind.VIDEO)
+        video_job, _ = q.enqueue("evt-v", "Cgroup", "貓", media_kind=JobKind.VIDEO)
         q.set_parsed(video_job.id, PROMPT)
-        image_job, _ = q.enqueue("evt-i", "Cgroup", "貓", media_kind=MediaKind.IMAGE)
+        image_job, _ = q.enqueue("evt-i", "Cgroup", "貓", media_kind=JobKind.IMAGE)
         q.set_parsed(image_job.id, IMAGE_PROMPT)
 
         video_provider = FakeProvider()
@@ -469,12 +473,13 @@ def test_frame_counts_snap_up_to_the_17k_plus_5_grid() -> None:
 
 
 class _EvictOnly:
-    """The minimal shape `make_room_for` needs: an `evict()` and nothing
-    else, matching a real provider closely enough for this."""
+    """The minimal shape `make_room_for` needs: a `residency_group` and an
+    `evict()`, matching a real provider closely enough for this."""
 
     def __init__(self, name: str, sink: list[str]) -> None:
         self.name = name
         self._sink = sink
+        self.residency_group = "comfyui" if name in ("video", "image") else "inference"
 
     async def evict(self) -> None:
         self._sink.append(self.name)
@@ -484,14 +489,14 @@ class _EvictOnly:
 async def test_make_room_for_chat_evicts_video_and_image() -> None:
     """A chat job needs ComfyUI's checkpoint evicted, exactly like an
     understanding job -- CHAT shares the understanding side's slot even
-    though `MediaKind.CHAT.is_understanding` is False."""
+    though `JobKind.CHAT.is_understanding` is False."""
     evicted: list[str] = []
     providers = {
         MediaKind.VIDEO: _EvictOnly("video", evicted),
         MediaKind.IMAGE: _EvictOnly("image", evicted),
         MediaKind.CHAT: _EvictOnly("chat", evicted),
     }
-    await make_room_for(MediaKind.CHAT, providers)
+    await make_room_for(providers[MediaKind.CHAT], providers)
     assert set(evicted) == {"video", "image"}
 
 
@@ -506,16 +511,16 @@ async def test_make_room_for_video_evicts_chat_alongside_understanding() -> None
         MediaKind.VIDEO_UNDERSTAND: _EvictOnly("video_understand", evicted),
         MediaKind.CHAT: _EvictOnly("chat", evicted),
     }
-    await make_room_for(MediaKind.VIDEO, providers)
+    await make_room_for(_EvictOnly("video", evicted), providers)
     assert set(evicted) == {"image_understand", "audio_understand", "video_understand", "chat"}
 
 
 @pytest.mark.asyncio
 async def test_make_room_for_tolerates_a_provider_with_no_evict() -> None:
     class _NoEvict:
-        pass
+        residency_group = "comfyui"
 
-    await make_room_for(MediaKind.CHAT, {MediaKind.VIDEO: _NoEvict()})  # must not raise
+    await make_room_for(_EvictOnly("chat", []), {MediaKind.VIDEO: _NoEvict()})  # must not raise
 
 
 # ----------------------------------------------------------------- render_chat
@@ -526,7 +531,7 @@ async def test_render_chat_fetches_and_appends_history(tmp_path: Path) -> None:
     with JobQueue(tmp_path / "q.sqlite3") as q:
         q.append_chat_turn("U1", "Cgroup", "user", "earlier")
         job, _ = q.enqueue(
-            "evt-c1", "Cgroup", "second message", user_id="U1", media_kind=MediaKind.CHAT
+            "evt-c1", "Cgroup", "second message", user_id="U1", media_kind=JobKind.CHAT
         )
         q.set_parsed(job.id, {"_built_by": "chat"})
         claimed = q.claim_next()
@@ -550,7 +555,7 @@ async def test_render_chat_is_stateless_for_an_unidentifiable_user(tmp_path: Pat
     on -- the same "None is never counted" precedent `accepted_today()`
     already follows."""
     with JobQueue(tmp_path / "q.sqlite3") as q:
-        job, _ = q.enqueue("evt-c-anon", "Cgroup", "hi", user_id=None, media_kind=MediaKind.CHAT)
+        job, _ = q.enqueue("evt-c-anon", "Cgroup", "hi", user_id=None, media_kind=JobKind.CHAT)
         q.set_parsed(job.id, {"_built_by": "chat"})
         claimed = q.claim_next()
         assert claimed is not None
@@ -566,7 +571,7 @@ async def test_render_chat_is_stateless_for_an_unidentifiable_user(tmp_path: Pat
 @pytest.mark.asyncio
 async def test_render_chat_cancels_and_raises_when_the_window_closes(tmp_path: Path) -> None:
     with JobQueue(tmp_path / "q.sqlite3") as q:
-        job, _ = q.enqueue("evt-c2", "Cgroup", "hi", media_kind=MediaKind.CHAT)
+        job, _ = q.enqueue("evt-c2", "Cgroup", "hi", media_kind=JobKind.CHAT)
         q.set_parsed(job.id, {"_built_by": "chat"})
         claimed = q.claim_next()
         assert claimed is not None
@@ -580,7 +585,7 @@ async def test_render_chat_cancels_and_raises_when_the_window_closes(tmp_path: P
 @pytest.mark.asyncio
 async def test_render_chat_records_its_own_cost(tmp_path: Path) -> None:
     with JobQueue(tmp_path / "q.sqlite3") as q:
-        job, _ = q.enqueue("evt-c3", "Cgroup", "hi", media_kind=MediaKind.CHAT)
+        job, _ = q.enqueue("evt-c3", "Cgroup", "hi", media_kind=JobKind.CHAT)
         q.set_parsed(job.id, {"_built_by": "chat"})
         claimed = q.claim_next()
         assert claimed is not None
@@ -598,10 +603,10 @@ async def test_render_chat_refuses_once_the_monthly_sub_budget_is_exhausted(
     """Fails loudly, terminal, *before* ever submitting -- video/image must
     keep working on the same shared $/month ceiling regardless."""
     with JobQueue(tmp_path / "q.sqlite3") as q:
-        spent, _ = q.enqueue("evt-spent", "Cgroup", "x", media_kind=MediaKind.CHAT)
+        spent, _ = q.enqueue("evt-spent", "Cgroup", "x", media_kind=JobKind.CHAT)
         q.record_chat_cost(spent.id, 999.0)
 
-        job, _ = q.enqueue("evt-c4", "Cgroup", "hi", media_kind=MediaKind.CHAT)
+        job, _ = q.enqueue("evt-c4", "Cgroup", "hi", media_kind=JobKind.CHAT)
         q.set_parsed(job.id, {"_built_by": "chat"})
         claimed = q.claim_next()
         assert claimed is not None
@@ -640,7 +645,7 @@ async def test_drain_window_dispatches_a_drama_without_a_providers_entry_for_it(
 
     queue = JobQueue(tmp_path / "q.sqlite3")
     try:
-        job, _ = queue.enqueue("evt-drain-drama", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+        job, _ = queue.enqueue("evt-drain-drama", "Cgroup", "一個故事", user_id="U1", media_kind=JobKind.DRAMA)
         queue.set_parsed(job.id, {"_built_by": "llm", "_rendered": "t", "screenplay": {"stub": True}, "shots": []})
         report = await drain_mod.drain_window(
             queue, {MediaKind.VIDEO: Caps(), MediaKind.IMAGE: Caps()},
@@ -650,4 +655,4 @@ async def test_drain_window_dispatches_a_drama_without_a_providers_entry_for_it(
         queue.close()
 
     assert report.completed == 1 and report.failed == 0
-    assert seen["job"] == job.id and seen["providers"] == {MediaKind.VIDEO, MediaKind.IMAGE}
+    assert seen["job"] == job.id and seen["providers"] == {JobKind.VIDEO, JobKind.IMAGE}

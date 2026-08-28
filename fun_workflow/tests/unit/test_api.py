@@ -409,9 +409,8 @@ def test_the_page_names_the_open_model_with_a_link(client) -> None:
     """Asked 2026-08-27: every job page says which open model produced it and
     links to its repo. Generators come from a fixed table, understanding and
     chat from the provider's capabilities, so a model swap shows up here."""
-    from ai_studio.core.enums import MediaKind
-
     from fun_workflow.api.main import model_for
+    from fun_workflow.core.kinds import JobKind
 
     c, queue, _ = client
     _post(c, [_event("/影片 一隻貓")])
@@ -422,18 +421,17 @@ def test_the_page_names_the_open_model_with_a_link(client) -> None:
     assert "專案 REPO" in body
     assert 'href="https://github.com/jieyao-MilestoneHub/ai-studio"' in body
 
-    for kind in MediaKind:
+    for kind in JobKind:
         name, url = model_for(kind)
         assert name and url.startswith("https://huggingface.co/")
-    assert model_for(MediaKind.CHAT)[1].endswith("/openai/gpt-oss-20b")
-    assert "Qwen2-Audio" in model_for(MediaKind.AUDIO_UNDERSTAND)[0]
+    assert model_for(JobKind.CHAT)[1].endswith("/openai/gpt-oss-20b")
+    assert "Qwen2-Audio" in model_for(JobKind.AUDIO_UNDERSTAND)[0]
 
 
 def test_the_running_wording_matches_the_kind_of_job(client) -> None:
     """A chat or a photo-description page must not say 正在算圖 (asked 2026-08-27)."""
-    from ai_studio.core.enums import MediaKind
-
     from fun_workflow.api.main import state_text
+    from fun_workflow.core.kinds import JobKind
     from fun_workflow.pipeline.queue import Job, JobState
 
     def running(kind):
@@ -447,11 +445,11 @@ def test_the_running_wording_matches_the_kind_of_job(client) -> None:
         )
 
     seen = set()
-    for kind in MediaKind:
+    for kind in JobKind:
         label, note = state_text(running(kind))
         assert label and note
         seen.add(note)
-    assert len(seen) == len(list(MediaKind)), "every kind gets its own sentence"
-    assert "算圖" not in state_text(running(MediaKind.CHAT))[1]
-    assert "算圖" not in state_text(running(MediaKind.IMAGE_UNDERSTAND))[1]
-    assert "算影片" in state_text(running(MediaKind.VIDEO))[1]
+    assert len(seen) == len(list(JobKind)), "every kind gets its own sentence"
+    assert "算圖" not in state_text(running(JobKind.CHAT))[1]
+    assert "算圖" not in state_text(running(JobKind.IMAGE_UNDERSTAND))[1]
+    assert "算影片" in state_text(running(JobKind.VIDEO))[1]

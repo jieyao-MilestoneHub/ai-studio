@@ -45,6 +45,9 @@ class ClipProvider(Protocol):
     """A backend that turns a `ClipRequest` into a video file."""
 
     name: str
+    residency_group: str
+    """Which side of the one GPU this provider\'s model lives on ("comfyui" or
+    "inference"); `pipeline.residency.make_room_for` evicts the other side."""
 
     def capabilities(self) -> ProviderCapabilities:
         """Declare native size, clip-length limits, cost, and latency.
@@ -84,6 +87,9 @@ class ImageProvider(Protocol):
     """
 
     name: str
+    residency_group: str
+    """Which side of the one GPU this provider\'s model lives on ("comfyui" or
+    "inference"); `pipeline.residency.make_room_for` evicts the other side."""
 
     def capabilities(self) -> ImageProviderCapabilities: ...
 
@@ -110,6 +116,9 @@ class UnderstandingProvider(Protocol):
     """
 
     name: str
+    residency_group: str
+    """Which side of the one GPU this provider\'s model lives on ("comfyui" or
+    "inference"); `pipeline.residency.make_room_for` evicts the other side."""
 
     def capabilities(self) -> UnderstandingCapabilities: ...
 
@@ -136,6 +145,9 @@ class ChatProvider(Protocol):
     """
 
     name: str
+    residency_group: str
+    """Which side of the one GPU this provider\'s model lives on ("comfyui" or
+    "inference"); `pipeline.residency.make_room_for` evicts the other side."""
 
     def capabilities(self) -> ChatCapabilities: ...
 

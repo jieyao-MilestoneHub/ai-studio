@@ -370,10 +370,10 @@ async def test_raw_mode_keeps_the_picture_binding_line_for_image_to_video(tmp_pa
 
 @pytest.mark.asyncio
 async def test_raw_mode_for_an_image_is_just_the_text(tmp_path: Path) -> None:
-    from ai_studio.core.enums import MediaKind
+    from fun_workflow.core.kinds import JobKind
 
     with JobQueue(tmp_path / "q.sqlite3") as q:
-        job, _ = q.enqueue("evt-raw-img", "Cgroup", "亞洲辣妹", media_kind=MediaKind.IMAGE)
+        job, _ = q.enqueue("evt-raw-img", "Cgroup", "亞洲辣妹", media_kind=JobKind.IMAGE)
         await convert_job(q, job.id, None, prompt_mode="raw")
         plan = q.by_id(job.id).prompt
 

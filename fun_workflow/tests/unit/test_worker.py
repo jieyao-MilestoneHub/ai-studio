@@ -24,6 +24,7 @@ from ai_studio.core.understanding_spec import (
     UnderstandingJob,
 )
 
+from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline import worker
 from fun_workflow.pipeline.drain import STOP_CLAIMING_BEFORE_S
 from fun_workflow.pipeline.queue import JobQueue, JobState
@@ -52,7 +53,7 @@ IMAGE_CAPS = ImageProviderCapabilities(
 UNDERSTANDING_CAPS = UnderstandingCapabilities(
     provider="fake-understanding",
     model_id="fake-moondream",
-    modality=MediaKind.IMAGE_UNDERSTAND,
+    modality=JobKind.IMAGE_UNDERSTAND,
 )
 
 CHAT_CAPS = ChatCapabilities(provider="fake-chat", model_id="fake-gpt-oss-20b")
@@ -62,6 +63,7 @@ PROMPT = {"_rendered": "integrated_multimodal_description: [Shot 1] a cat", "_bu
 
 class FakeProvider:
     """Completes instantly, or fails on demand."""
+    residency_group = "comfyui"
 
     def __init__(self, *, fail_with: Exception | None = None) -> None:
         self.fail_with = fail_with
@@ -98,6 +100,7 @@ class FakeProvider:
 
 
 class FakeImageProvider(FakeProvider):
+    residency_group = "comfyui"
     def capabilities(self) -> ImageProviderCapabilities:  # type: ignore[override]
         return IMAGE_CAPS
 
@@ -116,6 +119,7 @@ class FakeUnderstandingProvider:
     that does not implement the GPU hand-off (the offline path has nothing
     to evict) rather than requiring every provider to define it.
     """
+    residency_group = "inference"
 
     def __init__(
         self, *, fail_with: Exception | None = None, result_text: str = "a photo of a cat"
@@ -145,7 +149,7 @@ class FakeUnderstandingProvider:
     async def fetch(self, job: UnderstandingJob) -> UnderstandingAsset:
         return UnderstandingAsset(
             shot_id=job.shot_id, provider="fake-understanding", job_id=job.job_id,
-            modality=MediaKind.IMAGE_UNDERSTAND, result_text=self.result_text,
+            modality=JobKind.IMAGE_UNDERSTAND, result_text=self.result_text,
         )
 
     async def cancel(self, job: UnderstandingJob) -> None:
@@ -162,6 +166,7 @@ class FakeChatProvider:
     `make_room_for` must tolerate a provider that does not implement the GPU
     hand-off.
     """
+    residency_group = "inference"
 
     def __init__(self, *, fail_with: Exception | None = None, result_text: str = "hi there") -> None:
         self.fail_with = fail_with
@@ -260,7 +265,7 @@ class FakeHost:
     def llm_for(self, session: Any) -> Any:
         return self.llm
 
-    def providers_for(self, session: Any) -> dict[MediaKind, Any]:
+    def providers_for(self, session: Any) -> dict[JobKind, Any]:
         return {
             MediaKind.VIDEO: self.video,
             MediaKind.IMAGE: self.image,
@@ -292,7 +297,7 @@ def _parsed(
     q: JobQueue,
     text: str = "a cat",
     *,
-    kind: MediaKind = MediaKind.VIDEO,
+    kind: JobKind = JobKind.VIDEO,
     input_media_path: str | None = None,
 ) -> Any:
     job, _ = q.enqueue(
@@ -300,9 +305,9 @@ def _parsed(
         input_media_path=input_media_path,
     )
     plan = PROMPT
-    if kind is MediaKind.AUDIO_UNDERSTAND:
+    if kind is JobKind.AUDIO_UNDERSTAND:
         plan = {**PROMPT, "_question": "what is this?"}
-    elif kind is MediaKind.VIDEO_UNDERSTAND:
+    elif kind is JobKind.VIDEO_UNDERSTAND:
         plan = {**PROMPT, "_question": "frames?", "_audio_question": "sound?"}
     q.set_parsed(job.id, plan)
     return q.by_token(job.token)
@@ -451,7 +456,7 @@ async def test_a_second_request_reuses_the_open_pod(queue, tmp_path: Path) -> No
 @pytest.mark.asyncio
 async def test_an_image_request_goes_to_the_image_backend(queue, tmp_path: Path) -> None:
     """One queue, two models, dispatched by `media_kind`."""
-    job = _parsed(queue, "a fox", kind=MediaKind.IMAGE)
+    job = _parsed(queue, "a fox", kind=JobKind.IMAGE)
     host = FakeHost()
 
     action, _ = await _tick(queue, host, tmp_path)
@@ -469,7 +474,7 @@ async def test_an_understanding_request_completes_with_text_not_a_file(
     hazard a binary `if image else video` if/else would miss silently,
     misrouting an understanding job into `render_clip`/H3 conversion."""
     job = _parsed(
-        queue, "", kind=MediaKind.IMAGE_UNDERSTAND, input_media_path="/incoming/x.jpg"
+        queue, "", kind=JobKind.IMAGE_UNDERSTAND, input_media_path="/incoming/x.jpg"
     )
     host = FakeHost()
 
@@ -492,7 +497,7 @@ async def test_an_understanding_failure_is_requeued_like_any_other(
     queue, tmp_path: Path
 ) -> None:
     job = _parsed(
-        queue, "", kind=MediaKind.AUDIO_UNDERSTAND, input_media_path="/incoming/x.m4a"
+        queue, "", kind=JobKind.AUDIO_UNDERSTAND, input_media_path="/incoming/x.m4a"
     )
     host = FakeHost(
         understand=FakeUnderstandingProvider(fail_with=ProviderError("cold load timed out"))
@@ -511,7 +516,7 @@ async def test_a_chat_request_completes_with_text_not_a_file(queue, tmp_path: Pa
     requires `input_media_path`) via a catchall dispatch branch -- it needs
     its own, and its completion must route through `complete_text` the same
     as understanding does."""
-    job = _parsed(queue, "你好嗎", kind=MediaKind.CHAT)
+    job = _parsed(queue, "你好嗎", kind=JobKind.CHAT)
     host = FakeHost()
 
     action, _ = await _tick(queue, host, tmp_path)
@@ -530,7 +535,7 @@ async def test_a_chat_request_remembers_and_isolates_by_user(queue, tmp_path: Pa
     """`render_chat` must fetch/append this user's history, and never another
     user's -- the structural isolation `core.chat_spec` promises."""
     queue.append_chat_turn("U1", "Cgroup", "user", "earlier message")
-    job = _parsed(queue, "second message", kind=MediaKind.CHAT)
+    job = _parsed(queue, "second message", kind=JobKind.CHAT)
     host = FakeHost()
 
     await _tick(queue, host, tmp_path)
@@ -545,7 +550,7 @@ async def test_a_chat_request_remembers_and_isolates_by_user(queue, tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_a_chat_failure_is_requeued_like_any_other(queue, tmp_path: Path) -> None:
-    job = _parsed(queue, "你好", kind=MediaKind.CHAT)
+    job = _parsed(queue, "你好", kind=JobKind.CHAT)
     host = FakeHost(chat=FakeChatProvider(fail_with=ProviderError("cold load timed out")))
 
     action, report = await _tick(queue, host, tmp_path)
@@ -901,7 +906,7 @@ async def test_rewrites_are_deferred_while_the_resident_checkpoint_has_work(
     queue.enqueue("evt-late", "Cgroup", "late arrival", user_id="U1")
     video = _Evicting()
     host = FakeHost(video=video, llm=_scripted(1))
-    state = worker.WorkerState(resident=MediaKind.VIDEO)
+    state = worker.WorkerState(resident=JobKind.VIDEO)
 
     report = worker.WorkerReport()
     action = await worker.tick(
@@ -924,9 +929,9 @@ async def test_rewrites_are_deferred_while_the_resident_checkpoint_has_work(
 
 @pytest.mark.asyncio
 async def test_chat_and_bare_describe_jobs_never_call_the_llm(queue, tmp_path: Path) -> None:
-    queue.enqueue("evt-chat", "Cgroup", "你好", user_id="U1", media_kind=MediaKind.CHAT)
+    queue.enqueue("evt-chat", "Cgroup", "你好", user_id="U1", media_kind=JobKind.CHAT)
     queue.enqueue(
-        "evt-img", "Cgroup", "", user_id="U1", media_kind=MediaKind.IMAGE_UNDERSTAND,
+        "evt-img", "Cgroup", "", user_id="U1", media_kind=JobKind.IMAGE_UNDERSTAND,
         input_media_path=str(tmp_path / "p.jpg"),
     )
     video = _Evicting()
@@ -943,9 +948,9 @@ async def test_chat_and_bare_describe_jobs_never_call_the_llm(queue, tmp_path: P
     assert video.evictions == 0, "prepare did not touch the card for these"
     assert state.resident is None
     kinds = {j.media_kind: j for j in queue.recent(2)}
-    assert kinds[MediaKind.CHAT].prompt["_system"].startswith("# Instructions")
-    assert kinds[MediaKind.IMAGE_UNDERSTAND].prompt["_built_by"] == "understanding-default"
-    assert kinds[MediaKind.IMAGE_UNDERSTAND].prompt["_question"] is None
+    assert kinds[JobKind.CHAT].prompt["_system"].startswith("# Instructions")
+    assert kinds[JobKind.IMAGE_UNDERSTAND].prompt["_built_by"] == "understanding-default"
+    assert kinds[JobKind.IMAGE_UNDERSTAND].prompt["_question"] is None
 
 
 @pytest.mark.asyncio
@@ -953,10 +958,10 @@ async def test_the_question_and_system_prompt_reach_the_providers(queue, tmp_pat
     from ai_studio.llm.scripted import ScriptedLlmClient
 
     queue.enqueue(
-        "evt-q", "Cgroup", "這是誰", user_id="U1", media_kind=MediaKind.AUDIO_UNDERSTAND,
+        "evt-q", "Cgroup", "這是誰", user_id="U1", media_kind=JobKind.AUDIO_UNDERSTAND,
         input_media_path=str(tmp_path / "a.m4a"),
     )
-    queue.enqueue("evt-c", "Cgroup", "嗨", user_id="U1", media_kind=MediaKind.CHAT)
+    queue.enqueue("evt-c", "Cgroup", "嗨", user_id="U1", media_kind=JobKind.CHAT)
     host = FakeHost(llm=ScriptedLlmClient('{"question": "請只用繁體中文說出說話者是誰"}'))
     state = worker.WorkerState()
     report = worker.WorkerReport()
@@ -972,10 +977,10 @@ async def test_the_question_and_system_prompt_reach_the_providers(queue, tmp_pat
 async def test_affinity_prefers_the_resident_kind_but_is_bounded(queue, tmp_path: Path) -> None:
     """With Flux resident and an image parsed behind an older clip, the image
     goes first (no swap); after MAX_AFFINITY_RUN the clip is not starved."""
-    clip = _parsed(queue, "old clip", kind=MediaKind.VIDEO)
-    _parsed(queue, "new image", kind=MediaKind.IMAGE)
+    clip = _parsed(queue, "old clip", kind=JobKind.VIDEO)
+    _parsed(queue, "new image", kind=JobKind.IMAGE)
     host = FakeHost()
-    state = worker.WorkerState(resident=MediaKind.IMAGE)
+    state = worker.WorkerState(resident=JobKind.IMAGE)
     report = worker.WorkerReport()
 
     await worker.tick(queue, host, files_dir=_files(tmp_path), report=report, state=state)
@@ -983,7 +988,7 @@ async def test_affinity_prefers_the_resident_kind_but_is_bounded(queue, tmp_path
     assert queue.by_id(clip.id).state is JobState.PARSED
 
     state.affinity_run = worker.MAX_AFFINITY_RUN
-    _parsed(queue, "another image", kind=MediaKind.IMAGE)
+    _parsed(queue, "another image", kind=JobKind.IMAGE)
     await worker.tick(queue, host, files_dir=_files(tmp_path), report=report, state=state)
     assert host.video.submitted, "the affinity run is bounded; FIFO resumes"
 
@@ -995,7 +1000,7 @@ def test_a_drama_always_needs_the_screenwriter(queue) -> None:
     """Raw mode is for one-line clips. A drama has nothing to be raw from."""
     from fun_workflow.pipeline.convert_worker import needs_llm
 
-    job, _ = queue.enqueue("evt-drama-needs", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+    job, _ = queue.enqueue("evt-drama-needs", "Cgroup", "一個故事", user_id="U1", media_kind=JobKind.DRAMA)
     assert needs_llm(job, "raw") is True
     assert needs_llm(job, "structured") is True
 
@@ -1007,7 +1012,7 @@ async def test_a_drama_whose_screenplay_fails_is_failed_and_the_group_is_told(qu
     forever, and not rendered as six clips of nothing."""
     from ai_studio.llm.scripted import ScriptedLlmClient
 
-    job, _ = queue.enqueue("evt-drama-fail", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+    job, _ = queue.enqueue("evt-drama-fail", "Cgroup", "一個故事", user_id="U1", media_kind=JobKind.DRAMA)
     host = FakeHost(llm=ScriptedLlmClient("not json", "still not json"))
 
     action, _report = await _tick(queue, host, tmp_path)
@@ -1020,7 +1025,7 @@ async def test_a_drama_whose_screenplay_fails_is_failed_and_the_group_is_told(qu
 
 @pytest.mark.asyncio
 async def test_a_drama_with_no_screenwriter_on_the_pod_is_failed_not_stuck(queue, tmp_path: Path) -> None:
-    job, _ = queue.enqueue("evt-drama-nollm", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+    job, _ = queue.enqueue("evt-drama-nollm", "Cgroup", "一個故事", user_id="U1", media_kind=JobKind.DRAMA)
     host = FakeHost(llm=None)
 
     await _tick(queue, host, tmp_path)
@@ -1048,7 +1053,7 @@ async def test_a_parsed_drama_is_dispatched_to_render_drama(queue, tmp_path: Pat
         return out
 
     monkeypatch.setattr(worker_mod, "render_drama", fake_render_drama)
-    job, _ = queue.enqueue("evt-drama-run", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+    job, _ = queue.enqueue("evt-drama-run", "Cgroup", "一個故事", user_id="U1", media_kind=JobKind.DRAMA)
     queue.set_parsed(job.id, {"_built_by": "llm", "_rendered": "t", "screenplay": {"stub": True}, "shots": []})
     host = FakeHost()
 
@@ -1056,7 +1061,7 @@ async def test_a_parsed_drama_is_dispatched_to_render_drama(queue, tmp_path: Pat
 
     assert action == "completed"
     assert seen["job"] == job.id
-    assert {MediaKind.IMAGE, MediaKind.VIDEO} <= seen["providers"]
+    assert {JobKind.IMAGE, JobKind.VIDEO} <= seen["providers"]
     assert seen["kw"]["runs_dir"] is not None
     assert host.touched_kinds.count("drama") >= 2, "per-artifact touch plus the completion touch"
     done = queue.by_id(job.id)
@@ -1082,7 +1087,7 @@ async def test_a_drama_that_pauses_at_the_lease_boundary_never_burns_an_attempt(
         raise DramaResume("lease ends in 100s, under the 360s a drama video needs")
 
     monkeypatch.setattr(worker_mod, "render_drama", paused)
-    job, _ = queue.enqueue("evt-drama-pause", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+    job, _ = queue.enqueue("evt-drama-pause", "Cgroup", "一個故事", user_id="U1", media_kind=JobKind.DRAMA)
     queue.set_parsed(job.id, {"_built_by": "llm", "_rendered": "t", "screenplay": {"stub": True}, "shots": []})
     host = FakeHost()
 
@@ -1108,7 +1113,7 @@ async def test_a_dramas_real_provider_failure_still_counts_toward_max_attempts(
         raise ProviderError("ComfyUI returned 500")
 
     monkeypatch.setattr(worker_mod, "render_drama", broken)
-    job, _ = queue.enqueue("evt-drama-broken", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
+    job, _ = queue.enqueue("evt-drama-broken", "Cgroup", "一個故事", user_id="U1", media_kind=JobKind.DRAMA)
     queue.set_parsed(job.id, {"_built_by": "llm", "_rendered": "t", "screenplay": {"stub": True}, "shots": []})
     host = FakeHost()
 

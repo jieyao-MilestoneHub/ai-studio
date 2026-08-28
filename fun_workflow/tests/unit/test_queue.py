@@ -11,8 +11,8 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from ai_studio.core.enums import MediaKind
 
+from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline.queue import Job, JobQueue, JobState
 
 PROMPT = {"integrated_multimodal_description": "[Shot 1] a cat"}
@@ -235,14 +235,14 @@ def test_counts_and_lookup_by_token(q: JobQueue) -> None:
 
 def test_enqueue_defaults_to_video(q: JobQueue) -> None:
     job = _add(q)
-    assert job.media_kind is MediaKind.VIDEO
+    assert job.media_kind is JobKind.VIDEO
 
 
 def test_enqueue_accepts_an_image_request(q: JobQueue) -> None:
-    job, created = q.enqueue("evt-img", "Cgroup", "畫圖 一隻貓", media_kind=MediaKind.IMAGE)
+    job, created = q.enqueue("evt-img", "Cgroup", "畫圖 一隻貓", media_kind=JobKind.IMAGE)
     assert created
-    assert job.media_kind is MediaKind.IMAGE
-    assert q.by_token(job.token).media_kind is MediaKind.IMAGE
+    assert job.media_kind is JobKind.IMAGE
+    assert q.by_token(job.token).media_kind is JobKind.IMAGE
 
 
 def test_a_database_created_before_media_kind_shipped_migrates_cleanly(tmp_path: Path) -> None:
@@ -286,7 +286,7 @@ def test_a_database_created_before_media_kind_shipped_migrates_cleanly(tmp_path:
 
         job = queue.by_token("tok1")
         assert job is not None
-        assert job.media_kind is MediaKind.VIDEO
+        assert job.media_kind is JobKind.VIDEO
 
 
 def test_state_survives_reopening_the_database(tmp_path: Path) -> None:
@@ -392,7 +392,7 @@ def test_a_database_from_before_delivery_shipped_still_opens(tmp_path: Path) -> 
         survivor = queue.by_token("tok-old")
         assert survivor is not None, "the pre-existing request was lost"
         assert survivor.delivered_at is None
-        assert survivor.media_kind is MediaKind.VIDEO, "the older migration still applies"
+        assert survivor.media_kind is JobKind.VIDEO, "the older migration still applies"
         queue.mark_delivered(survivor.id)
         assert queue.by_token("tok-old").delivered_at is not None
 
@@ -441,7 +441,7 @@ def _far_future() -> float:
 
 def test_input_media_path_round_trips_through_the_queue(q: JobQueue) -> None:
     job, created = q.enqueue(
-        "evt-u1", "Cgroup", "", media_kind=MediaKind.IMAGE_UNDERSTAND,
+        "evt-u1", "Cgroup", "", media_kind=JobKind.IMAGE_UNDERSTAND,
         input_media_path="/incoming/photo.jpg",
     )
     assert created
@@ -457,7 +457,7 @@ def test_input_media_path_defaults_to_none(q: JobQueue) -> None:
 
 def test_complete_text_finishes_the_job_with_no_output_path(q: JobQueue) -> None:
     job, _ = q.enqueue(
-        "evt-u2", "Cgroup", "", media_kind=MediaKind.AUDIO_UNDERSTAND,
+        "evt-u2", "Cgroup", "", media_kind=JobKind.AUDIO_UNDERSTAND,
         input_media_path="/incoming/clip.m4a",
     )
     q.set_parsed(job.id, {"_built_by": "understanding"})
@@ -522,7 +522,7 @@ def test_a_database_created_before_understanding_shipped_migrates_cleanly(
         assert job.result_text is None
 
         job, created = q.enqueue(
-            "evt-new", "Cgroup", "", media_kind=MediaKind.VIDEO_UNDERSTAND,
+            "evt-new", "Cgroup", "", media_kind=JobKind.VIDEO_UNDERSTAND,
             input_media_path="/incoming/clip.mp4",
         )
         assert created
@@ -557,9 +557,9 @@ def test_recent_chat_turns_is_a_rolling_window_oldest_first(q: JobQueue) -> None
 
 
 def test_accepted_chat_today_counts_only_chat_jobs(q: JobQueue) -> None:
-    q.enqueue("e-chat-1", "Cgroup", "hi", user_id="Ualice", media_kind=MediaKind.CHAT)
-    q.enqueue("e-chat-2", "Cgroup", "hi again", user_id="Ualice", media_kind=MediaKind.CHAT)
-    q.enqueue("e-video", "Cgroup", "生成 一隻貓", user_id="Ualice", media_kind=MediaKind.VIDEO)
+    q.enqueue("e-chat-1", "Cgroup", "hi", user_id="Ualice", media_kind=JobKind.CHAT)
+    q.enqueue("e-chat-2", "Cgroup", "hi again", user_id="Ualice", media_kind=JobKind.CHAT)
+    q.enqueue("e-video", "Cgroup", "生成 一隻貓", user_id="Ualice", media_kind=JobKind.VIDEO)
 
     assert q.accepted_chat_today("Ualice") == 2
     assert q.accepted_chat_today("Ubob") == 0
@@ -569,17 +569,17 @@ def test_accepted_today_excludes_chat_so_it_cannot_exhaust_the_shared_cap(q: Job
     """A chat conversation's cadence must not eat a user's video/image
     allowance -- see `accepted_chat_today()`'s separate counter."""
     for i in range(5):
-        q.enqueue(f"e-chat-{i}", "Cgroup", f"hi {i}", user_id="Ualice", media_kind=MediaKind.CHAT)
-    q.enqueue("e-video", "Cgroup", "生成 一隻貓", user_id="Ualice", media_kind=MediaKind.VIDEO)
+        q.enqueue(f"e-chat-{i}", "Cgroup", f"hi {i}", user_id="Ualice", media_kind=JobKind.CHAT)
+    q.enqueue("e-video", "Cgroup", "生成 一隻貓", user_id="Ualice", media_kind=JobKind.VIDEO)
 
     assert q.accepted_today("Ualice") == 1
     assert q.accepted_chat_today("Ualice") == 5
 
 
 def test_chat_spend_accumulates_within_the_month(q: JobQueue) -> None:
-    a, _ = q.enqueue("e-chat-a", "Cgroup", "hi", media_kind=MediaKind.CHAT)
-    b, _ = q.enqueue("e-chat-b", "Cgroup", "hi again", media_kind=MediaKind.CHAT)
-    q.enqueue("e-video", "Cgroup", "生成 一隻貓", media_kind=MediaKind.VIDEO)
+    a, _ = q.enqueue("e-chat-a", "Cgroup", "hi", media_kind=JobKind.CHAT)
+    b, _ = q.enqueue("e-chat-b", "Cgroup", "hi again", media_kind=JobKind.CHAT)
+    q.enqueue("e-video", "Cgroup", "生成 一隻貓", media_kind=JobKind.VIDEO)
 
     assert q.chat_spent_this_month_usd() == 0.0
 
@@ -593,7 +593,7 @@ def test_chat_spend_accumulates_within_the_month(q: JobQueue) -> None:
 def test_chat_spend_ignores_non_chat_jobs_even_with_a_cost_recorded(q: JobQueue) -> None:
     """Only chat populates `cost_usd` today, but the query itself must stay
     kind-scoped rather than trusting that invariant implicitly."""
-    video, _ = q.enqueue("e-video", "Cgroup", "生成 一隻貓", media_kind=MediaKind.VIDEO)
+    video, _ = q.enqueue("e-video", "Cgroup", "生成 一隻貓", media_kind=JobKind.VIDEO)
     q.record_chat_cost(video.id, 99.0)
 
     assert q.chat_spent_this_month_usd() == 0.0

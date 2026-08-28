@@ -45,6 +45,7 @@ from ai_studio.core.understanding_spec import UnderstandingRequest
 from ai_studio.pipeline.residency import make_room_for
 
 from fun_workflow.config.settings import get_fun_settings
+from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline.convert_worker import DEFAULT_DURATION_S, snap_frames
 from fun_workflow.pipeline.drama import render_drama
 from fun_workflow.pipeline.queue import Job, JobQueue, JobState
@@ -187,7 +188,7 @@ async def drain_window(
         from fun_workflow.pipeline.convert_worker import convert_pending
 
         if llm is not None:
-            await make_room_for(MediaKind.CHAT, providers)
+            await make_room_for(providers[MediaKind.CHAT], providers)
         await convert_pending(queue, llm)
 
     # Anything left `running` belongs to a window that ended badly. Reclaim it
@@ -210,25 +211,27 @@ async def drain_window(
         # A drama drives the IMAGE and VIDEO providers itself: there is no
         # `providers[DRAMA]` entry, and indexing for one here was a KeyError
         # outside the try -- the job stayed `running` and nobody was told.
-        provider: Any = providers.get(job.media_kind)
-        caps = caps_by_kind.get(job.media_kind)
-        if provider is None and job.media_kind is not MediaKind.DRAMA:
+        model_kind = job.media_kind.model_kind
+        provider: Any = providers.get(model_kind) if model_kind else None
+        caps = caps_by_kind.get(model_kind) if model_kind else None
+        if provider is None and job.media_kind is not JobKind.DRAMA:
             queue.fail(job.id, f"this pod serves no provider for {job.media_kind.value}")
             report.failed += 1
             continue
 
         started = time.monotonic()
         try:
-            await make_room_for(job.media_kind, providers)
-            if job.media_kind is MediaKind.IMAGE:
+            if provider is not None:
+                await make_room_for(provider, providers)
+            if job.media_kind is JobKind.IMAGE:
                 result: Any = await render_image(
                     job, provider, caps, files_dir, window_end, poll_interval_s
                 )
-            elif job.media_kind is MediaKind.VIDEO:
+            elif job.media_kind is JobKind.VIDEO:
                 result = await render_clip(job, provider, caps, files_dir, window_end, poll_interval_s)
-            elif job.media_kind is MediaKind.CHAT:
+            elif job.media_kind is JobKind.CHAT:
                 result = await render_chat(job, provider, queue, window_end, poll_interval_s)
-            elif job.media_kind is MediaKind.DRAMA:
+            elif job.media_kind is JobKind.DRAMA:
                 result = await render_drama(
                     job, providers, files_dir=files_dir, runs_dir=get_settings().runs_dir,
                     deadline=window_end, poll_interval_s=poll_interval_s, on_activity=on_activity,
@@ -261,7 +264,7 @@ async def drain_window(
             consecutive_failures += 1
             continue
 
-        if job.media_kind.is_understanding or job.media_kind is MediaKind.CHAT:
+        if job.media_kind.is_understanding or job.media_kind is JobKind.CHAT:
             queue.complete_text(job.id, result)
         else:
             queue.complete(job.id, str(result))
@@ -426,9 +429,12 @@ async def render_understanding(
     plan = job.prompt or {}
     question = plan.get("_question") or None
     audio_question = plan.get("_audio_question") or None
+    modality = job.media_kind.model_kind
+    if modality is None or not job.media_kind.is_understanding:
+        raise AIStudioError(f"{job.media_kind.value} is not an understanding kind")
     request = UnderstandingRequest(
         shot_id=f"job{job.id}",
-        modality=job.media_kind,
+        modality=modality,
         input_media_path=job.input_media_path,
         prompt=str(question) if question else None,
         audio_prompt=str(audio_question) if audio_question else None,

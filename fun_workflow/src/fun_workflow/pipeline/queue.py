@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ai_studio.core.enums import MediaKind
+from fun_workflow.core.kinds import JobKind
 
 DEFAULT_DB = Path("runs/queue.sqlite3")
 
@@ -145,7 +145,7 @@ class Job:
     user_id: str | None
     text: str
     state: JobState
-    media_kind: MediaKind
+    media_kind: JobKind
     first_frame_path: str | None
     quote_token: str | None
     message_id: str | None
@@ -230,7 +230,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         user_id=row["user_id"],
         text=row["text"],
         state=JobState(row["state"]),
-        media_kind=MediaKind(row["media_kind"]),
+        media_kind=JobKind(row["media_kind"]),
         first_frame_path=row["first_frame_path"],
         quote_token=row["quote_token"],
         message_id=row["message_id"],
@@ -350,7 +350,7 @@ class JobQueue:
         text: str,
         user_id: str | None = None,
         *,
-        media_kind: MediaKind = MediaKind.VIDEO,
+        media_kind: JobKind = JobKind.VIDEO,
         first_frame_path: str | None = None,
         quote_token: str | None = None,
         requested_seconds: float | None = None,
@@ -410,7 +410,7 @@ class JobQueue:
         gpu_tier: str | None = None,
         *,
         usd_per_hr: float | None = None,
-        media_kind: MediaKind | None = None,
+        media_kind: JobKind | None = None,
     ) -> Job | None:
         """Atomically take the oldest `parsed` job and mark it `running`.
 
@@ -676,7 +676,7 @@ class JobQueue:
         row = self._conn.execute(
             "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM jobs"
             " WHERE media_kind=? AND created_at >= ?",
-            (MediaKind.CHAT.value, _month_start_ts() if since is None else since),
+            (JobKind.CHAT.value, _month_start_ts() if since is None else since),
         ).fetchone()
         return round(float(row["total"]), 6)
 
@@ -689,13 +689,13 @@ class JobQueue:
             return 0
         row = self._conn.execute(
             "SELECT COUNT(*) AS n FROM jobs WHERE user_id=? AND media_kind=? AND created_at >= ?",
-            (user_id, MediaKind.CHAT.value, _day_start_ts() if since is None else since),
+            (user_id, JobKind.CHAT.value, _day_start_ts() if since is None else since),
         ).fetchone()
         return int(row["n"])
 
     # ---------------------------------------------------------------- caps
 
-    def accepted_kind_today(self, media_kind: MediaKind, *, since: float | None = None) -> int:
+    def accepted_kind_today(self, media_kind: JobKind, *, since: float | None = None) -> int:
         """How many requests of one kind the *whole group* has had accepted
         since local midnight. Backs `AI_STUDIO_MAX_DRAMAS_PER_DAY`: a drama is
         15-30 GPU-minutes, so the cap is on the group's day, not one user's.
@@ -726,7 +726,7 @@ class JobQueue:
             return 0
         row = self._conn.execute(
             "SELECT COUNT(*) AS n FROM jobs WHERE user_id=? AND media_kind != ? AND created_at >= ?",
-            (user_id, MediaKind.CHAT.value, _day_start_ts() if since is None else since),
+            (user_id, JobKind.CHAT.value, _day_start_ts() if since is None else since),
         ).fetchone()
         return int(row["n"])
 

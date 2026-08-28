@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from ai_studio.core.enums import MediaKind
 from ai_studio.core.errors import ProviderSubmitError
 from ai_studio.core.provider_spec import ClipRequest
 from ai_studio.providers.comfyui import ComfyUIProvider
@@ -28,6 +27,7 @@ from fun_workflow.bots.line.content import LineContentError, NullContentClient
 from fun_workflow.bots.line.reply import NullReplyClient
 from fun_workflow.bots.line.verify import sign
 from fun_workflow.bots.line.webhook import IMAGE_PAIRING_TTL_S, WebhookHandler
+from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline.queue import JobQueue
 
 SECRET = "test-channel-secret"
@@ -158,12 +158,12 @@ async def test_other_triggers_do_not_consume_a_pending_photo(tmp_path: Path) -> 
     await _send(handler, _image_event())
     (img_job_outcome,) = await _send(handler, _text_event("/圖片 一隻貓", event_id="evt-1"))
     assert img_job_outcome.job is not None
-    assert img_job_outcome.job.media_kind is MediaKind.IMAGE
+    assert img_job_outcome.job.media_kind is JobKind.IMAGE
     assert img_job_outcome.job.first_frame_path is None
 
     (t2v_outcome,) = await _send(handler, _text_event("/影片 一隻貓", event_id="evt-2"))
     assert t2v_outcome.job is not None
-    assert t2v_outcome.job.media_kind is MediaKind.VIDEO
+    assert t2v_outcome.job.media_kind is JobKind.VIDEO
     assert t2v_outcome.job.first_frame_path is None
 
     (i2v_outcome,) = await _send(handler, _text_event("/圖影 一隻貓", event_id="evt-3"))
@@ -183,7 +183,7 @@ async def test_i2i_claims_the_photo_as_an_image_job(tmp_path: Path) -> None:
 
     assert outcome.action == "accepted"
     job = outcome.job
-    assert job is not None and job.media_kind is MediaKind.IMAGE
+    assert job is not None and job.media_kind is JobKind.IMAGE
     assert job.first_frame_path is not None
     assert Path(job.first_frame_path).read_bytes() == b"fake-jpeg-bytes"
     assert job.text == "變成油畫"
@@ -212,7 +212,7 @@ async def test_i2i_and_i2v_do_not_shadow_each_other_or_the_plain_triggers(tmp_pa
     assert plain.job is not None and plain.job.first_frame_path is None
     (i2i,) = await _send(handler, _text_event("/圖圖 一隻貓", event_id="e2"))
     assert i2i.job is not None and i2i.job.first_frame_path is not None
-    assert i2i.job.media_kind is MediaKind.IMAGE
+    assert i2i.job.media_kind is JobKind.IMAGE
     (i2v,) = await _send(handler, _text_event("/圖影 一隻貓", event_id="e3"))
     assert i2v.action == "ignored", "the one photo was already claimed by /圖圖"
     queue.close()

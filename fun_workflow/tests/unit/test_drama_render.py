@@ -22,6 +22,7 @@ from ai_studio.core.image_provider_spec import ImageAsset, ImageJob, ImageProvid
 from ai_studio.core.provider_spec import ClipAsset, ClipJob, ProviderCapabilities
 from ai_studio.llm.scripted import ScriptedLlmClient
 
+from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline import drama
 from fun_workflow.pipeline.queue import JobQueue
 from fun_workflow.prompts.drama import screenplay_payload
@@ -72,6 +73,7 @@ class Ledger:
 
 
 class FakeClipProvider:
+    residency_group = "comfyui"
     def __init__(self, ledger: Ledger, *, fail_on: set[str] | None = None) -> None:
         self.ledger = ledger
         self.fail_on = fail_on or set()
@@ -110,6 +112,7 @@ class FakeClipProvider:
 
 
 class FakeImageProvider:
+    residency_group = "comfyui"
     def __init__(self, ledger: Ledger, *, face_nodes: bool = True, face_fails: bool = False) -> None:
         self.ledger = ledger
         self.face_nodes = face_nodes
@@ -174,7 +177,7 @@ def fake_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 @pytest.fixture
 def parsed_job(tmp_path: Path):
     q = JobQueue(tmp_path / "q.sqlite3")
-    job, _ = q.enqueue("evt-d", "Cgroup", "夜市老闆娘發現一封信", user_id="U1", media_kind=MediaKind.DRAMA)
+    job, _ = q.enqueue("evt-d", "Cgroup", "夜市老闆娘發現一封信", user_id="U1", media_kind=JobKind.DRAMA)
     yield q, job
     q.close()
 
@@ -191,7 +194,7 @@ def _deadline(minutes: float = 120.0) -> datetime:
     return datetime.now(timezone.utc) + timedelta(minutes=minutes)
 
 
-async def _render(job: Any, providers: dict[MediaKind, Any], tmp_path: Path, **kw: Any) -> Path:
+async def _render(job: Any, providers: dict[JobKind, Any], tmp_path: Path, **kw: Any) -> Path:
     return await drama.render_drama(
         job, providers, files_dir=tmp_path / "files", runs_dir=tmp_path / "runs",
         deadline=kw.pop("deadline", _deadline()), poll_interval_s=0.0, **kw,
@@ -245,6 +248,8 @@ async def test_make_room_for_evicts_the_other_side_not_comfyui(parsed_job, tmp_p
     ledger = Ledger()
 
     class Chat:
+        residency_group = "inference"
+
         async def evict(self) -> None:
             ledger.events.append("evict:chat")
 
@@ -270,7 +275,7 @@ async def test_a_failure_after_three_clips_resumes_with_the_other_three(parsed_j
     assert sum(e.startswith("clip:") for e in first_run) == 4  # 1, 2, 3 done; 4 raised
 
     ledger.events.clear()
-    providers[MediaKind.VIDEO] = FakeClipProvider(ledger)
+    providers[JobKind.VIDEO] = FakeClipProvider(ledger)
     out = await _render(job, providers, tmp_path)
 
     assert out.is_file()

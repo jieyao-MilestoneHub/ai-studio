@@ -62,6 +62,7 @@ class StubProvider:
     """Synthesises clips locally with ffmpeg. No network, no cost."""
 
     name = "stub"
+    residency_group = "comfyui"
 
     def __init__(self, work_dir: Path | str | None = None, **_: Any) -> None:
         settings = get_settings()
@@ -203,6 +204,7 @@ class StubImageProvider:
     """
 
     name = "stub-flux"
+    residency_group = "comfyui"
 
     def __init__(self, work_dir: Path | str | None = None, **_: Any) -> None:
         settings = get_settings()
@@ -297,6 +299,7 @@ class StubUnderstandingProvider:
     """
 
     name = "stub"
+    residency_group = "inference"
 
     def __init__(self, *, modality: MediaKind, **_: Any) -> None:
         self.modality = modality

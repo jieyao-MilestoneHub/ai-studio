@@ -187,9 +187,9 @@ def check_queue_and_conversion() -> CheckResult:
 
 
 def _image_kind() -> Any:
-    from ai_studio.core.enums import MediaKind
+    from fun_workflow.core.kinds import JobKind
 
-    return MediaKind.IMAGE
+    return JobKind.IMAGE
 
 
 def check_out_of_hours() -> CheckResult:

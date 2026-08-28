@@ -34,7 +34,6 @@ from pathlib import Path
 from typing import Any
 
 from ai_studio.config.settings import get_settings
-from ai_studio.core.enums import MediaKind
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 
@@ -42,6 +41,7 @@ from fun_workflow.bots.line.content import LineContentClient
 from fun_workflow.bots.line.reply import LineReplyClient, NullReplyClient
 from fun_workflow.bots.line.webhook import InvalidSignature, WebhookHandler
 from fun_workflow.config.settings import get_fun_settings
+from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline.queue import Job, JobQueue, JobState
 
 _log = logging.getLogger("ai_studio.webhook")
@@ -208,29 +208,29 @@ _STATE_ZH = {
 }
 """The generic (video) wording; `state_text()` specialises it per kind."""
 
-_RUNNING_ZH: dict[MediaKind, tuple[str, str]] = {
+_RUNNING_ZH: dict[JobKind, tuple[str, str]] = {
     # (label, note) while the job is on the GPU. Durations are 📏 from the
     # RTX 4090 on 2026-08-27, cold load included, rounded up so the page
     # under-promises: image ~30 s warm; a 10 s clip 2-5 min; the three
     # understanding models and chat each take ~1 min to load if another
     # model is resident, then seconds to answer.
-    MediaKind.VIDEO: ("生成中", "正在算影片,約 2 到 5 分鐘"),
-    MediaKind.IMAGE: ("生成中", "正在算圖,約 30 秒到 1 分鐘"),
-    MediaKind.IMAGE_UNDERSTAND: ("辨識中", "正在看這張照片,約 1 分鐘(含載入模型)"),
-    MediaKind.AUDIO_UNDERSTAND: ("辨識中", "正在聽這段聲音,約 1 分鐘(含載入模型)"),
-    MediaKind.VIDEO_UNDERSTAND: ("辨識中", "正在看這段影片,約 1 到 2 分鐘(含載入模型)"),
-    MediaKind.CHAT: ("回覆中", "正在想怎麼回你,約 1 分鐘(含載入模型)"),
-    MediaKind.DRAMA: ("製作中", "六個鏡頭慢慢做:角色定裝、每鏡首幀、每鏡影片,約 25 到 40 分鐘"),
+    JobKind.VIDEO: ("生成中", "正在算影片,約 2 到 5 分鐘"),
+    JobKind.IMAGE: ("生成中", "正在算圖,約 30 秒到 1 分鐘"),
+    JobKind.IMAGE_UNDERSTAND: ("辨識中", "正在看這張照片,約 1 分鐘(含載入模型)"),
+    JobKind.AUDIO_UNDERSTAND: ("辨識中", "正在聽這段聲音,約 1 分鐘(含載入模型)"),
+    JobKind.VIDEO_UNDERSTAND: ("辨識中", "正在看這段影片,約 1 到 2 分鐘(含載入模型)"),
+    JobKind.CHAT: ("回覆中", "正在想怎麼回你,約 1 分鐘(含載入模型)"),
+    JobKind.DRAMA: ("製作中", "六個鏡頭慢慢做:角色定裝、每鏡首幀、每鏡影片,約 25 到 40 分鐘"),
 }
 
-_WAITING_ZH: dict[MediaKind, tuple[str, str]] = {
-    MediaKind.VIDEO: ("等待生成", "已排入佇列,GPU 開機中或排隊中"),
-    MediaKind.IMAGE: ("等待生成", "已排入佇列,GPU 開機中或排隊中"),
-    MediaKind.IMAGE_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
-    MediaKind.AUDIO_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
-    MediaKind.VIDEO_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
-    MediaKind.CHAT: ("等待回覆", "已排入佇列,GPU 開機中或排隊中"),
-    MediaKind.DRAMA: ("等待製作", "已排入佇列;GPU 開機後先由 gpt-oss-20b 寫劇本,再開始生成"),
+_WAITING_ZH: dict[JobKind, tuple[str, str]] = {
+    JobKind.VIDEO: ("等待生成", "已排入佇列,GPU 開機中或排隊中"),
+    JobKind.IMAGE: ("等待生成", "已排入佇列,GPU 開機中或排隊中"),
+    JobKind.IMAGE_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
+    JobKind.AUDIO_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
+    JobKind.VIDEO_UNDERSTAND: ("等待辨識", "已排入佇列,GPU 開機中或排隊中"),
+    JobKind.CHAT: ("等待回覆", "已排入佇列,GPU 開機中或排隊中"),
+    JobKind.DRAMA: ("等待製作", "已排入佇列;GPU 開機後先由 gpt-oss-20b 寫劇本,再開始生成"),
 }
 
 
@@ -256,25 +256,25 @@ def state_text(job: Job) -> tuple[str, str]:
 PROJECT_REPO_URL = "https://github.com/jieyao-MilestoneHub/ai-studio"
 """Shown on every job page so a viewer can find the code that made it."""
 
-_GENERATION_MODELS: dict[MediaKind, tuple[str, str]] = {
+_GENERATION_MODELS: dict[JobKind, tuple[str, str]] = {
     # The two ComfyUI-served generators name their weights by repo, not by a
     # capabilities snapshot (their `model_id` is "<model>@<w>x<h>"), so the
     # public repo is spelled out here. The weights `deploy/pod_setup.sh`
     # actually downloads: Comfy-Org's repackaging of MiniMax H3, and the
     # fp8 Flux.1-dev transformer from Comfy-Org/flux1-dev (ungated, same
     # weights as black-forest-labs/FLUX.1-dev).
-    MediaKind.VIDEO: ("MiniMax H3 (MiniMax-H3-fl2va)", "https://huggingface.co/Comfy-Org/MiniMax-H3"),
-    MediaKind.IMAGE: ("Flux.1-dev", "https://huggingface.co/black-forest-labs/FLUX.1-dev"),
+    JobKind.VIDEO: ("MiniMax H3 (MiniMax-H3-fl2va)", "https://huggingface.co/Comfy-Org/MiniMax-H3"),
+    JobKind.IMAGE: ("Flux.1-dev", "https://huggingface.co/black-forest-labs/FLUX.1-dev"),
     # A drama is all three: gpt-oss-20b writes, Flux paints the keyframes, H3
     # animates them. The video model is the one named; the page's screenplay
     # block says the rest.
-    MediaKind.DRAMA: (
+    JobKind.DRAMA: (
         "MiniMax H3 + Flux.1-dev + gpt-oss-20b", "https://huggingface.co/Comfy-Org/MiniMax-H3",
     ),
 }
 
 
-def model_for(kind: MediaKind) -> tuple[str, str]:
+def model_for(kind: JobKind) -> tuple[str, str]:
     """The open model a job of this kind runs on, and where it lives.
 
     Understanding and chat read the id off the provider's capabilities so
@@ -284,14 +284,14 @@ def model_for(kind: MediaKind) -> tuple[str, str]:
     """
     if kind in _GENERATION_MODELS:
         return _GENERATION_MODELS[kind]
-    if kind is MediaKind.CHAT:
+    if kind is JobKind.CHAT:
         from ai_studio.providers.chat import chat_capabilities
 
         model_id = chat_capabilities().model_id
-    elif kind.is_understanding:
+    elif kind.is_understanding and kind.model_kind is not None:
         from ai_studio.providers.understanding import understanding_capabilities
 
-        model_id = understanding_capabilities(kind).model_id
+        model_id = understanding_capabilities(kind.model_kind).model_id
     else:
         raise ValueError(f"no model table entry for {kind!r}")
     return model_id, f"https://huggingface.co/{model_id}"
@@ -373,7 +373,7 @@ def _render(job: Job, position: int | None, base_url: str) -> str:
     if job.state is JobState.DONE and job.output_path:
         name = Path(job.output_path).name
         url = f"{base_url.rstrip('/')}/files/{name}"
-        if job.media_kind is MediaKind.IMAGE:
+        if job.media_kind is JobKind.IMAGE:
             action = (
                 f'<p class="cta"><a href="{html.escape(url)}" download>下載圖片</a></p>'
                 f'<img src="{html.escape(url)}" alt="生成結果">'
@@ -393,7 +393,7 @@ def _render(job: Job, position: int | None, base_url: str) -> str:
     plan = job.prompt or {}
     shots = plan.get("shots") or []
     breakdown = ""
-    if job.media_kind is MediaKind.DRAMA:
+    if job.media_kind is JobKind.DRAMA:
         breakdown = _drama_block(job, plan)
     elif shots:
         items = "".join(

@@ -92,6 +92,7 @@ class ComfyUIProvider:
     """Drives a ComfyUI instance running MiniMax H3."""
 
     name = "comfyui"
+    residency_group = "comfyui"
 
     def __init__(
         self,

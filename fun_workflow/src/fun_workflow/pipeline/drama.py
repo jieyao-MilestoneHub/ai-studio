@@ -130,7 +130,7 @@ async def render_drama(
 
     # -- stage 1 + 2: everything Flux, one checkpoint residency
     if still_to_render["images"]:
-        await make_room_for(MediaKind.IMAGE, providers)
+        await make_room_for(image, providers)
         state.stage_start("character", utc_now_iso())
 
     for view, prompt in character_sheet_prompts(screenplay.anchor).items():
@@ -210,7 +210,7 @@ async def render_drama(
     state.stage_finish("keyframes", utc_now_iso())
     # -- stage 3: everything H3, one checkpoint residency
     if still_to_render["clips"] or not all(_fresh(state.clips.get(str(s.index))) for s in screenplay.shots):
-        await make_room_for(MediaKind.VIDEO, providers)
+        await make_room_for(clip, providers)
 
     state.stage_start("clips", utc_now_iso())
     for shot in screenplay.shots:

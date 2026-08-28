@@ -25,6 +25,7 @@ from rich.table import Table
 
 from fun_workflow import paths as fun_paths
 from fun_workflow.config.settings import get_fun_settings
+from fun_workflow.core.kinds import JobKind
 
 app = typer.Typer(
     help="The LINE group's playground: webhook, queue, GPU worker, and the daily chores.",
@@ -454,7 +455,7 @@ class _RuntimeHost:
             # An understanding job (/說圖 /說音 /說影): text, no media object
             # and no poster -- `asset` is always None for these.
             text = job.result_text
-            if job.media_kind is MediaKind.IMAGE_UNDERSTAND:
+            if job.media_kind is JobKind.IMAGE_UNDERSTAND:
                 # 📏 moondream3 never writes Chinese. Translating it here
                 # would mean another model swap on the one card (~60 s per
                 # photo), so the note is the honest, free answer.
@@ -480,7 +481,7 @@ class _RuntimeHost:
                     media_url=f"{self.base_url}/files/{asset.name}",
                     preview_url=f"{self.base_url}/files/{preview.name}",
                     status_url=status_url,
-                    is_video=job.media_kind in (MediaKind.VIDEO, MediaKind.DRAMA),
+                    is_video=job.media_kind in (JobKind.VIDEO, JobKind.DRAMA),
                     prompt=job.text,
                     quote_token=job.quote_token,
                     caption=_drama_caption(job),
@@ -506,7 +507,7 @@ class _RuntimeHost:
 def _drama_caption(job: Any) -> str | None:
     """「《title》logline」for a finished drama; None for every other kind,
     so `delivered_messages` keeps its「<prompt> 完成了」default."""
-    if job.media_kind is not MediaKind.DRAMA:
+    if job.media_kind is not JobKind.DRAMA:
         return None
     screenplay = (job.prompt or {}).get("screenplay") or {}
     title = str(screenplay.get("title") or job.text[:20])
@@ -672,9 +673,9 @@ def archive(
 
 
 _QUESTION_KINDS = {
-    "image": MediaKind.IMAGE_UNDERSTAND,
-    "audio": MediaKind.AUDIO_UNDERSTAND,
-    "video": MediaKind.VIDEO_UNDERSTAND,
+    "image": JobKind.IMAGE_UNDERSTAND,
+    "audio": JobKind.AUDIO_UNDERSTAND,
+    "video": JobKind.VIDEO_UNDERSTAND,
 }
 
 
@@ -856,7 +857,7 @@ async def _drama_dryrun(premise: str, out: Path, runs: Path, screenplay_file: Pa
     runs.mkdir(parents=True, exist_ok=True)
     queue = JobQueue(runs / "dryrun.sqlite3")
     try:
-        accepted, _ = queue.enqueue("dryrun", "Cdryrun", premise, media_kind=MediaKind.DRAMA)
+        accepted, _ = queue.enqueue("dryrun", "Cdryrun", premise, media_kind=JobKind.DRAMA)
         queue.set_parsed(accepted.id, screenplay_payload(screenplay, how))
         job = queue.by_id(accepted.id)
         assert job is not None

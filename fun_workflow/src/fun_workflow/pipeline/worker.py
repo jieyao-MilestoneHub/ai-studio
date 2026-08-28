@@ -40,6 +40,7 @@ from ai_studio.core.errors import AIStudioError, DramaResume, ProviderError
 from ai_studio.core.observability import bind
 from ai_studio.pipeline.residency import make_room_for
 
+from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline.convert_worker import convert_job, needs_llm
 from fun_workflow.pipeline.drain import (
     MAX_ATTEMPTS,
@@ -124,7 +125,7 @@ class WorkerState:
     eviction (`make_room_for`), this only steers which job to claim next.
     """
 
-    resident: MediaKind | None = None
+    resident: JobKind | None = None
     affinity_run: int = 0
 
 
@@ -290,8 +291,8 @@ async def prepare(
     if costly and not should_defer_llm(queue, state):
         llm = host.llm_for(session)
         if llm is not None:
-            await make_room_for(MediaKind.CHAT, providers)
-            state.resident = MediaKind.CHAT
+            await make_room_for(providers[MediaKind.CHAT], providers)
+            state.resident = JobKind.CHAT
             state.affinity_run = 0
         for job in costly:
             with bind(job_id=job.id, token=job.token, kind=job.media_kind.value):
@@ -327,7 +328,7 @@ def should_defer_llm(queue: JobQueue, state: WorkerState) -> bool:
     )
 
 
-def next_kind(queue: JobQueue, state: WorkerState) -> MediaKind | None:
+def next_kind(queue: JobQueue, state: WorkerState) -> JobKind | None:
     """The kind to claim next: the resident one while it has claimable work
     and the affinity run is under `MAX_AFFINITY_RUN`; else None for FIFO."""
     if state.resident is None or state.affinity_run >= MAX_AFFINITY_RUN:
@@ -357,31 +358,32 @@ async def _run_one(
     """
     # A drama drives the IMAGE and VIDEO providers itself; there is no
     # `providers[DRAMA]` entry and nothing to ask capabilities of here.
-    provider: Any = providers.get(job.media_kind)
-    if provider is None and job.media_kind is not MediaKind.DRAMA:
+    provider: Any = providers.get(job.media_kind.model_kind) if job.media_kind.model_kind else None
+    if provider is None and job.media_kind is not JobKind.DRAMA:
         raise AIStudioError(f"this pod serves no provider for {job.media_kind.value}")
     caps = provider.capabilities() if provider is not None else None
     started = time.monotonic()
 
     try:
-        await make_room_for(job.media_kind, providers)
-        if job.media_kind is MediaKind.IMAGE:
+        if provider is not None:
+            await make_room_for(provider, providers)
+        if job.media_kind is JobKind.IMAGE:
             result: Any = await render_image(
                 job, provider, caps, files_dir, deadline, poll_interval_s
             )
-        elif job.media_kind is MediaKind.VIDEO:
+        elif job.media_kind is JobKind.VIDEO:
             result = await render_clip(
                 job, provider, caps, files_dir, deadline, poll_interval_s
             )
-        elif job.media_kind is MediaKind.CHAT:
+        elif job.media_kind is JobKind.CHAT:
             result = await render_chat(job, provider, queue, deadline, poll_interval_s)
-        elif job.media_kind is MediaKind.DRAMA:
+        elif job.media_kind is JobKind.DRAMA:
             result = await render_drama(
                 job, providers, files_dir=files_dir, runs_dir=get_settings().runs_dir,
                 deadline=deadline, poll_interval_s=poll_interval_s,
                 # Per artifact, not per job: a drama is 15-30 minutes and the
                 # reaper's grace is 10. Every fetched still or clip is activity.
-                on_activity=lambda: host.touch_activity(MediaKind.DRAMA.value),
+                on_activity=lambda: host.touch_activity(JobKind.DRAMA.value),
             )
         elif job.media_kind.is_understanding:
             result = await render_understanding(job, provider, deadline, poll_interval_s)
@@ -428,7 +430,7 @@ async def _run_one(
     # Understanding and chat jobs produce text, not a file: `asset` stays
     # None so `_deliver` pushes `job.result_text` instead of a media message.
     asset: Path | None = None
-    if job.media_kind.is_understanding or job.media_kind is MediaKind.CHAT:
+    if job.media_kind.is_understanding or job.media_kind is JobKind.CHAT:
         queue.complete_text(job.id, result)
     else:
         asset = result

@@ -7,12 +7,12 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from ai_studio.core.enums import MediaKind
 from ai_studio.runtime import hours
 
 from fun_workflow.bots.line.reply import NullReplyClient
 from fun_workflow.bots.line.verify import sign, verify
 from fun_workflow.bots.line.webhook import InvalidSignature, WebhookHandler
+from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline.queue import JobQueue, JobState
 
 SECRET = "test-channel-secret"
@@ -200,7 +200,7 @@ async def test_the_image_trigger_enqueues_an_image_job(wired) -> None:
 
     assert outcome.action == "accepted"
     assert outcome.job is not None
-    assert outcome.job.media_kind is MediaKind.IMAGE
+    assert outcome.job.media_kind is JobKind.IMAGE
     assert outcome.job.text == "一隻橘貓"
     assert "想查進度可以看" in replier.sent[0][1][0]
 
@@ -213,7 +213,7 @@ async def test_the_video_trigger_still_defaults_to_video(wired) -> None:
 
     (outcome,) = await handler.handle(body, sign(body, SECRET))
     assert outcome.job is not None
-    assert outcome.job.media_kind is MediaKind.VIDEO
+    assert outcome.job.media_kind is JobKind.VIDEO
 
 
 @pytest.mark.asyncio
@@ -223,10 +223,10 @@ async def test_the_three_triggers_do_not_overlap(wired) -> None:
     handler, _, _ = wired
     body = _body([_text_event("/圖片 一隻貓", event_id="evt-kind-img")])
     (img,) = await handler.handle(body, sign(body, SECRET))
-    assert img.action == "accepted" and img.job.media_kind is MediaKind.IMAGE
+    assert img.action == "accepted" and img.job.media_kind is JobKind.IMAGE
     body = _body([_text_event("/影片 一隻貓", event_id="evt-kind-vid")])
     (vid,) = await handler.handle(body, sign(body, SECRET))
-    assert vid.action == "accepted" and vid.job.media_kind is MediaKind.VIDEO
+    assert vid.action == "accepted" and vid.job.media_kind is JobKind.VIDEO
     assert vid.job.first_frame_path is None
 
 
@@ -239,7 +239,7 @@ async def test_the_chat_trigger_enqueues_a_chat_job_and_claims_no_media(wired) -
 
     assert outcome.action == "accepted"
     assert outcome.job is not None
-    assert outcome.job.media_kind is MediaKind.CHAT
+    assert outcome.job.media_kind is JobKind.CHAT
     assert outcome.job.text == "你好嗎"
     assert outcome.job.first_frame_path is None
     assert "想查進度可以看" in replier.sent[0][1][0]
@@ -266,9 +266,9 @@ async def test_the_chat_trigger_does_not_shadow_or_get_shadowed_by_the_others(wi
     change any existing trigger's outcome."""
     handler, _, _ = wired
     for text, expected_kind in (
-        ("/影片 貓", MediaKind.VIDEO),
-        ("/圖片 貓", MediaKind.IMAGE),
-        ("/himonkey 嗨", MediaKind.CHAT),
+        ("/影片 貓", JobKind.VIDEO),
+        ("/圖片 貓", JobKind.IMAGE),
+        ("/himonkey 嗨", JobKind.CHAT),
     ):
         body = _body([_text_event(text, event_id=f"evt-no-shadow-{expected_kind.value}")])
         (outcome,) = await handler.handle(body, sign(body, SECRET))
@@ -847,7 +847,7 @@ async def test_a_fullwidth_slash_from_a_mobile_ime_still_triggers(wired) -> None
     body = _body([_text_event("\uff0f圖片 一隻貓", event_id="evt-fw")])
     (outcome,) = await handler.handle(body, sign(body, SECRET))
     assert outcome.action == "accepted"
-    assert outcome.job.media_kind is MediaKind.IMAGE
+    assert outcome.job.media_kind is JobKind.IMAGE
     assert outcome.job.text == "一隻貓"
 
 
@@ -1006,7 +1006,7 @@ async def test_the_drama_trigger_enqueues_a_drama_job(wired) -> None:
 
     assert outcome.action == "accepted"
     assert outcome.job is not None
-    assert outcome.job.media_kind is MediaKind.DRAMA
+    assert outcome.job.media_kind is JobKind.DRAMA
     assert outcome.job.text == "一個夜市老闆娘發現攤位下藏著一封信"
     assert outcome.job.first_frame_path is None and outcome.job.requested_seconds is None
     (_, texts) = replier.sent[0]
@@ -1018,7 +1018,7 @@ async def test_a_fullwidth_slash_drama_trigger_still_fires(wired) -> None:
     handler, _queue, _replier = wired
     body = _body([_text_event("\uff0f短劇 一個故事")])  # the IME's fullwidth solidus
     (outcome,) = await handler.handle(body, sign(body, SECRET))
-    assert outcome.action == "accepted" and outcome.job.media_kind is MediaKind.DRAMA
+    assert outcome.action == "accepted" and outcome.job.media_kind is JobKind.DRAMA
 
 
 @pytest.mark.asyncio
@@ -1063,7 +1063,7 @@ async def test_the_group_wide_drama_cap_refuses_the_next_one(tmp_path: Path) -> 
         (outcome,) = await handler.handle(body, sign(body, SECRET))
         assert outcome.action == "rate_limited" and outcome.detail == "drama cap"
         assert "短劇額度" in replier.sent[-1][1][0]
-        assert queue.accepted_kind_today(MediaKind.DRAMA) == 2
+        assert queue.accepted_kind_today(JobKind.DRAMA) == 2
 
         # Other kinds are untouched by the drama cap.
         body = _body([_text_event("/影片 一隻貓", event_id="evt-video-after-cap")])
