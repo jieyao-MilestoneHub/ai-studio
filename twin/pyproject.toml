@@ -46,6 +46,9 @@ dependencies = [
     # stored encrypted — see core/encryption.py.
     "cryptography>=44.0",
     "modal>=1.5.4",
+    "s3fs>=2026.6.0",
+    "kaggle>=2.2.4",
+    "python-dotenv>=1.2.3",
 ]
 
 [project.scripts]
