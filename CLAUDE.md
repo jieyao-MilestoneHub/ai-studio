@@ -50,7 +50,7 @@ the money, and the numbers — and nothing about who asked for a render:
   display, including the GPU tier / $/hr rows on fun_workflow's status page.
   `ai-studio bench` prints it; `ai-studio metrics export` writes timestamped
   snapshots under `assets/metrics/` (plus `benchmark/measured.py`, every 📏
-  figure as data) and `metrics readme` renders README's table from them.
+  figure as data) and `metrics readme` renders the tables in `assets/metrics/README.md`.
 - An editing grammar derived from
   [`Hao0321/video-autopilot-kit`](https://github.com/Hao0321/video-autopilot-kit)
   (MIT), **specified in `docs/editing-grammar.md` and not implemented**
@@ -92,7 +92,7 @@ uv run mypy
 
 uv run ai-studio doctor                                             # python, ffmpeg + filters, credentials, logs/archive
 uv run ai-studio bench                                              # this month's per-tier measurements + the open pod's rate
-uv run ai-studio metrics export && uv run ai-studio metrics readme  # timestamped snapshots under assets/metrics/, README's table
+uv run ai-studio metrics export && uv run ai-studio metrics readme  # timestamped snapshots under assets/metrics/ and its README's tables
 uv run ai-studio archive --dry-run                                  # what tonight's 03:00 archive would tar and prune
 uv run ai-studio preflight --skip-suite                             # GPU-side checks: poster, every graph, placement ladder
 uv run ai-studio generate "a test clip" --provider stub             # offline end-to-end
