@@ -44,6 +44,11 @@ machines that can be pre-empted without warning.
 # The 608x352 figure is anomalous — it is *slower* than the larger 864x480,
 # while the same source's RTX 3050 column scales normally with resolution. Most
 # likely a first-run warm-up artifact. Re-measure before trusting it.
+#
+# `runs/benchmark/<YYYY-MM>.json` (storage.archive.update_benchmark_report)
+# accumulates real per-canvas timing from actual /影片 traffic -- the natural
+# source for re-measuring these, once a person has looked at it and decided
+# a number is worth promoting (see CLAUDE.md, "Number honesty").
 MEASURED_LATENCY_S: dict[tuple[int, int], float] = {
     (608, 352): 182.0,
     (864, 480): 133.0,
@@ -166,6 +171,7 @@ class ComfyUIProvider:
 
         info = media.probe(dest)
         elapsed = max(job.elapsed_s, 1.0)
+        peak_vram_bytes = job.raw.get("peak_vram_bytes")
         return ClipAsset(
             shot_id=job.shot_id,
             key=dest.name,
@@ -180,6 +186,7 @@ class ComfyUIProvider:
             job_id=job.job_id,
             # Billed by wall clock: what this clip actually occupied the GPU for.
             cost_usd=round(DEFAULT_HOURLY_USD * elapsed / 3600.0, 6),
+            peak_vram_gb=round(peak_vram_bytes / 2**30, 3) if peak_vram_bytes else None,
         )
 
     # ---------------------------------------------------------------- cancel

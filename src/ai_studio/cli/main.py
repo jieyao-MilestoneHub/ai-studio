@@ -209,7 +209,10 @@ def archive(
     of sha256s; then deletes hot logs older than AI_STUDIO_LOG_HOT_DAYS
     (only what a manifest names), archives older than
     AI_STUDIO_ARCHIVE_KEEP_DAYS, stale dry-run/stub/out files, empty drama
-    dirs and old chat_turns. Idempotent: a second run the same day only prunes.
+    dirs and old chat_turns; then folds any real render since the last run
+    into runs/benchmark/<month>.json, a durable per-GPU-tier performance
+    aggregate (see docs/observability.md). Idempotent: a second run the
+    same day only prunes and has nothing new to fold.
     """
     _setup_logging("archive")
     from ai_studio.storage.archive import run_archive
@@ -1065,6 +1068,7 @@ def session_drain(
                 window_end=datetime.fromisoformat(session.window_end),
                 files_dir=settings.files_dir,
                 gpu_tier=session.tier_label,
+                gpu_usd_per_hr=session.cost_per_hr,
                 poll_interval_s=poll_seconds,
                 max_clips=max_clips,
                 # Without this a long render looks like idleness and the reaper

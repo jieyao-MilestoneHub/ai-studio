@@ -57,7 +57,7 @@ EXTRA_FIELDS: tuple[str, ...] = (
     "resident", "evicted", "attempts", "polls", "sha256", "load_s", "infer_s", "vram_gb",
     "minutes", "tier", "usd_per_hr", "window_end", "datacenter", "idle_min", "grace",
     "action", "spent", "cap", "opened_today", "month_spent", "quota_exhausted", "to",
-    "messages", "modality", "pod_job", "members", "bytes_before", "bytes_after",
+    "messages", "modality", "pod_job", "members", "bytes_before", "bytes_after", "frames",
 )
 """The keys a record may carry into JSONL, from `bind()` or `extra=`. An
 allow-list so a stray `extra` can never produce a line that is not JSON."""

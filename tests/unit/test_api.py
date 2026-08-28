@@ -440,7 +440,7 @@ def test_the_running_wording_matches_the_kind_of_job(client) -> None:
             state=JobState.RUNNING, media_kind=kind, first_frame_path=None, quote_token=None,
             message_id=None, reply_message_id=None, requested_seconds=None,
             input_media_path=None, prompt_json=None, output_path=None, result_text=None,
-            cost_usd=None, error=None, gpu_tier=None, created_at=0.0, parsed_at=None,
+            cost_usd=None, error=None, gpu_tier=None, gpu_usd_per_hr=None, created_at=0.0, parsed_at=None,
             started_at=0.0, finished_at=None, delivered_at=None, attempts=1,
         )
 

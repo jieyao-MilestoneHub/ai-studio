@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from peft import PeftModel
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from trl import SFTConfig, SFTTrainer
 
 from twin.core.adapter import AdapterManifest, ModelSpec, write_adapter_manifest
@@ -16,7 +16,16 @@ from twin.core.hashing import config_hash, dataset_hash
 from twin.train import checkpoint
 from twin.train import model as train_model
 from twin.train.formatting import build_sft_dataset
+from twin.train.loss_mask import verify_assistant_masking
 from twin.train.reproducibility import derive_run_id, seed_everything
+
+# LoRA-specific ceiling on effective batch size (see TrainingConfig's
+# `gradient_accumulation_steps` field comment below). Enforced by
+# `TrainingConfig._check_effective_batch_ceiling` instead of staying a
+# comment nobody re-reads — inspired by llm-twin's
+# `twin_train/common.py:guard_config()` pattern (see
+# twin/docs/llm-twin-reference-notes.md).
+MAX_EFFECTIVE_BATCH_SIZE = 32
 
 
 class TrainingConfig(BaseModel):
@@ -52,6 +61,19 @@ class TrainingConfig(BaseModel):
 
     def config_hash_fields(self) -> dict[str, Any]:
         return self.model_dump(exclude={"seed"})
+
+    @model_validator(mode="after")
+    def _check_effective_batch_ceiling(self) -> TrainingConfig:
+        effective = self.per_device_train_batch_size * self.gradient_accumulation_steps
+        if effective > MAX_EFFECTIVE_BATCH_SIZE:
+            raise ValueError(
+                f"per_device_train_batch_size ({self.per_device_train_batch_size}) * "
+                f"gradient_accumulation_steps ({self.gradient_accumulation_steps}) = {effective} exceeds the "
+                f"LoRA-specific ceiling of {MAX_EFFECTIVE_BATCH_SIZE} documented above. This was previously "
+                "only a comment; enforcing it turns a config typo into a startup failure instead of a "
+                "silently-suboptimal run."
+            )
+        return self
 
 
 def main(
@@ -93,12 +115,48 @@ def main(
     model_spec = ModelSpec(base_model_id=config.base_model_id, base_model_revision=config.base_model_revision)
     tokenizer = train_model.load_tokenizer(model_spec)
 
+    # Cheap, tokenizer-only pre-flight check for `assistant_only_loss` below —
+    # runs before the quantized model is even constructed, let alone loaded
+    # onto a GPU. See train/loss_mask.py's module docstring: TRL 1.12
+    # resolves the chat template needed for assistant-only masking by exact
+    # string match against a template baked into that TRL release, and only
+    # fails loudly once SFTTrainer.__init__ runs. This surfaces the same
+    # failure earlier. Checks every example, not just one — a shape-specific
+    # mismatch (e.g. one negative-class variant) could otherwise sit past the
+    # first example undetected. Printed rather than only returned: this
+    # trainer runs unattended on Modal/Kaggle/Lightning, so the decoded
+    # eyeball sample only has value if it actually lands in the captured job
+    # log, not just in a value nothing reads.
+    mask_reports = []
+    for index, example in enumerate(dataset):
+        try:
+            mask_reports.append(verify_assistant_masking(tokenizer, example["messages"]))
+        except ValueError as exc:
+            raise ValueError(
+                f"loss-mask pre-flight failed on trajectory index {index} "
+                f"(trajectory_id={example['trajectory_id']}): {exc}"
+            ) from exc
+    print(
+        f"[loss-mask pre-flight] {len(mask_reports)} example(s) verified; "
+        f"assistant-token fraction min={min(r.assistant_fraction for r in mask_reports):.3f} "
+        f"max={max(r.assistant_fraction for r in mask_reports):.3f}; "
+        f"sample decoded assistant span: {mask_reports[0].assistant_text!r}"
+    )
+
     sft_config = SFTConfig(
         output_dir="./.twin_train_scratch/output",
         fp16=config.fp16,
         bf16=config.bf16,  # Production default bf16=False MUST NOT change for a T4 run —
         # TRL's own SFTConfig default (bf16=True when fp16 isn't set) crashes outright
         # on a T4, which has no Ampere+ bf16 tensor cores.
+        assistant_only_loss=True,  # Not optional: without this, loss is computed over
+        # every token (system/user/tool turns included, per TRL's default), so the
+        # model spends capacity learning to predict the *other party's* turns and the
+        # injected tool-name vocabulary instead of the principal's own replies —
+        # trains without error, loss still drops, converges to the wrong objective.
+        # `verify_assistant_masking` above is this same codebase's pre-flight check
+        # that the chat-template resolution this flag depends on actually holds for
+        # the pinned base model (train/loss_mask.py).
         learning_rate=config.learning_rate,
         per_device_train_batch_size=config.per_device_train_batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,

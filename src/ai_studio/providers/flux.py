@@ -238,6 +238,7 @@ class FluxComfyUIProvider:
 
         info = media.probe_image(dest)
         elapsed = max(job.elapsed_s, 1.0)
+        peak_vram_bytes = job.raw.get("peak_vram_bytes")
         return ImageAsset(
             shot_id=job.shot_id,
             key=dest.name,
@@ -249,6 +250,7 @@ class FluxComfyUIProvider:
             provider=self.name,
             job_id=job.job_id,
             cost_usd=round(self._hourly_usd * elapsed / 3600.0, 6),
+            peak_vram_gb=round(peak_vram_bytes / 2**30, 3) if peak_vram_bytes else None,
         )
 
     # ---------------------------------------------------------------- cancel
