@@ -89,17 +89,38 @@ own internal resolution. Re-ran the full kill/resume test after the change;
 the calibrated `MAX_PER_STEP_LOSS_DIFF = 0.01` threshold still holds
 unchanged.
 
-**Found but not fixed, flagged instead**: rendering a real trajectory
-through the real Qwen3-8B template showed it always inserts an empty
-`<think>\n\n</think>\n\n` scaffold into assistant turns (Qwen3's "thinking
-mode"), and that empty block sits inside the assistant-masked span — so
-today's pipeline would train the model to always emit an empty think block.
-llm-twin's own `sft_qwen3_4b_t4.yaml` sets `enable_thinking: false`
-explicitly and calls out that train/infer must match; nothing in twin's
-`train/model.py`, `formatting.py`, or `run.py` sets this today. This is a
-distinct correctness question from loss masking (format parity between
-train and serve, not masking boundaries) and wasn't in the approved scope
-of this pass — noted here rather than fixed silently.
+**Investigated, turned out not to be a bug**: rendering a real trajectory
+through the real Qwen3-8B template initially looked like it always inserts
+an empty `<think>\n\n</think>\n\n` scaffold into assistant turns, which read
+as the exact train/infer mismatch llm-twin's `sft_qwen3_4b_t4.yaml` calls
+out (it sets `enable_thinking: false` explicitly and warns train/infer must
+match). Verified further before treating that as a real gap: `enable_thinking`
+has **no effect on a completed assistant turn** — it only changes what's
+inserted at the generation-prompt point (`add_generation_prompt=True`, i.e.
+the moment right before a *new* response is generated):
+
+```
+completed turn,  enable_thinking=True/False/unset -> identical:
+  "...<|im_start|>assistant\n<think>\n\n</think>\n\nhi there<|im_end|>\n"
+generation prompt, enable_thinking=True/unset -> "...assistant\n"
+generation prompt, enable_thinking=False      -> "...assistant\n<think>\n\n</think>\n\n"
+```
+
+So the empty `<think></think>` in every training example's completed
+assistant turn isn't a masking artifact or a missed config flag — it's
+Qwen3's standard SFT format for a non-reasoning reply, and it's exactly
+what should sit inside the assistant-masked span: training the model to
+always close its think block immediately is what makes `enable_thinking=False`
+at inference (an empty think block pre-filled into the generation prompt)
+land on a response the model has actually been trained to continue
+naturally. `train/formatting.py` needs no change for this.
+
+Where `enable_thinking=False` *will* matter is real: whenever Phase 11's
+serve/inference path is built and calls `apply_chat_template(...,
+add_generation_prompt=True)` to generate a live response, it MUST pass
+`enable_thinking=False` there — that's the one call site the flag actually
+affects, and it doesn't exist yet. Left as a note for whoever picks up
+Phase 11, not a training-side fix.
 
 ### `TrainingConfig` effective-batch-size ceiling (`run.py`, hardens Phase 4)
 
