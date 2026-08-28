@@ -1,7 +1,8 @@
 # ai-studio
 
-Open-weight video, image and understanding models on rented GPUs, measured
-honestly — and a LINE group that uses them.
+Run open-weight video, image, and understanding models on rented GPUs. Measure them honestly, and experiment through a practical client — from LINE groups to real-world workloads.
+
+Digital twins are just a side quest. We explore how far free resources can take you toward training your own, before you have the compute to fine-tune a large LLM.
 
 ## Monorepo
 
