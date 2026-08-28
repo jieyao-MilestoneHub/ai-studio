@@ -2,10 +2,10 @@
 
 | 項目 | 值 |
 |---|---|
-| 版本 | 0.5 |
-| 日期 | 2026-08-27（Phase 0、Phase 1 完成；L2/L3/L4/harness interface-first 補建完成，見 §3.8；Phase 4 訓練垂直切片程式部分完成，見下方與 Phase 4 章節） |
+| 版本 | 0.6 |
+| 日期 | 2026-08-28（Phase 5 全部、Phase 3-A（訪談後處理＋逐字稿/問卷 ingest）程式部分落地，見各自章節；Phase 3-B（真人語音訪談員本身）仍為未解決的開放設計問題，刻意未動工，見 Phase 3 章節） |
 | 依據 | SPEC.md v0.4、EVAL.md v0.2、INTERVIEW.md v0.2（見附錄） |
-| 狀態 | Phase 0（護欄/套件骨架）、Phase 1（Fragment schema／split／teacher.py／最小 ingest）程式部分皆已落地；兩者各自的人工步驟（GCP/雲端帳號、使用者真實資料）仍待辦，見各自章節。§3.8 記錄了一輪跨 phase 的 interface-first 補建（L2/L3/L4/harness 的介面與 core 的支撐型別），刻意不算某個特定 phase 完成，細節仍待鎖定區塊時補上。**Phase 4（最小 L2 + 精簡軌跡集 + 第一版 LoRA）程式部分已完成**（底模定案 Qwen3-8B，`train/{formatting,model,checkpoint,reproducibility,run}.py`、根目錄 `train.py`、`launch/*`，SPEC §7.4 的 kill-9/resume CI 測試已通過，見該章節「狀態」）；LoRA rank 硬體 probe、真實資料訓練跑仍待辦。Phase 2、3、5 起仍為草稿。路線圖依 SPEC/EVAL 的既有裁決推導，未包含任何本文件自行代決的規範性內容 |
+| 狀態 | Phase 0（護欄/套件骨架）、Phase 1（Fragment schema／split／teacher.py／最小 ingest）程式部分皆已落地；兩者各自的人工步驟（GCP/雲端帳號、使用者真實資料）仍待辦，見各自章節。§3.8 記錄了一輪跨 phase 的 interface-first 補建（L2/L3/L4/harness 的介面與 core 的支撐型別），刻意不算某個特定 phase 完成，細節仍待鎖定區塊時補上。**Phase 4（最小 L2 + 精簡軌跡集 + 第一版 LoRA）程式部分已完成**（底模定案 Qwen3-8B，`train/{formatting,model,checkpoint,reproducibility,run}.py`、根目錄 `train.py`、`launch/*`，SPEC §7.4 的 kill-9/resume CI 測試已通過，見該章節「狀態」）；LoRA rank 硬體 probe、真實資料訓練跑仍待辦。**Phase 5（Baseline B0/B1/B2 + judge harness）程式部分已完成**（`harness/{baseline,s1_run,eval_io}.py`、`eval/rubric/s1.md`、三支 `examples/*_s1_eval_round.py` 驅動腳本），`spec-auditor` 兩輪皆 PASS，詳見該章節。**Phase 3 拆成兩半**：後處理管線＋逐字稿/問卷 ingest（「Phase 3-A」）程式部分已完成，`spec-auditor`／`data-hygiene` 皆 PASS；真人語音訪談員本身（「Phase 3-B」）INTERVIEW.md 完全未指定實作機制（無 STT/TTS、無連續 session 架構），本輪刻意不解決，留待下一輪與使用者一起裁決。Phase 2 仍為草稿（真實一批題庫生成與 Wave 1 作答仍待使用者提供 LINE 匯出檔觸發，見該章節）。路線圖依 SPEC/EVAL 的既有裁決推導，未包含任何本文件自行代決的規範性內容 |
 
 ---
 
@@ -107,15 +107,23 @@ Phase 0（護欄）
 
 ### Phase 3 — AI 訪談員、訪談本身、後處理（與 Phase 1/2 平行，須在 14 天內完成）
 
-- AI 訪談員（INTERVIEW.md §4/§6）：語音對語音、Teacher 驅動、追蹤大綱與必達點（A1–A4、B1–B8、C1–C3、D1–D2）、即時追問、單一連續 102–120 分鐘場次（D34，不得分段）、即時自我檢核發言占比（≥70%，Q5）。
-- 可重跑的後處理管線（§6.2）：專有名詞校正（需聯絡人/訊息詞表）、中英混用還原、口語保留、`[unclear]` 標記。音檔保留至 QC 通過。
-- 品質檢核（§7，Q1–Q9）：Q8（`third_party_spans` 已標註）是唯一硬阻擋；其餘未過僅記錄為對應 suite 的低信心，不阻擋流程。
-- 結構化問卷（§5），訪談後才施測，題庫與 S1 題庫互斥。
-- **特別護欄**：逐字稿與原始音檔永遠留在 `file://`，絕不進 `r2://`（INTERVIEW.md §6.3、§8 I-D——這不是待裁決事項，是匿名化被否決後僅存的防線之一，D32）。只有衍生出的 Period 層級碎片可走一般跨雲同步路徑（§7.2）。
+**狀態：拆成 Phase 3-A（後處理管線＋逐字稿/問卷 ingest）與 Phase 3-B（真人語音訪談員本身）。Phase 3-A 程式部分已完成（2026-08-28），`spec-auditor`／`data-hygiene` 皆 PASS（見下方「審查」）。Phase 3-B 完全未動工——見下方獨立說明。**
 
-**依據**：INTERVIEW.md §3–§8；SPEC.md §4.1、§4.6/D24、D19、D26、D34–D36。
-**驗收**：一份連續逐字稿 ≥5,500 字，Q8 已過；逐字稿標記 `source_class: self_report`，可原文還原（D26）。
-**類型**：程式（訪談員 + 後處理管線）+ 人工（102–120 分鐘場次本身，須預留緩衝，不能卡在第 13 天才做）。
+- ~~AI 訪談員~~ → **Phase 3-B，未動工**（INTERVIEW.md §4/§6）：語音對語音、Teacher 驅動、追蹤大綱與必達點（A1–A4、B1–B8、C1–C3、D1–D2）、即時追問、單一連續 102–120 分鐘場次（D34，不得分段）、即時自我檢核發言占比（≥70%，Q5）。
+- [x] 可重跑的後處理管線（§6.2）：`ingest/postprocess.py`——`apply_correction_glossary()`（統一處理步驟 1 專有名詞校正＋步驟 2 中英混用還原，皆為詞表替換）、`mark_unclear_spans()`（步驟 4）、`run_postprocessing_pipeline()`（組合，對同一份原始逐字稿+更新後詞表可重跑，純函式）。步驟 3「口語保留」刻意沒有對應函式——它是一條 MUST NOT（不得順稿），用「這支管線只碰詞表命中的片段，從不碰語氣詞/重複」這個事實本身滿足，而非額外寫一個「不做事」的函式。
+- [x] 品質檢核（§7，Q1–Q9）：`ingest/quality_check.py`。Q3/Q4/Q5/Q7/Q9 純腳本；Q6（時間表述保留）為對比原始/校正後文字的啟發式代理，非保證；Q1+Q2（必達點涵蓋＋B1/B2/B6 具體事例數）合併成一次 Teacher 呼叫（`check_coverage_and_instances`，D9 少次大批）。**Q8（third_party_spans 已標註）刻意沒有對應檢查函式**——它不是後驗旗標，而是在 `ingest/sources/interview_transcript.py` 的 ingest 路徑本身結構性阻擋（見下）。
+- [x] 逐字稿 ingest（§4、§6：「逐字稿...掛於記憶層 Period 級」）：`ingest/sources/interview_transcript.py::fragments_from_interview_transcript()`，每個必達區塊（A/B/C/D）一個 Fragment，`event_time` 依 §4 建議的區塊分鐘數（42/36/16/8）累加估算——**confidence 刻意標為 0.5、不是 1.0**（§4 本文明講訪談員 MAY 調整區塊時間，對一個推算值給滿信心正是 SPEC §4.4 警告的「虛假精確度」）。**Q8 的結構性阻擋**：`extract_third_party_spans()`（新模組 `ingest/entities.py`，rule-based v1，非 Teacher 驅動——理由是 Q8 是進記憶層前的硬阻擋，不該綁一個會因 RPD 耗盡而失敗的即時網路呼叫）對每個存在的區塊無條件呼叫，沒有任何跳過路徑；`blocks` 字典裡出現非 A/B/C/D 的 key、或 `known_parties` 為空，皆直接 `raise`（前者是「fail loudly」——打錯 label 不該讓整塊內容悄悄消失；後者是「沒有安全預設值」——INTERVIEW §6.3 明講訪談必然涉及第三方，known_parties 為空卻放行等於保證漏標）。
+- [x] 結構化問卷（§5）：`ingest/sources/questionnaire.py::fragments_from_questionnaire()`，訪談後才施測（呼叫端責任），答案 MUST 為該題 `scale_labels` 之一（仿 `S1Answer.answer` 的驗證紀律，同時也是「不呼叫 third-party 抽取」這個決定成立的前提——沒有自由文字，第三方就無處可藏）；題庫與 S1 題庫互斥由新模組 `harness/questionnaire_guard.py::assert_disjoint_from_s1_item_bank()` 檢查（放在 `twin.harness` 而非 `twin.ingest`——判斷需要同時看到兩邊的題庫型別，但 import-linter 的 layer spine 禁止 `ingest` 反向 import `harness`）。
+- [x] **特別護欄，本輪發現並修正一處落差**：原始規劃（本節先前版本）認為「逐字稿與原始音檔永遠留在 `file://`...只有衍生出的 Period 層級碎片可走一般跨雲同步路徑（§7.2）」，區分「原始逐字稿檔案」與「衍生碎片」。**實際落地 `fragments_from_interview_transcript()` 後這個區分站不住**：為滿足 D26「自陳資料 MUST 可原文還原」，每個區塊 Fragment 的 `content` 就是逐字稿原文本身，不是摘要或衍生物——讓它照一般碎片同步路徑走，等同讓逐字稿原文直接經 `TWIN_FRAGMENT_STORE_URI`（`twin/CLAUDE.md` 記載的正式生產設定即為 R2）離開本機，實質架空 INTERVIEW.md §6.3/§8 I-D「MUST NOT 進入跨雲儲存」。兩輪獨立的 `spec-auditor` 審查各自讀 INTERVIEW.md 原文後都抓到這個落差（其中一輪判 BLOCK）。**修正**：`ingest/store.py::write_fragments_jsonl()` 新增結構性檢查——目標 URI 非 `file://` 時，批次中任何 `source_class == SELF_REPORT` 的 Fragment 一律 `raise`（寫入任何一個 byte 之前，整批檢查，fail-fast），範圍刻意不narrow 到「只有逐字稿來源」——`Fragment` 目前無欄位可分辨自陳內容的來源，寧可保守地讓所有自陳內容（含問卷答案）暫時只能留在本機。新增的 `config.settings.Settings.transcript_store_uri`（file://-only）本身管的是原始音檔/後處理逐字稿「檔案」該存哪，不是這條 Fragment 層防線——兩者職責分開，文件已更新說明。**遺留的已知風險（供後續排查，非本輪落地範圍）**：`write_trajectories_jsonl()` 沒有對稱的檢查（`Trajectory` schema 目前無 `source_class` 欄位，且本輪沒有任何程式碼把自陳文字寫進 `Trajectory`，故此刻不構成真實破口）；另外 `agent/tools/recall.py`（既有程式碼，非本輪新增）完全不依 `split` 過濾，若日後訪談資料的四個區塊因時間相近而全部落在同一個 split（`data-hygiene` 審查記錄的觀察），`split` 標記對它目前沒有實際存取管制效果。
+
+**依據**：INTERVIEW.md §3–§8；SPEC.md §4.1、§4.6/D24、D19、D26、D34–D36、§4.9/D23。
+**驗收（Phase 3-A，程式部分）**：新增 6 個模組（`ingest/{entities,postprocess,quality_check}.py`、`ingest/sources/{interview_transcript,questionnaire}.py`、`harness/questionnaire_guard.py`），另修改 `ingest/store.py`、`config/settings.py`，+ 對應測試，`uv run pytest`／`ruff`／`mypy`／`lint-imports` 全過。逐字稿 Fragment 可原文還原（D26，測試覆蓋）；third_party_spans 對逐字稿每個區塊無條件標註（測試以 monkeypatch 計數驗證）。**真正的驗收線（一份連續逐字稿 ≥5,500 字、Q8 已過的真實訪談）仍待 Phase 3-B 完成後才可能發生。**
+**審查**：`spec-auditor`（初輪 BLOCK——settings 新欄位未接線、未知區塊標籤靜默丟棄、`known_parties` 空值無防呆、`confidence` 假精確；修正後複審 PASS）、`data-hygiene`（PASS，記錄兩項非阻擋觀察：`event_time.confidence` 對訪談區塊只反映「第幾區塊」而非分鐘級精度、以及上一段記錄的 split/recall() 疊加風險）。
+**類型**：Phase 3-A 為程式（已完成）；Phase 3-B 為程式（訪談員本身，完全未動工，見下）+ 人工（102–120 分鐘場次本身，須預留緩衝，不能卡在第 13 天才做）。
+
+**Phase 3-B — 真人語音訪談員：獨立的開放設計問題，本輪刻意不解決**
+
+INTERVIEW.md §6 把訪談員釘死為「Teacher 模型（Gemini Flash 免費層，含多模態輸入）」、要求語音對語音、單一連續 102–120 分鐘場次，但**完全沒有指定實作機制**——沒有 STT/TTS 引擎、沒有 turn-taking 協定、沒有 session 連續性的做法。現有的 `twin.teacher.base.Teacher.generate(prompt: str, *, response_schema: type[T]) -> T` 是純文字、單次呼叫、結構化輸出，沒有音訊參數，也沒有長時間 session 的概念——不能直接拿來當即時語音迴圈用。這是一個比 Phase 3-A 整體大得多、形狀完全不同的問題（近即時的語音 agent 迴圈，含場次中即時自我檢核），INTERVIEW.md 本身沒給出足夠資訊判斷該怎麼做。留給下一輪與使用者一起確認方向（例如：Gemini 的即時多模態 API 能否真的撐住約 2 小時連續 session 並滿足 §6.1/Q5 的即時自我檢核；若不行，D34「單一連續場次」是否需要一個有紀錄的折衷做法）。Phase 3-A 的每一支模組都只處理「已經產生的逐字稿文字」，與逐字稿如何產生無關，故不受此問題阻塞。
 
 ### Phase 4 — 最小 L2 + 精簡軌跡集 + 第一版（精簡）LoRA（與 14 天等待平行）
 
@@ -147,12 +155,23 @@ Phase 0（護欄）
 
 ### Phase 5 — Baseline + Judge harness（平行，等待期間完成）
 
-- `B0`（底模+空白）、`B1`（底模+persona 段落）、`B2`（底模+Phase 3 逐字稿注入 context）的推論 harness。
-- 依 EVAL.md §6.2 腳本化的 Claude Code judge：樣本剝除來源標籤後寫入 `eval/in/<run_id>.jsonl`，judge 僅逐筆語意判定，分數由腳本計算，judge 不給總分。使用 `eval-harness` skill。
+**狀態：程式部分已完成（2026-08-28）。`spec-auditor` 兩輪皆 PASS（初輪 BLOCK 一項需人工裁決的發現，修正後複審 PASS，見下方「審查」）。真實 GPU 推論、真實一輪 judge 對齊（EVAL.md §6.3）仍待辦，見下方「仍待辦」。**
 
-**依據**：SPEC.md §4.1/D26；EVAL.md §3.4、§6.1、§6.2。
-**驗收**：harness 對合成/假資料能跑通全流程，產出格式正確的 `eval/out/<run_id>.jsonl`。
-**類型**：程式。
+- [x] `B0`（底模+空白）、`B1`（底模+persona 段落）、`B2`（底模+Phase 3 逐字稿注入 context）的推論 harness：`harness/baseline.py`——`InferenceBackend` Protocol（`complete(prompt) -> str`，介面先行，真實 HF/transformers 綁定留給 §「仍待辦」）、`render_b0/b1/b2_prompt()`、`generate_baseline_samples()`。每個樣本 `source_label` 固定填 `"twin"`——只是一個路由標籤，不是「這是孿生 T」的宣稱（B0/B1/B2 皆不碰 LoRA adapter，依 SPEC §2.1 定義本來就不是「孿生」）；`harness.shard.strip_source_label` 在進 `eval/in/` 前就把整個欄位砍掉，judge 從未看到它，S1 真正的 T/B0/B1/B2 歸屬由下面獨立的 side-channel 承擔。
+- [x] `harness/s1_run.py`（新模組）：`compute_self_consistency()`（R1 vs R2 純字串比對，`S1Answer.answer` 依合約恆為選項原文，不需要 judge）、`S1SampleIndexEntry` + `build_s1_raw_samples()`（每個 (item, baseline) 組合一則綁定 R2 參考答案+候選答案的樣本，供 judge 逐筆比對）、`regroup_judged_items_by_baseline()`（judge 逐筆判定回來後，靠這個 judge 看不到的 side-channel 精確地掛回哪個 baseline，任何 sample_id 對不上就 `raise`，而非靜默 `.get()`）。
+- [x] 依 EVAL.md §6.2 腳本化的 Claude Code judge 產物層：`harness/eval_io.py`（新模組——`shard.py` 先前只做記憶體內切分，這裡才真正把 `eval/in/<run_id>/shard-NNN.jsonl` 寫到磁碟，跟隨 `eval-harness` skill 的巢狀目錄慣例而非 EVAL.md §6.2 字面較粗略的單檔寫法）、`compute_rubric_hash()`（rubric 檔位元組 + shard 大小一起雜湊，因為 shard 大小本身是「rubric 的一部分」）、`read_judged_shard()`——**對照 `.claude/agents/eval-judge.md` 的真實輸出格式核實過**：judge 實際寫的欄位是 `reason`，不是 `harness.schema.JudgedItem` 原有的 `rationale`，這裡是明確的欄位對應層，而非兩邊剛好同名。`eval/rubric/s1.md`（新增，`match`/`no_match`/`unjudgeable` 三值，對齊 `aggregate_s1` 既有的 `agree_verdicts` 預設值）。
+- [x] `examples/run_baseline_inference.py`（真實 HF backend，GPU-only，本輪未跑）、`examples/prepare_s1_eval_round.py`（`eval-harness` skill 步驟 0–2：檢查是否重跑、產生 B0/B1/B2 候選答案、剝除標籤、寫 shard；B2 的逐字稿注入只取 `Split.HELDOUT` 的自陳碎片，不含 `SEALED`——EVAL §9 只在最終驗收才開封 sealed，這是首輪 `spec-auditor` 抓到的落差，已修正）、`examples/score_s1_eval_round.py`（步驟 4–6：聚合＋門檻檢查＋寫報告）。
+- [x] **`score_s1_eval_round.py` 的門檻設計，回應初輪 `spec-auditor` 的阻擋級發現**：第一版直接把 judge 逐筆判定聚合成真實 `S1Metrics` 並印出/寫入一份平行的 `_s1_metrics.json`，而 EVAL.md §6.3 的 30 筆對齊驗證根本還不存在（不是還沒過門檻，是從未執行）——等同繞過既有的 `harness.gate_check.check_judge_agreement_floor()`，也繞過 `eval-harness` skill 唯一認可的 `eval/report/<run_id>.md` 產出管道。**修正**：腳本現在要求 `--judge-agreement`／`--confidence` 兩個必填 CLI 參數（明講「這是真實 Phase 6 對齊結果，不是本腳本算出來的」），在記憶體中組出完整 `EvalReport`（`s1` 為真實聚合值，`s2/s3/s4` 留 `None`，不捏造），呼叫既有、未改動的 `check_judge_agreement_floor()`——低於 0.80 直接 `raise`，此時任何分數都還沒印出或寫入——通過後才透過 `write_report()` 寫進 `eval/report/`。（judge shard 本身的機械健康度統計——unjudgeable/低信心/flag 計數——不受此限制，先印出：那是「judge 有沒有正常解析」的問題，不是「孿生像不像本人」的結論。）
+
+**依據**：SPEC.md §4.1/D26；EVAL.md §3.4、§6.1、§6.2、§6.3。
+**驗收**：harness 對合成/假資料能跑通全流程（**已驗證**，24 個新測試涵蓋 `baseline.py`/`s1_run.py`/`eval_io.py`），產出格式正確的 `eval/out/<run_id>/shard-NNN.jsonl`（**機制已驗證**）。真實 B0/B1/B2 推論、真實 judge 對齊仍待辦，見下。
+**審查**：`spec-auditor`（初輪 BLOCK——`score_s1_eval_round.py` 繞過對齊門檻、B2 逐字稿注入未濾 split，皆已修正；`source_label="twin"` 文件不夠精確，已補強；複審 PASS）。此軌不觸及 L1/L2，`data-hygiene` 依其自身觸發條件不適用。
+**類型**：程式（已完成）。
+
+**仍待辦**：
+1. `examples/run_baseline_inference.py` 在真實 GPU 上跑（同 Phase 4 的 `probe_lora_rank.py`，寫好未跑）。
+2. EVAL.md §6.3 的 30 筆真實對齊驗證（Phase 6，須等 Wave 2／14 天等待完成後才有真實 judge 輸出可對齊）——`score_s1_eval_round.py` 的 `--judge-agreement` 參數就是這一步的消費端。
+3. Phase 3-B（真人語音訪談員）完成、產生真實逐字稿後，B2 才有真實 `transcript_text` 可注入（目前 `prepare_s1_eval_round.py` 讀不到 `Split.HELDOUT` 自陳碎片時會跳過 B1/B2，只跑 B0）。
 
 ### Phase 6 — Wave 2 作答 + judge 對齊 + baseline 計分（**第 14 天**）
 

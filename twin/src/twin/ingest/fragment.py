@@ -68,6 +68,7 @@ def fragments_from_line_export(
     *,
     principal_id: str,
     principal_display_name: str,
+    known_senders: list[str],
     train_cutoff: datetime,
     sealed_cutoff: datetime,
     ingest_time: datetime | None = None,
@@ -83,10 +84,16 @@ def fragments_from_line_export(
     safe default to fall back to. (What this does NOT cover: the principal's
     own messages *mentioning* a third party — that's entity extraction,
     ingest.entities, a later phase's job, not this one's.)
+
+    `known_senders` MUST include every participant's exact display name as it
+    appears in this export, the principal included — see
+    `ingest.sources.line`'s module docstring for why a space alone can't
+    disambiguate sender from content once a display name contains one.
     """
     ingest_time = ingest_time or datetime.now(UTC)
     message: LineMessage
-    for message in parse_line_export(text):
+    parsed = parse_line_export(text, known_senders=known_senders, principal_display_name=principal_display_name)
+    for message in parsed:
         content = f"{message.sender}: {message.content}"
         is_third_party = message.sender != principal_display_name
         spans = (

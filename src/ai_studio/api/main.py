@@ -346,13 +346,16 @@ def _drama_block(job: Job, plan: dict[str, Any]) -> str:
 
 def _render(job: Job, position: int | None, base_url: str) -> str:
     label, note = state_text(job)
-    rows: list[tuple[str, str]] = [("狀態", html.escape(label)), ("你的描述", html.escape(job.text))]
+    desc_full = html.escape(job.text)
+    desc_preview = html.escape(job.text if len(job.text) <= 40 else job.text[:40] + "…")
+    desc_html = f"<details><summary>{desc_preview}</summary><div>{desc_full}</div></details>"
+    rows: list[tuple[str, str]] = [("狀態", html.escape(label)), ("你的描述", desc_html)]
     if position:
         rows.append(("佇列位次", f"第 {position} 位"))
     if job.gpu_tier:
-        rows.append(("使用的 GPU", html.escape(job.gpu_tier)))
+        rows.append(("使用的 GPU", f"<code>{html.escape(job.gpu_tier)}</code>"))
     if job.gpu_usd_per_hr:
-        rows.append(("GPU 租用價格", f"${job.gpu_usd_per_hr:.3f}/hr"))
+        rows.append(("GPU 租用價格", f"<code>${job.gpu_usd_per_hr:.3f}/hr</code>"))
     model_name, model_url = model_for(job.media_kind)
     rows.append((
         "開源模型",
@@ -400,28 +403,76 @@ def _render(job: Job, position: int | None, base_url: str) -> str:
             for i, s in enumerate(shots)
         )
         breakdown = f"<h2>解析出的分鏡</h2><ol>{items}</ol>"
+    if breakdown:
+        breakdown = f'<details class="flow"><summary>流程</summary><div>{breakdown}</div></details>'
 
     return f"""<!doctype html>
 <html lang="zh-Hant"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ai-studio · {html.escape(label)}</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Noto+Sans+TC:wght@400;500;700&display=swap">
 <style>
-:root{{color-scheme:light dark}}
-body{{font:16px/1.6 system-ui,-apple-system,"Noto Sans TC",sans-serif;
-     max-width:44rem;margin:0 auto;padding:1.5rem}}
-h1{{font-size:1.3rem;margin:0 0 1rem}}
+:root{{
+  color-scheme:light dark;
+  --bg:#e8ebf1;
+  --surface:#ffffff;
+  --border:#d9dde5;
+  --text:#1b1e27;
+  --text-dim:#5b6270;
+  --accent:#2563eb;
+}}
+@media (prefers-color-scheme:dark){{
+  :root{{
+    --bg:#0d0f15;
+    --surface:#161a24;
+    --border:#282e3a;
+    --text:#e6e9ef;
+    --text-dim:#8991a3;
+    --accent:#5b8def;
+  }}
+}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:var(--bg);color:var(--text);
+     font:16px/1.65 "Noto Sans TC",system-ui,-apple-system,sans-serif}}
+.page{{max-width:44rem;margin:0 auto;padding:2.5rem 1.25rem}}
+.card{{background:var(--surface);border:1px solid var(--border);border-radius:1rem;
+      padding:1.75rem 1.5rem;box-shadow:0 1px 3px color-mix(in srgb,var(--text) 8%,transparent)}}
+.eyebrow{{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.72rem;font-weight:600;
+         letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin:0 0 .5rem}}
+h1{{font-size:1.5rem;font-weight:700;letter-spacing:-.01em;margin:0 0 1.25rem;text-wrap:balance}}
 table{{width:100%;border-collapse:collapse;margin-bottom:1rem}}
-th,td{{text-align:left;padding:.5rem .25rem;border-bottom:1px solid color-mix(in srgb,currentColor 15%,transparent);vertical-align:top}}
-th{{width:8rem;font-weight:600;opacity:.7}}
-.cta a{{display:inline-block;padding:.7rem 1.2rem;border-radius:.5rem;
-       background:#2563eb;color:#fff;text-decoration:none;font-weight:600}}
-video,img{{width:100%;border-radius:.5rem;margin-top:1rem;background:#000}}
-.note{{opacity:.7}}
+th,td{{text-align:left;padding:.65rem .25rem;border-bottom:1px solid var(--border);vertical-align:top}}
+th{{width:8rem;font-weight:600;color:var(--text-dim);font-size:.92rem}}
+td a,td code{{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.88em}}
+td a{{color:var(--accent);text-decoration:none}}
+td a:hover{{text-decoration:underline}}
+td code{{background:color-mix(in srgb,var(--text) 8%,transparent);padding:.15em .4em;border-radius:.3em}}
+.cta a{{display:inline-block;padding:.7rem 1.2rem;border-radius:.6rem;
+       background:var(--accent);color:#fff;text-decoration:none;font-weight:600}}
+video,img{{width:100%;border-radius:.6rem;margin-top:1rem;background:#000}}
+.note,.result{{color:var(--text-dim)}}
+.result{{white-space:pre-wrap}}
 ol{{padding-left:1.2rem}} li{{margin:.4rem 0}}
+td details summary{{cursor:pointer;list-style:none}}
+td details summary::-webkit-details-marker{{display:none}}
+td details summary::after{{content:' \\25b8';opacity:.6}}
+td details[open] summary::after{{content:' \\25be'}}
+td details>div{{margin-top:.4rem}}
+details.flow{{width:100%;margin-top:1.25rem;border:1px solid var(--border);
+             border-radius:.75rem;overflow:hidden}}
+details.flow>summary{{cursor:pointer;list-style:none;padding:.8rem 1.1rem;font-weight:600;
+                      display:flex;align-items:center;justify-content:space-between}}
+details.flow>summary::-webkit-details-marker{{display:none}}
+details.flow>summary::after{{content:'\\25b8';color:var(--text-dim)}}
+details.flow[open]>summary::after{{content:'\\25be'}}
+details.flow>div{{padding:0 1.1rem 1.1rem;border-top:1px solid var(--border)}}
 </style></head>
 <body>
-<h1>ai_studio · {html.escape(label)}</h1>
+<div class="page"><div class="card">
+<p class="eyebrow">AI_STUDIO</p>
+<h1>{html.escape(label)}</h1>
 <table>{body}</table>
 {action}
 {breakdown}
+</div></div>
 </body></html>"""
