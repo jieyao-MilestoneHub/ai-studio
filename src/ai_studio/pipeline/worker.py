@@ -80,8 +80,8 @@ class WindowHost(Protocol):
     def claim_deadline(self, now: datetime | None = None) -> datetime:
         """The bell new work must finish before — the end of the pod's lease."""
 
-    def ensure_pod(self, queue: JobQueue) -> Any:
-        """A live pod, opening one if budget allows. May raise."""
+    def ensure_pod(self) -> Any:
+        """A live pod, opening one if budget and the daily cap allow. May raise."""
 
     def wait_ready(self, session: Any) -> float:
         """Provision the pod if it is fresh, then block until it can render."""
@@ -203,7 +203,7 @@ async def tick(
 
     # Conversion needs the pod too now (the rewriter is gpt-oss-20b on it), so
     # a queued-but-unconverted request opens the pod the same as a parsed one.
-    session = host.ensure_pod(queue)
+    session = host.ensure_pod()
     host.wait_ready(session)
     providers = host.providers_for(session)
 

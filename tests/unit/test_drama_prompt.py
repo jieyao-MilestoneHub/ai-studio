@@ -13,7 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from ai_studio.core.drama_spec import SHOT_COUNT, CharacterAnchor, DramaShot, Screenplay
-from ai_studio.llm.endpoint import ScriptedLlmClient
+from ai_studio.llm.scripted import ScriptedLlmClient
 from ai_studio.prompts import drama
 from ai_studio.prompts.h3 import I2VA_INSTRUCTION
 

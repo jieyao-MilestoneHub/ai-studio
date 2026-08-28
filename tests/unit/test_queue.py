@@ -430,18 +430,6 @@ def test_accepted_today_stops_at_the_day_boundary(q: JobQueue) -> None:
     assert q.accepted_today("Ualice", since=0.0) == 1
 
 
-def test_pod_opens_are_counted_for_the_day(q: JobQueue) -> None:
-    """The backstop behind the monthly guard: a crash-looping worker opens a
-    fresh pod on every restart and each one is individually within budget."""
-    assert q.opens_today() == 0
-
-    q.record_pod_open("pod-1")
-    q.record_pod_open("pod-2")
-
-    assert q.opens_today() == 2
-    assert q.opens_today(since=_far_future()) == 0
-
-
 def _far_future() -> float:
     import time as _time
 

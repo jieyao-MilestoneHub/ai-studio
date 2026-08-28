@@ -225,7 +225,7 @@ def check_queue_and_conversion() -> CheckResult:
     name = "queue and prompt conversion (offline)"
     import asyncio
 
-    from ai_studio.llm.endpoint import ScriptedLlmClient
+    from ai_studio.llm.scripted import ScriptedLlmClient
     from ai_studio.pipeline.convert_worker import convert_job
     from ai_studio.pipeline.queue import JobQueue
 

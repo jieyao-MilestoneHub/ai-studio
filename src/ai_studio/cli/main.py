@@ -474,7 +474,7 @@ async def _drama_dryrun(premise: str, out: Path, runs: Path, screenplay_file: Pa
     import json as _json
     from datetime import timedelta, timezone
 
-    from ai_studio.llm.endpoint import ScriptedLlmClient
+    from ai_studio.llm.scripted import ScriptedLlmClient
     from ai_studio.pipeline.drama import load_state, render_drama
     from ai_studio.pipeline.queue import JobQueue
     from ai_studio.prompts.drama import screenplay_payload, write_screenplay
@@ -804,24 +804,19 @@ def session_open(
     tz: str = typer.Option(WINDOW_TZ, "--tz", help="Timezone for --until."),
     name: str = typer.Option("ai-studio-window"),
 ) -> None:
-    """Deploy the window's pod. Sets --terminate-after as a backstop.
+    """Deploy the window's pod by hand. Sets --terminate-after as a backstop.
 
-    Two checks run before anything is created: a demand gate (skip entirely
-    if the queue is empty — the timer fires unconditionally every day, this
-    command decides whether that's worth spending on) and a monthly budget
-    guard (refuse, or shrink the window, once this month's cap is close).
+    Nothing runs this on a timer any more: the worker opens pods on demand
+    (`runtime.session.ensure_pod`). This is the operator's manual path — a
+    GPU test session, or a pod for `session drain`. The monthly budget guard
+    still applies (refuse, or shrink the window, once this month's cap is
+    close), and the open is counted against the daily cap like any other.
     """
     _setup_logging("session")
     from datetime import timezone
 
-    from ai_studio.pipeline.queue import JobQueue
     from ai_studio.runtime import session as sess
     from ai_studio.runtime.budget import MonthlyBudgetGuard, SpendLedger
-
-    with JobQueue() as queue:
-        if not queue.pending():
-            console.print("no queued work; skipping window open (no spend today)")
-            return
 
     settings = get_settings()
     guard = MonthlyBudgetGuard(
@@ -926,18 +921,20 @@ def session_reap(
     drama_idle_minutes: int = typer.Option(
         None, help="Grace after a /短劇 artifact (default: runtime.session.DRAMA_IDLE_MINUTES)."
     ),
+    hold: bool = typer.Option(
+        False, "--hold/--no-hold",
+        help="Never close: work is about to land on the pod. The caller that owns "
+        "the request queue decides this; a bare `session reap` has no queue to ask.",
+    ),
 ) -> None:
     """Close the pod once it has gone quiet. Schedule this every minute.
 
-    The grace depends on what the pod last rendered, and a pod with work
-    waiting in the queue is never closed, whatever the clock says.
+    The grace depends on what the pod last rendered. Pass --hold when work
+    is waiting for the pod — it is then never closed, whatever the clock says.
     """
     _setup_logging("reap")
-    from ai_studio.pipeline.queue import JobQueue
     from ai_studio.runtime import session as sess
 
-    with JobQueue() as queue:
-        hold = bool(queue.pending())
     decision = sess.close_if_idle(
         image_idle_minutes=image_idle_minutes or sess.IMAGE_IDLE_MINUTES,
         video_idle_minutes=video_idle_minutes or sess.VIDEO_IDLE_MINUTES,
@@ -1144,11 +1141,10 @@ class _RuntimeHost:
             return datetime.fromisoformat(live.window_end)
         return hours.window_end_for(now)
 
-    def ensure_pod(self, queue: object) -> object:
-        from ai_studio.pipeline.queue import JobQueue
+    def ensure_pod(self) -> object:
         from ai_studio.runtime import session as sess
 
-        session = sess.ensure_pod(cast(JobQueue, queue), name=self.name)
+        session = sess.ensure_pod(name=self.name)
         console.print(
             f"[green]window[/green] pod={session.pod_id} {session.tier_label} "
             f"${session.cost_per_hr:.2f}/hr until {session.window_end}"

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from ai_studio.llm.endpoint import ScriptedLlmClient
+from ai_studio.llm.scripted import ScriptedLlmClient
 from ai_studio.pipeline.convert_worker import DEFAULT_DURATION_S, convert_job, convert_pending
 from ai_studio.pipeline.queue import JobQueue, JobState
 from ai_studio.prompts.convert import (

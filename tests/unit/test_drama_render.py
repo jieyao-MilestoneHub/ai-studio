@@ -21,7 +21,7 @@ from ai_studio.core.enums import JobState as ClipState
 from ai_studio.core.errors import AIStudioError, CostCeilingExceeded, ProviderError
 from ai_studio.core.image_provider_spec import ImageAsset, ImageJob, ImageProviderCapabilities
 from ai_studio.core.provider_spec import ClipAsset, ClipJob, ProviderCapabilities
-from ai_studio.llm.endpoint import ScriptedLlmClient
+from ai_studio.llm.scripted import ScriptedLlmClient
 from ai_studio.pipeline import drama
 from ai_studio.pipeline.queue import JobQueue
 from ai_studio.prompts.drama import screenplay_payload

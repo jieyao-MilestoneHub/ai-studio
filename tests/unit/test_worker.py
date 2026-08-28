@@ -247,7 +247,7 @@ class FakeHost:
     def claim_deadline(self, now: datetime | None = None) -> datetime:
         return datetime.now(timezone.utc) + timedelta(minutes=self.minutes_left)
 
-    def ensure_pod(self, queue: Any) -> Any:
+    def ensure_pod(self) -> Any:
         if self.ensure_raises is not None:
             raise self.ensure_raises
         self.opens += 1
@@ -852,7 +852,7 @@ class _Evicting(FakeProvider):
 
 
 def _scripted(n: int) -> Any:
-    from ai_studio.llm.endpoint import ScriptedLlmClient
+    from ai_studio.llm.scripted import ScriptedLlmClient
 
     reply = (
         '{"shots":[{"style":"Live-action","description":"An orange cat walks slowly. No text.",'
@@ -946,7 +946,7 @@ async def test_chat_and_bare_describe_jobs_never_call_the_llm(queue, tmp_path: P
 
 @pytest.mark.asyncio
 async def test_the_question_and_system_prompt_reach_the_providers(queue, tmp_path: Path) -> None:
-    from ai_studio.llm.endpoint import ScriptedLlmClient
+    from ai_studio.llm.scripted import ScriptedLlmClient
 
     queue.enqueue(
         "evt-q", "Cgroup", "這是誰", user_id="U1", media_kind=MediaKind.AUDIO_UNDERSTAND,
@@ -1001,7 +1001,7 @@ async def test_a_drama_whose_screenplay_fails_is_failed_and_the_group_is_told(qu
     """No template fallback: with a screenwriter that keeps returning garbage
     the job is FAILED at conversion and delivered as such -- not left queued
     forever, and not rendered as six clips of nothing."""
-    from ai_studio.llm.endpoint import ScriptedLlmClient
+    from ai_studio.llm.scripted import ScriptedLlmClient
 
     job, _ = queue.enqueue("evt-drama-fail", "Cgroup", "一個故事", user_id="U1", media_kind=MediaKind.DRAMA)
     host = FakeHost(llm=ScriptedLlmClient("not json", "still not json"))

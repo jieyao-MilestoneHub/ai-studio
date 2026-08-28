@@ -40,9 +40,9 @@ import httpx
 from ai_studio.config.settings import get_settings
 from ai_studio.core.errors import CostCeilingExceeded, PodError
 from ai_studio.core.observability import utc_now_iso
-from ai_studio.pipeline.queue import JobQueue
 from ai_studio.runtime import hours
 from ai_studio.runtime.budget import MonthlyBudgetGuard, SpendLedger
+from ai_studio.runtime.opens import PodOpenLedger
 
 TEMPLATE_COMFYUI_STANDARD = "cw3nka7d08"
 """Official RunPod "ComfyUI" template, for standard GPUs (RTX 4090, L40, A100,
@@ -189,7 +189,7 @@ STATE_FILE = Path("runs/.session.json")
 SESSIONS_LOG_DIR = Path("logs/sessions")
 """Where every closed session's state lands (pod, tier, quantisation, opened/
 closed, cost, why it closed). `.session.json` is unlinked at close, so before
-2026-08-28 nothing but the pod id in `pod_opens` and the cost in the ledger
+2026-08-28 nothing but the pod id in the opens ledger and the cost in the spend ledger
 survived a session. Monkeypatched in tests like STATE_FILE."""
 PODS_LOG_DIR = Path("logs/pods")
 """Where a pod's own logs (setup.log, inference.log, comfy.log tail, dl-logs)
@@ -297,8 +297,13 @@ def open_session(
     volume_gb: int = 80,
     candidates: tuple[Tier, ...] = CANDIDATES,
     network_volume_id: str | None = None,
+    opens: PodOpenLedger | None = None,
 ) -> Session:
     """Deploy a pod for this window, or raise if nothing is available.
+
+    Every pod created here is counted in the daily open ledger (`opens`),
+    manual `session open` included — a pod that exists but was never counted
+    is one the daily cap cannot see.
 
     With `network_volume_id` the pod mounts that volume at /workspace instead
     of a fresh `volume_gb` disk; pair it with `candidates_for_volume(...)`,
@@ -369,6 +374,9 @@ def open_session(
                 low_vram=tier.low_vram,
                 quantisation=tier.quantisation,
             )
+            # Counted before anything else can go wrong: a pod that exists but
+            # was never counted is one the daily cap cannot see.
+            (opens or PodOpenLedger()).record(pod_id)
             save_state(session)
             return session
 
@@ -386,12 +394,12 @@ def _seconds_left(window_end: datetime) -> float:
 
 
 def ensure_pod(
-    queue: JobQueue,
     *,
     name: str = "ai-studio-window",
     candidates: tuple[Tier, ...] | None = None,
     now: datetime | None = None,
     max_opens_per_day: int | None = None,
+    opens: PodOpenLedger | None = None,
 ) -> Session:
     """Return a live window: the open one if there is one, else open one if
     business hours allow it.
@@ -436,7 +444,8 @@ def ensure_pod(
     if candidates is None:
         candidates, network_volume_id = placement()
     limit = settings.max_pod_opens_per_day if max_opens_per_day is None else max_opens_per_day
-    opened = queue.opens_today(since=hours.day_start(now).timestamp())
+    opens = opens or PodOpenLedger()
+    opened = opens.count_since(hours.day_start(now).timestamp())
     if limit and opened >= limit:
         _log.warning("refused to open pod", extra={"reason": "daily opens cap", "opened_today": opened, "cap": limit})
         raise CostCeilingExceeded(
@@ -462,11 +471,9 @@ def ensure_pod(
                               "tier": candidates[0].label if candidates else None},
     )
     session = open_session(
-        window_end, name=name, candidates=candidates, network_volume_id=network_volume_id
+        window_end, name=name, candidates=candidates, network_volume_id=network_volume_id,
+        opens=opens,
     )
-    # Recorded before the caller does anything else with the session: a pod
-    # that exists but was never counted is one the daily cap cannot see.
-    queue.record_pod_open(session.pod_id)
     _log.info(
         "pod opened", extra={"pod_id": session.pod_id, "tier": session.tier_label,
                              "usd_per_hr": session.cost_per_hr, "window_end": session.window_end,

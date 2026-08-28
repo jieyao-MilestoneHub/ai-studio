@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from ai_studio.core.enums import MediaKind
-from ai_studio.llm.endpoint import ScriptedLlmClient
+from ai_studio.llm.scripted import ScriptedLlmClient
 from ai_studio.prompts import understanding as und
 
 REPO = Path(__file__).resolve().parents[2]

@@ -730,31 +730,6 @@ class JobQueue:
         ).fetchone()
         return int(row["n"])
 
-    def record_pod_open(self, pod_id: str, *, when: float | None = None) -> None:
-        """Note that a pod was created. Called by whoever created it.
-
-        Recorded at *open* rather than at close, because the cap it feeds
-        exists to stop a second pod being created — by which point a close has
-        not happened yet. The spend ledger records the other half at close.
-        """
-        self._conn.execute(
-            "INSERT INTO pod_opens (pod_id, opened_at) VALUES (?, ?)",
-            (pod_id, time.time() if when is None else when),
-        )
-
-    def opens_today(self, *, since: float | None = None) -> int:
-        """How many pods have been created since local midnight.
-
-        The backstop behind the monthly budget guard, for the failure the guard
-        cannot see: a worker that crashes and restarts in a loop would open a
-        fresh pod each time and every one of them is within budget on its own.
-        """
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM pod_opens WHERE opened_at >= ?",
-            (_day_start_ts() if since is None else since,),
-        ).fetchone()
-        return int(row["n"])
-
     def release_running(self, reason: str) -> int:
         """Return every `running` job to `parsed`. Call at window open.
 
