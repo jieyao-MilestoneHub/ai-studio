@@ -365,8 +365,8 @@ class _RuntimeHost:
         if not live.provisioned:
             # A fresh pod: start deploy/pod_setup.sh on it (the step that used
             # to be a person with a terminal), then wait for the node pack.
-            console.print(f"  provisioning {live.pod_id} (pod_setup.sh over ssh)")
-            sess.provision(live)
+            console.print(f"  provisioning {live.pod_id} (pod_setup.sh + pod_setup.d over ssh)")
+            sess.provision(live, extras=fun_paths.pod_setup_extras())
             sess.mark_provisioned()
         waited = sess.wait_ready(live)
         console.print(f"  ComfyUI ready after {waited:.0f}s")

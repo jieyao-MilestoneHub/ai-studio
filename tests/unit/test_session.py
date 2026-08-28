@@ -545,3 +545,32 @@ def test_the_reaper_decision_is_still_the_old_string_with_fields(
     decision = sess.close_if_idle(name="w", hold=True)
     assert "held: work pending" in decision  # the contract every caller relies on
     assert decision.action == "held" and decision.pod_id == "p1" and decision.grace == 10_000
+
+
+def test_provision_ships_extras_into_pod_setup_d(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A caller's extension scripts go up before the setup script runs, to
+    the directory its last step walks; anything that is not a plain *.sh is
+    refused rather than quietly skipped."""
+    from pydantic import SecretStr
+
+    deposited: list[tuple[str, str]] = []
+    monkeypatch.setattr(sess, "_runpodctl", lambda *a: {"ip": "1.2.3.4", "port": "22"})
+    monkeypatch.setattr(sess, "_ssh_deposit", lambda h, p, body, *, remote_path: deposited.append((remote_path, body)))
+
+    class _Proc:
+        returncode, stdout, stderr = 0, "started", ""
+
+    monkeypatch.setattr(sess, "_ssh", lambda argv, *, stdin, timeout_s: _Proc())
+    monkeypatch.setattr(sess, "get_settings", lambda: type("S", (), {"hf_token": SecretStr("t")})())
+    script, server, ext = tmp_path / "pod_setup.sh", tmp_path / "srv.py", tmp_path / "face_repair.sh"
+    script.write_text("echo\n", encoding="utf-8")
+    server.write_text("print()\n", encoding="utf-8")
+    ext.write_text("exit 0\n", encoding="utf-8")
+    live = sess.Session.__new__(sess.Session)
+    live.__dict__.update(pod_id="p1", vram_gb=24)
+
+    sess.provision(live, script=script, inference_script=server, extras=[ext])
+    assert deposited == [("/workspace/inference_server.py", "print()\n"), ("/workspace/pod_setup.d/face_repair.sh", "exit 0\n")]
+
+    with pytest.raises(PodError):
+        sess.provision(live, script=script, inference_script=server, extras=[tmp_path / "nope.py"])

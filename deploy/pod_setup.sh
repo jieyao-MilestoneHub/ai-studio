@@ -58,11 +58,12 @@ log "card has ${VRAM_GB}GB -> ${QUANT} weights"
 # here. The marker is per weight set (int8 vs fp8) and per version of this
 # script's provisioning steps: bump SETUP_VERSION when they change and the
 # next pod re-provisions instead of trusting a stale volume. Bumped to 2 when
-# the three understanding models (moondream3/Qwen3-Omni-Captioner/Tarsier2)
-# were added, so a volume provisioned before that gets them on its next open.
-# Bumped to 3 when gpt-oss-20b (/himonkey) joined the download set, 4 when
-# Qwen2-Audio and Qwen2.5-VL replaced Qwen3-Omni-Captioner and Tarsier2.
-SETUP_VERSION=5   # 5 = Impact-Pack FaceDetailer for /短劇 keyframes (best-effort)
+# the three understanding models were added, 3 when gpt-oss-20b joined the
+# download set, 4 when Qwen2-Audio and Qwen2.5-VL replaced Qwen3-Omni-Captioner
+# and Tarsier2, 5 when the FaceDetailer install moved out of this script into
+# a host-shipped extension (step 7) -- extensions run on every open and are
+# not gated by this marker, so they never need a bump.
+SETUP_VERSION=5
 MARKER="/workspace/.ai-studio-setup-v${SETUP_VERSION}-${QUANT}"
 if [ -f "$MARKER" ] && [ -d "$CU/custom_nodes/ComfyUI-MiniMax-H3-Turbo" ]; then
   log "volume already provisioned ($MARKER); skipping download and install"
@@ -251,7 +252,7 @@ dl comfyanonymous/flux_text_encoders t5xxl_fp8_e4m3fn.safetensors "$M/text_encod
 # against several such repackagings, all serving the same file with no auth.
 dl Comfy-Org/z_image split_files/vae/ae.safetensors "$M/vae" "$M/vae/ae.safetensors"
 
-# The three understanding models (/說圖 /說音 /說影), each a whole repo rather
+# The three understanding models , each a whole repo rather
 # than one file -- see `dl_repo`'s comment. Qwen3-Omni-Captioner is
 # downloaded at full precision and quantized to 4-bit on load by
 # inference_server.py's bitsandbytes config, not pre-quantized here: this
@@ -269,11 +270,11 @@ dl_repo moondream/moondream3-preview
 # ~17GB each, Apache-2.0, ungated.
 dl_repo Qwen/Qwen2-Audio-7B-Instruct
 dl_repo Qwen/Qwen2.5-VL-7B-Instruct
-# /himonkey's gpt-oss-20b, the fourth backend of inference_server.py. Its
+# gpt-oss-20b, the fourth backend of inference_server.py. Its
 # repo is 41GB (📏), the sharded MXFP4 weights plus original/ and metal/, loaded by
 # `GptOssChatBackend.load()` from HF_HOME. Staged here for the same reason
 # the three above are: a `from_pretrained` that has to pull the weights from the
-# Hub inside the first /himonkey request's background thread would surface
+# Hub inside the first chat request's background thread would surface
 # as a 10-minute silent stall (or an ENOSPC nobody sees) rather than as a
 # failed setup step -- exactly what the headroom check above exists for.
 dl_repo openai/gpt-oss-20b
@@ -403,62 +404,6 @@ for n in need:
 sys.exit(1 if missing else 0)
 ' || die "required H3 nodes are not registered"
 
-# ── 5b. FaceDetailer for /短劇 keyframes -- BEST EFFORT, never fatal ───────
-# ComfyUI-Impact-Pack (FaceDetailer) + Impact-Subpack (UltralyticsDetectorProvider)
-# and one bbox model. Used only by workflows/flux_dev_i2i_face.json, and only
-# when providers/flux.py sees both nodes in /object_info; without them a drama
-# renders plain image-to-image keyframes and records "face_repair: skipped".
-# So nothing in this block may `die`: a detailer that fails to install must
-# not take H3, Flux, the understanding models and chat down with it. Every
-# step logs its outcome instead. The pip install goes through the venv, like
-# everything else ComfyUI loads (trap 2 in this file's header).
-face_repair_setup() {
-  cd "$CU/custom_nodes" || { log "  face-repair: no custom_nodes dir, skipping"; return 0; }
-  for repo in ltdrdata/ComfyUI-Impact-Pack ltdrdata/ComfyUI-Impact-Subpack; do
-    name="${repo##*/}"
-    if [ -d "$name/.git" ]; then
-      log "  face-repair: $name already present"
-    elif git clone --depth 1 --quiet "https://github.com/$repo" 2>/dev/null; then
-      log "  face-repair: cloned $name"
-    else
-      log "  face-repair: WARNING could not clone $repo; FaceDetailer stays off"
-      return 0
-    fi
-    if [ -f "$name/requirements.txt" ]; then
-      "$CU/.venv-cu128/bin/pip" install -q -r "$name/requirements.txt" 2>&1 \
-        | grep -viE 'warning|notice' | tail -2 \
-        || log "  face-repair: WARNING pip install for $name reported errors"
-    fi
-  done
-  mkdir -p "$M/ultralytics/bbox"
-  if [ ! -f "$M/ultralytics/bbox/face_yolov8m.pt" ]; then
-    hf download Bingsu/adetailer face_yolov8m.pt --local-dir "$M/ultralytics/bbox" \
-      > /workspace/dl-logs/face_yolov8m.pt.log 2>&1 \
-      && log "  face-repair: downloaded face_yolov8m.pt" \
-      || log "  face-repair: WARNING face_yolov8m.pt download failed (see dl-logs)"
-  fi
-  # Impact-Pack registers nodes on ComfyUI start; restart so /object_info
-  # reflects them. Same launch line as step 4, same flags.
-  pkill -f 'main.py --listen'; sleep 3
-  cd "$CU" || return 0
-  # shellcheck disable=SC2086
-  nohup "$PY" main.py --listen 0.0.0.0 --port 8188 --enable-cors-header \
-    $EXTRA --reserve-vram 0.7 > /workspace/comfy.log 2>&1 &
-  for i in $(seq 1 60); do
-    sleep 5
-    curl -sf -m 5 http://127.0.0.1:8188/system_stats >/dev/null 2>&1 && break
-  done
-  curl -s -m 30 http://127.0.0.1:8188/object_info | "$PY" -c '
-import json, sys
-info = json.load(sys.stdin)
-for n in ("FaceDetailer", "UltralyticsDetectorProvider"):
-    print("[setup]   face-repair " + ("OK  " if n in info else "MISS") + " " + n)
-' || log "  face-repair: WARNING could not read /object_info after restart"
-  return 0
-}
-log "installing FaceDetailer for /短劇 (best effort)"
-face_repair_setup || log "  face-repair: WARNING setup returned an error; continuing without it"
-
 # ── 6. start the understanding server -- a second, separate process ───────
 # deploy/inference_server.py is deposited at /workspace/inference_server.py
 # by runtime.session.provision() *before* this script runs -- see that
@@ -501,6 +446,22 @@ for i in $(seq 1 30); do
 done
 curl -sf -m 5 http://127.0.0.1:8189/healthz >/dev/null 2>&1 \
   || die "inference server did not answer /healthz -- check /workspace/inference.log"
+
+# ── 7. host-shipped extensions: /workspace/pod_setup.d/*.sh -- BEST EFFORT ─
+# Deposited by `runtime.session.provision(extras=...)` before this script
+# runs: whatever the caller wants on the pod that this script has no
+# business knowing about (a node pack for one workflow, a model for one
+# feature). Run on every open, not gated by FAST_PATH or the marker, so each
+# must be idempotent; and nothing in one may `die` -- a failed extension is
+# logged and the pod stays usable for everything above. They inherit this
+# script's paths through the environment.
+export CU M PY EXTRA VRAM_GB QUANT
+export -f log
+for ext in /workspace/pod_setup.d/*.sh; do
+  [ -f "$ext" ] || continue
+  log "extension: $(basename "$ext")"
+  bash "$ext" || log "  extension $(basename "$ext") failed (best effort); continuing"
+done
 
 touch "$MARKER"
 log "done. quantisation=${QUANT} vram=${VRAM_GB}GB marker=$MARKER"

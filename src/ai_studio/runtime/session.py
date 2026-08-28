@@ -30,6 +30,7 @@ import json
 import logging
 import subprocess
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -807,7 +808,7 @@ def _ssh_deposit(host: str, port: str, body: str, *, remote_path: str) -> None:
     argv = [
         "ssh", "-i", str(SSH_KEY), "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", "-p", port, f"root@{host}",
-        f"cat > {remote_path}",
+        f"mkdir -p {remote_path.rsplit('/', 1)[0]} && cat > {remote_path}",
     ]
     deadline = time.monotonic() + PROVISION_WAIT_S
     last = ""
@@ -830,8 +831,14 @@ def provision(
     *,
     script: Path = SETUP_SCRIPT,
     inference_script: Path = INFERENCE_SERVER_SCRIPT,
+    extras: Sequence[Path] = (),
 ) -> None:
     """Start `deploy/pod_setup.sh` on the pod, detached, over SSH.
+
+    `extras` are the caller's own `*.sh` files, deposited to
+    `/workspace/pod_setup.d/` first and run by the setup script's last step,
+    best effort -- what a caller wants on the pod that this package has no
+    business knowing about.
 
     This is the step that used to be a person with a terminal. The worker
     opens a pod and then has to wait for it; nobody else is there to run the
@@ -859,6 +866,13 @@ def provision(
         host, port, inference_script.read_text(encoding="utf-8"),
         remote_path="/workspace/inference_server.py",
     )
+    for extra in extras:
+        if extra.suffix != ".sh" or "/" in extra.name or not extra.is_file():
+            raise PodError(f"pod_setup.d extension must be an existing *.sh file, got {extra}")
+        _ssh_deposit(
+            host, port, extra.read_text(encoding="utf-8"),
+            remote_path=f"/workspace/pod_setup.d/{extra.name}",
+        )
 
     # The HF token rides as the first stdin line, ahead of the script body,
     # and is read into the environment `nohup` inherits: it never lands on
