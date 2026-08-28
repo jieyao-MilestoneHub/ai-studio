@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -93,6 +93,34 @@ class Settings(BaseSettings):
         "would defeat the point entirely, so this MUST be set before "
         "train.py writes or reads any adapter weights for real.",
     )
+    transcript_store_uri: str = Field(
+        default="file://./transcripts/",
+        alias="TWIN_TRANSCRIPT_STORE_URI",
+        description="INTERVIEW.md §6.3/§8 I-D, SPEC.md D32: where raw "
+        "session recordings and post-processed transcript *files* live "
+        "(retained until §7's quality check passes) — MUST NOT enter "
+        "cross-cloud storage, since no consent/anonymization flow is "
+        "implemented. This field alone does NOT enforce that for `Fragment` "
+        "records: interview-transcript blocks become `SourceClass.SELF_REPORT` "
+        "`Fragment.content` verbatim (SPEC.md D26), and those flow through "
+        "the general `fragment_store_uri`/`write_fragments_jsonl` path — the "
+        "actual Fragment-level guardrail is `ingest.store.write_fragments_"
+        "jsonl` refusing any SELF_REPORT fragment on a non-file:// URI, not "
+        "this setting. Unlike fragment_store_uri/checkpoint_store_uri (any "
+        "fsspec URI), this field's *scheme* itself is constrained, not just "
+        "its default value — see the field_validator below.",
+    )
+
+    @field_validator("transcript_store_uri")
+    @classmethod
+    def _transcript_store_must_stay_local(cls, value: str) -> str:
+        if not value.startswith("file://"):
+            raise ValueError(
+                f"TWIN_TRANSCRIPT_STORE_URI MUST be a file:// URI (INTERVIEW.md "
+                f"§6.3/§8 I-D: transcripts and audio MUST NOT enter cross-cloud "
+                f"storage) — got {value!r}"
+            )
+        return value
 
 
 _settings: Settings | None = None
