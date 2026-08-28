@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from ai_studio.benchmark.records import msg_for, render_record
 from ai_studio.config.settings import get_settings
 from ai_studio.core.chat_spec import ChatRequest
 from ai_studio.core.enums import GenMode, MediaKind
@@ -334,16 +335,12 @@ async def render_clip(
     dest = files_dir / f"{job.token}.mp4"
     asset = await provider.fetch(clip_job, dest)
     _log.info(
-        "fetched clip",
-        extra={
-            "stage": "render",
-            "seconds": round(time.monotonic() - _submitted, 1),
-            "polls": _polls,
-            "cost_usd": asset.cost_usd,
-            "vram_gb": asset.peak_vram_gb,
-            "frames": frames,
-            "gpu_tier": job.gpu_tier,
-        },
+        msg_for("video"),
+        extra=render_record(
+            "video", seconds=time.monotonic() - _submitted, polls=_polls,
+            cost_usd=asset.cost_usd, vram_gb=asset.peak_vram_gb, gpu_tier=job.gpu_tier,
+            frames=frames,
+        ),
     )
     return dest
 
@@ -392,15 +389,11 @@ async def render_image(
     dest = files_dir / f"{job.token}.{caps.output_format}"
     asset = await provider.fetch(image_job, dest)
     _log.info(
-        "fetched image",
-        extra={
-            "stage": "render",
-            "seconds": round(time.monotonic() - _submitted, 1),
-            "polls": _polls,
-            "cost_usd": asset.cost_usd,
-            "vram_gb": asset.peak_vram_gb,
-            "gpu_tier": job.gpu_tier,
-        },
+        msg_for("image"),
+        extra=render_record(
+            "image", seconds=time.monotonic() - _submitted, polls=_polls,
+            cost_usd=asset.cost_usd, vram_gb=asset.peak_vram_gb, gpu_tier=job.gpu_tier,
+        ),
     )
     return dest
 

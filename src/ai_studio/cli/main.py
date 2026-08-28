@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import time
 from datetime import datetime
@@ -236,6 +237,55 @@ def archive(
         if len(result.plan.members) > 20:
             console.print(f"  ... {len(result.plan.members) - 20} more")
     console.print(f"[green]{result.summary()}[/green]")
+
+
+@app.command("bench")
+def bench(
+    month: str | None = typer.Option(None, "--month", help="YYYY-MM; default this month."),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw report instead of a table."),
+) -> None:
+    """What each GPU tier has measured this month, and what the open pod rents for.
+
+    Reads runs/benchmark/<month>.json (folded daily by `archive` from real
+    renders only) and runs/.session.json. Every number here is 📏 measured
+    on our own hardware; nothing is promoted to docs/ without a person
+    reading this first (CLAUDE.md, "Number honesty").
+    """
+    from ai_studio.benchmark import live_rate, month_report
+    from ai_studio.runtime.session import load_state
+
+    settings = get_settings()
+    rate = live_rate(load_state())
+    report = month_report(Path(settings.runs_dir), month)
+    if as_json:
+        console.print_json(json.dumps({"live": rate.__dict__ if rate else None, "report": report}))
+        return
+
+    if rate:
+        console.print(
+            f"[green]open[/green] {rate.tier}  ${rate.usd_per_hr:.3f}/hr  {rate.vram_gb}GB  "
+            f"{rate.datacenter}  since {rate.since}"
+        )
+    else:
+        console.print("no pod open")
+    if not report:
+        console.print("no benchmark report yet (nothing real has rendered and been archived)")
+        return
+
+    table = Table(title=f"benchmark {report['month']}  days={len(report.get('days_included', []))}")
+    for col in ("kind/gpu_tier", "n", "s mean", "$ mean", "VRAM GB", "frames/s"):
+        table.add_column(col, justify="right" if col != "kind/gpu_tier" else "left")
+    for key, g in sorted(report.get("groups", {}).items()):
+        table.add_row(
+            key, str(g.get("count", 0)),
+            _fmt(g.get("seconds_mean"), 1), _fmt(g.get("cost_usd_mean"), 3),
+            _fmt(g.get("vram_gb_mean"), 1), _fmt(g.get("frames_per_s_mean"), 2),
+        )
+    console.print(table)
+
+
+def _fmt(value: object, places: int) -> str:
+    return "-" if not isinstance(value, int | float) else f"{value:.{places}f}"
 
 
 @app.command("preflight")

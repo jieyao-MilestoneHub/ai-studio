@@ -44,6 +44,11 @@ from typing import IO, Any
 from zoneinfo import ZoneInfo
 
 LOCAL_TZ = ZoneInfo("Asia/Taipei")
+
+HOT_SUBDIRS = ("sessions", "pods")
+"""Subdirectories of the log dir that hold per-session/per-pod records
+rather than daily JSONL: never archived by day, never scanned for render
+records."""
 """The zone operators read and the timers are written in (docs/schedule.md).
 JSONL carries both `ts` (UTC) and `local`; file names use the local day."""
 

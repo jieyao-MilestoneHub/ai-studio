@@ -110,6 +110,7 @@ layers = [
     "ai_studio.llm",
     "ai_studio.storage",
     "ai_studio.media",
+    "ai_studio.benchmark",
     "ai_studio.config",
     "ai_studio.core",
 ]

@@ -245,8 +245,8 @@ Three gates, cheapest first, all of them before a pod exists:
    indistinguishable from "the ladder is empty", which *is* worth retrying.
 2. **Opens per day.** `AI_STUDIO_MAX_POD_OPENS_PER_DAY` (default 2: the day's
    window, plus one more if the reaper closed it and a later request needs the
-   shop reopened), counted against `pod_opens` in the queue database on the
-   Asia/Taipei day. This is the failure the monthly guard cannot see — a
+   shop reopened), counted in `runs/.pod_opens.json` (`runtime.opens.PodOpenLedger`) on
+   the Asia/Taipei day. This is the failure the monthly guard cannot see — a
    worker that crash-loops opens a fresh pod on every restart, and every one
    of them is individually inside budget.
 3. **Monthly budget guard.** `runtime.budget.MonthlyBudgetGuard` reads

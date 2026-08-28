@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from ai_studio.benchmark import report as bench
 from ai_studio.pipeline.queue import JobQueue
 from ai_studio.storage import archive as arc
 
@@ -204,7 +205,7 @@ def test_update_benchmark_report_folds_real_renders_by_kind_and_tier(tmp_path: P
             {"stage": "claim", "msg": "claimed", "kind": "video", "gpu_tier": "RTX 4090/COMMUNITY"},
         ],
     )
-    folded = arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
+    folded = bench.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
     assert folded == {"2026-08": 1}
 
     payload = json.loads((runs_dir / "benchmark" / "2026-08.json").read_text(encoding="utf-8"))
@@ -221,8 +222,8 @@ def test_update_benchmark_report_folds_each_day_at_most_once(tmp_path: Path) -> 
     log_dir, runs_dir = tmp_path / "logs", tmp_path / "runs"
     _write_jsonl(log_dir / "worker" / "2026-08-20.jsonl", [_CLIP_RECORD])
 
-    first = arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
-    second = arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
+    first = bench.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
+    second = bench.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
 
     assert first == {"2026-08": 1}
     assert second == {}, "the day is already in days_included; nothing new to fold"
@@ -237,10 +238,10 @@ def test_a_months_total_survives_its_source_log_being_pruned(tmp_path: Path) -> 
     log_dir, runs_dir = tmp_path / "logs", tmp_path / "runs"
     jsonl = log_dir / "worker" / "2026-08-20.jsonl"
     _write_jsonl(jsonl, [_CLIP_RECORD])
-    arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
+    bench.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
 
     jsonl.unlink()  # what prune_hot would have done weeks later
-    folded = arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
+    folded = bench.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY)
 
     assert folded == {}
     group = json.loads((runs_dir / "benchmark" / "2026-08.json").read_text(encoding="utf-8"))["groups"]
@@ -251,7 +252,7 @@ def test_update_benchmark_report_dry_run_writes_nothing(tmp_path: Path) -> None:
     log_dir, runs_dir = tmp_path / "logs", tmp_path / "runs"
     _write_jsonl(log_dir / "worker" / "2026-08-20.jsonl", [_CLIP_RECORD])
 
-    folded = arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY, dry_run=True)
+    folded = bench.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY, dry_run=True)
 
     assert folded == {"2026-08": 1}
     assert not (runs_dir / "benchmark").exists()
@@ -261,7 +262,7 @@ def test_update_benchmark_report_ignores_todays_still_open_file(tmp_path: Path) 
     log_dir, runs_dir = tmp_path / "logs", tmp_path / "runs"
     _write_jsonl(log_dir / "worker" / f"{TODAY.isoformat()}.jsonl", [_CLIP_RECORD])
 
-    assert arc.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY) == {}
+    assert bench.update_benchmark_report(log_dir=log_dir, runs_dir=runs_dir, today=TODAY) == {}
 
 
 def test_run_archive_folds_benchmarks_from_the_same_jsonl_it_tars(tmp_path: Path, monkeypatch) -> None:
