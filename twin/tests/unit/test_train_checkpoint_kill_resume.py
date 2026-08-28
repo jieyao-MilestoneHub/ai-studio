@@ -82,9 +82,22 @@ def _build_toy_model_dir(tmp_path: Path, subdir: str) -> Path:
     fast_tokenizer = PreTrainedTokenizerFast(
         tokenizer_object=tokenizer, unk_token="[UNK]", pad_token="[PAD]", bos_token="[BOS]", eos_token="[EOS]"
     )
+    # Assistant turns are wrapped in {% generation %}/{% endgeneration %} so
+    # `train.run.main`'s `assistant_only_loss=True` (twin/src/twin/train/loss_mask.py)
+    # has real generation markers to resolve against — without them,
+    # `verify_assistant_masking`'s pre-flight check (and TRL's own internal
+    # resolution) would raise for this toy tokenizer, since a from-scratch
+    # custom template never matches any of TRL's known patchable templates.
     fast_tokenizer.chat_template = (
         "{% for message in messages %}"
+        "{% if message['role'] == 'assistant' %}"
+        "assistant: {% generation %}"
+        "{% if message['tool_calls'] %}call {{ message['tool_calls'][0]['function']['name'] }}"
+        "{% else %}{{ message['content'] if message['content'] else 'none' }}{% endif %}"
+        "{% endgeneration %}\n"
+        "{% else %}"
         "{{ message['role'] }}: {{ message['content'] if message['content'] else '' }}\n"
+        "{% endif %}"
         "{% endfor %}"
         "{% if add_generation_prompt %}assistant: {% endif %}"
     )
