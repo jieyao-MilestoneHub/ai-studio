@@ -51,6 +51,8 @@ def test_check_flags_the_ratio_and_the_caps() -> None:
     many = [tr.choose(TransitionReason.TIME_PASSING)] * 3 + [tr.choose(TransitionReason.DEFAULT)]
     findings = tr.check(many)
     assert [f.rule_id for f in findings] == ["T-RATIO"] and findings[0].severity is Severity.WARN
+    one = [tr.choose(TransitionReason.TIME_PASSING)] + [tr.choose(TransitionReason.DEFAULT)] * 8
+    assert tr.check(one) == []  # one motivated transition is always allowed
     wipe = tr.choose(TransitionReason.TOPIC_CHANGE, tr.Evidence(occlusion=True))
     over = tr.check([wipe] * 4 + [tr.choose(TransitionReason.DEFAULT)] * 40)
     assert any(f.rule_id == "T-CAP-WIPE" and f.severity is Severity.FAIL for f in over)

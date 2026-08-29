@@ -1,0 +1,126 @@
+{
+ "fps": 24,
+ "pacing": {
+  "min_s": 2.0,
+  "warn_s": 8.0,
+  "fail_s": 12.5,
+  "cv_floor": 0.11,
+  "max_consecutive_slow": 1,
+  "total_band_s": [
+   55,
+   65
+  ]
+ },
+ "segments": [
+  {
+   "segment_id": "sg0",
+   "shot_id": "sh1",
+   "scene_id": "sc0",
+   "subcut_index": 0,
+   "intended_duration_s": 2.5,
+   "clip": "1"
+  },
+  {
+   "segment_id": "sg1",
+   "shot_id": "sh1",
+   "scene_id": "sc0",
+   "subcut_index": 1,
+   "intended_duration_s": 4.791666666666667,
+   "clip": "1"
+  },
+  {
+   "segment_id": "sg2",
+   "shot_id": "sh2",
+   "scene_id": "sc0",
+   "subcut_index": 0,
+   "intended_duration_s": 5.5,
+   "clip": "2"
+  },
+  {
+   "segment_id": "sg3",
+   "shot_id": "sh2",
+   "scene_id": "sc0",
+   "subcut_index": 1,
+   "intended_duration_s": 4.625,
+   "clip": "2"
+  },
+  {
+   "segment_id": "sg4",
+   "shot_id": "sh3",
+   "scene_id": "sc0",
+   "subcut_index": 0,
+   "intended_duration_s": 8.708333333333334,
+   "clip": "3"
+  },
+  {
+   "segment_id": "sg5",
+   "shot_id": "sh4",
+   "scene_id": "sc0",
+   "subcut_index": 0,
+   "intended_duration_s": 6.0,
+   "clip": "4"
+  },
+  {
+   "segment_id": "sg6",
+   "shot_id": "sh4",
+   "scene_id": "sc0",
+   "subcut_index": 1,
+   "intended_duration_s": 5.541666666666667,
+   "clip": "4"
+  },
+  {
+   "segment_id": "sg7",
+   "shot_id": "sh5",
+   "scene_id": "sc0",
+   "subcut_index": 0,
+   "intended_duration_s": 4.5,
+   "clip": "5"
+  },
+  {
+   "segment_id": "sg8",
+   "shot_id": "sh5",
+   "scene_id": "sc0",
+   "subcut_index": 1,
+   "intended_duration_s": 5.625,
+   "clip": "5"
+  },
+  {
+   "segment_id": "sg9",
+   "shot_id": "sh6",
+   "scene_id": "sc0",
+   "subcut_index": 0,
+   "intended_duration_s": 8.0,
+   "clip": "6"
+  }
+ ],
+ "transitions": [
+  {
+   "after_clip": "1",
+   "reason": "default"
+  },
+  {
+   "after_clip": "2",
+   "reason": "default"
+  },
+  {
+   "after_clip": "3",
+   "reason": "time_passing"
+  },
+  {
+   "after_clip": "4",
+   "reason": "default"
+  },
+  {
+   "after_clip": "5",
+   "reason": "default"
+  }
+ ],
+ "cues": [
+  {
+   "cue_id": "cue0",
+   "segment_id": "sg4",
+   "text": "明天見 🎉",
+   "color_key": "w"
+  }
+ ]
+}
