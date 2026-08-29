@@ -1,10 +1,13 @@
 # `/短劇` — a one-minute, six-shot drama with a stable lead
 
-`/短劇 <一句故事前提>` turns a one-line premise into a ~60 s story with one
-recurring character: gpt-oss-20b writes the screenplay, Flux.1-dev paints a
-character sheet and six keyframes, MiniMax H3 animates each keyframe for ~10 s,
-and ffmpeg levels and hard-cuts the six clips together. One LINE video message
-comes back.
+`/短劇 <一句故事前提>` turns a one-line premise into a ~56 s story with one
+recurring character: gpt-oss-20b writes the screenplay into a fixed six-beat
+template (hook / setup / conflict / turn / payoff / cliffhanger), Flux.1-dev
+paints a character sheet and six keyframes, MiniMax H3 animates each keyframe
+for 7–12 s -- cutting to a second framing inside the longer clips itself --
+and ffmpeg levels the clips and splices them with the timeline's numbers:
+hard cuts with a short audio crossfade, a dissolve where the screenplay says
+time passed, a fade in and out. One LINE video message comes back.
 
 > **Every number on this page is `[speculative]` until the first real drama has
 > run.** The per-step figures come from the single-job measurements in
@@ -38,19 +41,58 @@ real drama shows whether the keyframe chain alone holds the face.
       │
       ▼  worker.prepare()  —  gpt-oss-20b resident, json_only, 3 calls
    Screenplay  { title, logline, style, anchor{name, appearance, wardrobe, voice},
-                 6 × shot{scene, framing, action, camera, dialogue, cut_reason} }
+                 world{location, light, signature_prop},
+                 6 × shot{beat, frames, scene, cut_reason,
+                          1-2 × sub_shot{framing, action, camera, line}} }
       │        stored in jobs.prompt_json; ScreenplayError ⇒ job FAILED + LINE reply
       ▼  render_drama()   —  runs/drama/<token>/state.json after every artifact
+   0  plan       plan.json (segments, cut reasons, cues) → render.timeline →
+                 offsets.json: the only place absolute time is computed   (CPU, free)
    1  character  Flux T2I ×2  front + three-quarter, 864×480     ┐ make_room_for(IMAGE)
-   2  keyframes  Flux i2i ×6  from character/front.png, denoise 0.55,  │ once
-                              anchor verbatim, +FaceDetailer if present ┘
-   3  clips      H3 I2V ×6    first_frame = keyframe_i, 243 frames  ┐ make_room_for(VIDEO)
-                              prompt = h3_prompt(shot) with the anchor ┘ once
+   2  keyframes  Flux i2i ×6  from character/front.png, denoise 0.55  │ once
+                              (0.70 when the shot opens wide), anchor + │
+                              world verbatim, +FaceDetailer if present ┘
+   3  clips      H3 I2V ×6    first_frame = keyframe_i, 175-277 frames ┐ make_room_for(VIDEO)
+                              prompt = h3_prompt(shot): 1-2 PromptShots ┘ once
    4  level      ffmpeg loudnorm, two-pass, linear=true, per clip     (CPU)
-   5  assemble   ffmpeg concat (libx264 crf 18, aac, +faststart)      (CPU)
+   5  assemble   ffmpeg filter_complex from offsets.json: concat / xfade,
+                 acrossfade at every clip boundary, fade in/out
+                 (libx264 crf 18, aac, +faststart)                    (CPU)
       │
       ▼  files/<token>.mp4 → poster → LINE video message, caption 🎭《title》logline
 ```
+
+**The rhythm is a template.** `core/drama_spec.BEAT_TEMPLATE` fixes six
+beats of unequal length on H3's 17k+5 frame grid, and which of them carry a
+second sub-shot; the screenwriter fills the slots and cannot change them.
+Six equal ten-second shots -- the first dramas -- read as a slideshow:
+`[speculative]` numbers, all of them, until a real run is watched.
+
+| shot | beat | frames | seconds | sub-shots | H3 cuts at |
+|---|---|---|---|---|---|
+| 1 | hook | 175 | 7.3 | 2 | 2.5 s (the first cut is the hook) |
+| 2 | setup | 243 | 10.1 | 2 | 5.5 s |
+| 3 | conflict | 209 | 8.7 | 1 | — |
+| 4 | turn | 277 | 11.5 | 2 | 6.0 s (the one push-in lives here) |
+| 5 | payoff | 243 | 10.1 | 2 | 4.5 s |
+| 6 | cliffhanger | 192 | 8.0 | 1 | — |
+
+1339 frames = 55.8 s before dissolves; ten segments; shot-length CV 0.155
+against the upstream kit's 0.11 metronome floor. Framings must alternate
+across all ten sub-shots (a closed vocabulary: wide, medium, medium
+close-up, close-up, over-the-shoulder, two-shot), the anchor and the world
+bible are pasted verbatim into every keyframe and H3 prompt, and `push_in`
+is allowed once, on the turn. All of that is `Screenplay`'s validator, so a
+screenplay that breaks it fails at conversion, not on the pod.
+
+**Cuts mean something.** `cut_reason` on a shot is what the cut *into* it
+means; `ai_studio.editing.transitions` maps it to an effect and downgrades
+anything it has no evidence for -- with generated clips, only
+`time_passing → dissolve (0.5 s)` survives; everything else is a hard cut
+with a 0.125 s audio crossfade so the two independently generated
+soundtracks do not jump at the splice. `AI_STUDIO_DRAMA_SUBSHOTS=false`
+collapses every shot to one held framing: the hedge for a model that
+ignores `cut_at_s` under image-to-video, which nobody has measured yet.
 
 **Stage order is checkpoint order.** All eight Flux stills run before the first
 H3 clip, so ComfyUI swaps its resident checkpoint twice per drama, not twelve
@@ -64,6 +106,8 @@ graph scales and centre-crops the source to the bound size, so the keyframe
 
 ```
 state.json            DramaState: every artifact with path + sha256 + cost, face_repair, spent_usd
+plan.json             segments, clip boundaries with their cut reasons, caption cues -- no times
+offsets.json          the timeline: every segment's start/end, every boundary, clip offsets, total
 character/{front,three_quarter}.png
 keyframes/shot_{1..6}.png
 clips/shot_{1..6}.mp4
@@ -71,7 +115,9 @@ leveled/shot_{1..6}.mp4
 render_manifest.json  every ffmpeg argv, literally
 ```
 
-An artifact counts only if the file exists **and still hashes right**. A lease
+`plan.json` and `offsets.json` are rewritten on every call -- they are
+derived from the screenplay and cost nothing. An artifact counts only if
+the file exists **and still hashes right**. A lease
 end, a requeue or a worker restart re-renders exactly what is missing or
 corrupt: a drama that dies after clip 4 costs clips 5 and 6 on the next
 attempt. A finished drama re-invoked renders nothing. The state file is
@@ -111,6 +157,8 @@ still or clip, so the grace only ever measures a real gap.
 | `AI_STUDIO_MAX_DRAMAS_PER_DAY` | 3 | group-wide daily cap; 0 off |
 | `AI_STUDIO_DRAMA_FACE_REPAIR` | true | FaceDetailer on keyframe stills when the pod has it |
 | `AI_STUDIO_DRAMA_KEYFRAME_DENOISE` | 0.55 | i2i denoise for keyframes: lower keeps the face, higher frees the scene `[speculative]` |
+| `AI_STUDIO_DRAMA_KEYFRAME_DENOISE_WIDE` | 0.70 | the same for a shot that opens wide or as a two-shot: the sheet is a portrait and 0.55 keeps its framing `[speculative]` |
+| `AI_STUDIO_DRAMA_SUBSHOTS` | true | ask H3 to cut to the second framing inside a clip; off = one held framing per shot |
 | `AI_STUDIO_MAX_COST_USD` | 5.00 | the per-run ceiling the cost gate checks |
 
 ## Face repair on the pod
@@ -141,4 +189,12 @@ Record these in this file, then say 「可以測試了」:
 4. Per-clip H3 seconds from `state.json` timestamps, total `spent_usd`, and the
    ledger's figure for the session.
 5. The level jump at each cut with and without stage 4 — grammar §5.5 is ours
-   and unmeasured.
+   and unmeasured — and whether the 0.125 s audio crossfade hides what is left.
+6. **Does H3 honour `cut_at_s` under image-to-video?** Scrub shot 1 at 2.5 s
+   and shot 4 at 6.0 s. If the framing does not change there, set
+   `AI_STUDIO_DRAMA_SUBSHOTS=false` and note it here; the guide's multi-shot
+   examples are text-to-video.
+7. The wide keyframes (shots 2, 4, 6 in the dry-run fixture): did 0.70 leave
+   the portrait behind while keeping the face?
+8. The two shots replies' length in tokens: two sub-shots each is the
+   longest reply the screenwriter has been asked for.

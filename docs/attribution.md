@@ -38,11 +38,11 @@ file rather than a philosophy spread through the codebase.
 
 | ours | upstream | inherited | changed or dropped |
 |---|---|---|---|
-| `editing/transitions.py` | `src/longform_maker/transitions.py` | semantic table, frequency caps, exact durations, stinger binding | — |
+| `editing/transitions.py` (built) | `src/longform_maker/transitions.py` | semantic table, frequency caps, exact durations | stinger binding dropped (no SFX library); evidence downgrade always fires for generated clips; a hard cut carries a short audio crossfade of our own |
 | `editing/captions.py` | `word_captions.py`, `silent_vlog_maker/shorts_vertical.py` | ASS styles, `strip_emoji`, raise-on-unknown colour key, per-kind char limits | rebound from word timestamps to `segment_id`; no whisper alignment (our audio is model-native, not recorded narration) |
 | `editing/audio.py` | `audio_chain.py`, `music_engine.py` | dB ladder, sidechain ducking, two-pass loudnorm, `acrossfade` on splices, SFX budget | **entire voice chain dropped** — highpass, de-esser, compressor, room tone. H3 generates its own audio; there is no recorded narration to condition. Added cross-clip loudness normalisation, which upstream never needed. |
 | `editing/motion.py` | `fx_lib.py` | sub-pixel PIL AFFINE push-in, easing curves, the `zoompan` ban | gated on `source_kind` — generated clips already contain camera motion, so motion defaults off for them |
-| `editing/rhythm.py` | `pace_gate.py`, `teardown.py` | dual-mode wave, the caption-rate-exceeds-cut-rate finding | "visual event" widened to include sub-cuts, so fixed-length model clips can participate in fast pacing |
+| `editing/rhythm.py` (built: the duration band and CV floor; the dual-mode wave is not) | `pace_gate.py`, `teardown.py` | dual-mode wave, the caption-rate-exceeds-cut-rate finding | "visual event" widened to include sub-cuts, so fixed-length model clips can participate in fast pacing |
 | `editing/format_policy.py` | `delivery.py`, `constants.py` | raise-on-unknown platform, banned-filter list, lanczos-only | targets re-derived from H3's native canvases rather than from phone footage |
 | `gates/core.py` | `gate_core.py` | `make_assert`, shared report shape, `selftest_runner` | pydantic `GateReport` |
 | `gates/pace_gate.py`, `caption_gate.py`, `audio_gate.py` | same names | structural rules | — |

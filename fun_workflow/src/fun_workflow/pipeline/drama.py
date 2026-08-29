@@ -1,5 +1,5 @@
-"""Render a `/短劇`: one screenplay -> character sheet -> six keyframes -> six
-clips -> one levelled, concatenated minute.
+"""Render a `/短劇`: one screenplay -> plan and timeline -> character sheet ->
+six keyframes -> six clips -> one levelled, spliced minute.
 
 Why this is its own module rather than a loop around `render_clip`: a drama is
 **fourteen GPU submissions and two checkpoint swaps under one queue row**, and
@@ -18,6 +18,10 @@ the expensive mistakes are all about ordering and re-payment:
   submit, a time gate against the pod's lease -- a render that the lease would
   cut short is not started; the job goes back to the queue with its state
   intact and finishes in the next window.
+- **Time is computed once, before anything is paid for.** The screenplay's
+  segments and cut reasons become `plan.json`; `render.timeline` lays them
+  out into `offsets.json`; `media.assemble` splices the clips with exactly
+  those numbers. Nothing in this module adds seconds together.
 - **The face is re-anchored every shot.** Keyframes are image-to-image from the
   *character sheet* -- never from the previous shot's last frame -- with the
   anchor string verbatim in the prompt, so drift cannot accumulate across
@@ -43,17 +47,26 @@ from typing import Any
 
 from ai_studio import media
 from ai_studio.config.settings import get_settings
-from ai_studio.core.enums import GenMode, MediaKind
+from ai_studio.core import ids
+from ai_studio.core.enums import GenMode, MediaKind, TransitionReason
 from ai_studio.core.errors import AIStudioError, CostCeilingExceeded, DramaResume, ProviderError
 from ai_studio.core.image_provider_spec import ImageRequest
+from ai_studio.core.models import Segment
 from ai_studio.core.observability import utc_now_iso
 from ai_studio.core.provider_spec import ClipRequest
+from ai_studio.editing import transitions
 from ai_studio.pipeline.residency import make_room_for
+from ai_studio.render.timeline import Timeline, resolve_timeline, write_offsets
 from ai_studio.storage.base import sha256_file
 
 from fun_workflow.config.settings import get_fun_settings
-from fun_workflow.core.drama_spec import ArtifactRecord, DramaState, Screenplay
-from fun_workflow.pipeline.convert_worker import DEFAULT_DURATION_S, snap_frames
+from fun_workflow.core.drama_spec import (
+    FPS,
+    WIDE_FRAMINGS,
+    ArtifactRecord,
+    DramaState,
+    Screenplay,
+)
 from fun_workflow.pipeline.queue import Job
 from fun_workflow.prompts.drama import character_sheet_prompts, h3_prompt
 
@@ -106,17 +119,26 @@ async def render_drama(
 
     width, height = clip_caps.native_width, clip_caps.native_height
     fps = clip_caps.native_fps
-    frames = snap_frames(round(DEFAULT_DURATION_S * fps))
-    clip_s = frames / fps
+    if fps != FPS:
+        raise AIStudioError(f"the drama template is cut on a {FPS} fps grid; this provider renders {fps} fps")
+
+    # -- plan and timeline: every number in seconds, computed here once and
+    # written to disk before any submit. Cheap and deterministic, so it is
+    # rewritten on every call; resume semantics stay on the paid artifacts.
+    plan = build_plan(screenplay, token=job.token, subshots=fun.drama_subshots)
+    (run_dir / "plan.json").write_text(json.dumps(plan.as_json(), indent=2, ensure_ascii=False), encoding="utf-8")
+    timeline = resolve_timeline(plan.segments, plan.clip_of, plan.transitions, fps=fps)
+    write_offsets(run_dir, timeline)
 
     # -- cost gate: what is still to be spent, against the per-run ceiling
     still_to_render = _count_missing(state, len(screenplay.shots))
     if any(still_to_render.values()) and (state.character or state.keyframes or state.clips):
         _log.info("resuming drama", extra={"stage": "drama", "reason": str(still_to_render),
                                            "cost_usd": state.spent_usd})
-    estimate = (
-        still_to_render["images"] * float(image_caps.cost_per_image_usd)
-        + still_to_render["clips"] * float(clip_caps.estimated_cost_usd(clip_s))
+    estimate = still_to_render["images"] * float(image_caps.cost_per_image_usd) + sum(
+        float(clip_caps.estimated_cost_usd(s.duration_s))
+        for s in screenplay.shots
+        if not _fresh(state.clips.get(str(s.index)))
     )
     if estimate + state.spent_usd > settings.max_cost_usd:
         raise CostCeilingExceeded(
@@ -165,7 +187,10 @@ async def render_drama(
             continue
         _require_time(deadline, "image")
         _t0 = time.monotonic()
-        extra: dict[str, Any] = {"denoise": fun.drama_keyframe_denoise}
+        wide = shot.sub_shots[0].framing in WIDE_FRAMINGS
+        extra: dict[str, Any] = {
+            "denoise": fun.drama_keyframe_denoise_wide if wide else fun.drama_keyframe_denoise
+        }
         # Once this pod's face graph has failed, stop asking: a requeued drama
         # would otherwise pay the failed attempt again on every keyframe.
         if fun.drama_face_repair and not state.face_repair.startswith("failed"):
@@ -219,14 +244,14 @@ async def render_drama(
             continue
         _require_time(deadline, "video")
         _t0 = time.monotonic()
-        prompt = h3_prompt(shot, screenplay, duration_s=clip_s).render()
+        prompt = h3_prompt(shot, screenplay, subshots=fun.drama_subshots).render()
         clip_request = ClipRequest(
             shot_id=f"job{job.id}_shot{key}",
             mode=GenMode.I2V,
             prompt=prompt,
             width=width,
             height=height,
-            duration_s=clip_s,
+            duration_s=shot.duration_s,
             fps=fps,
             seed=_seed(job.id, "clip", key),
             first_frame_path=state.keyframes[key].path,
@@ -258,16 +283,21 @@ async def render_drama(
 
     output = Path(files_dir) / f"{job.token}.mp4"
     state.stage_finish("level", utc_now_iso())
-    state.stage_start("concat", utc_now_iso())
+    state.stage_start("assemble", utc_now_iso())
     if not _fresh(state.output):
         ordered = [Path(state.leveled[str(s.index)].path) for s in screenplay.shots]
-        argv = media.concat(ordered, output)
+        argv = media.assemble(
+            ordered, output,
+            boundaries=assemble_boundaries(timeline),
+            clip_offsets=timeline.clip_offsets,
+            total_s=timeline.total_s,
+        )
         state.ffmpeg_argv.append(argv)
         state.output = ArtifactRecord(path=str(output), sha256=sha256_file(output), created_at=utc_now_iso())
         save_state(run_dir, state)
-        _log.info("drama assembled", extra={"stage": "concat", "sha256": state.output.sha256[:12],
-                                            "cost_usd": state.spent_usd})
-        state.stage_finish("concat", utc_now_iso())
+        _log.info("drama assembled", extra={"stage": "assemble", "sha256": state.output.sha256[:12],
+                                            "cost_usd": state.spent_usd, "seconds": round(timeline.total_s, 2)})
+        state.stage_finish("assemble", utc_now_iso())
         save_state(run_dir, state)
         (run_dir / "render_manifest.json").write_text(
             json.dumps(
@@ -277,6 +307,9 @@ async def render_drama(
                     "job_id": job.id,
                     "spent_usd": state.spent_usd,
                     "face_repair": state.face_repair,
+                    "plan_gate": state.plan_gate,
+                    "timeline": {"total_s": timeline.total_s, "segments": len(timeline.segments),
+                                 "dissolves": sum(b.kind.value == "dissolve" for b in timeline.boundaries)},
                     "stages": {k: v.model_dump() for k, v in state.stages.items()},
                     "ffmpeg": state.ffmpeg_argv,
                 },
@@ -286,6 +319,66 @@ async def render_drama(
         )
         touch()
     return output
+
+
+# ----------------------------------------------------------------------- plan
+
+
+class DramaPlan:
+    """The screenplay as timeline input: segments (one per sub-shot, or one
+    per shot with `subshots=False`), which clip each came from, the cut
+    reasons at clip boundaries, and the caption text bound to segments.
+    Ids are derived from the job token, so a resume builds the same plan."""
+
+    def __init__(self, screenplay: Screenplay, *, token: str, subshots: bool) -> None:
+        self.segments: list[Segment] = []
+        self.clip_of: dict[str, str] = {}
+        self.cues: list[dict[str, str]] = []
+        reasons: list[TransitionReason] = []
+        scene = ids.scene_id(f"drama_{token}", 0)
+        for shot in screenplay.shots:
+            shot_id = ids.shot_id(scene, shot.index)
+            frames = shot.segment_frames() if subshots else (shot.frames,)
+            subs = shot.sub_shots if subshots else (shot.sub_shots[0],)
+            for sub_index, (sub, n) in enumerate(zip(subs, frames, strict=True)):
+                seg_id = ids.segment_id(shot_id, sub_index)
+                self.segments.append(Segment(
+                    segment_id=seg_id, shot_id=shot_id, scene_id=scene,
+                    subcut_index=sub_index, intended_duration_s=n / FPS,
+                ))
+                self.clip_of[seg_id] = str(shot.index)
+                lines = sub.dialogue if subshots else shot.dialogue
+                for k, line in enumerate(lines):
+                    self.cues.append({"cue_id": ids.cue_id(seg_id, k), "segment_id": seg_id, "text": line.text})
+            if shot.index > 1:
+                reasons.append(shot.cut_reason)
+        self.reasons = reasons
+        self.transitions = transitions.plan(reasons)
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "fps": FPS,
+            "segments": [{**s.model_dump(), "clip": self.clip_of[s.segment_id]} for s in self.segments],
+            "transitions": [
+                {"after_clip": str(i + 1), "reason": t.reason.value, "kind": t.kind.value,
+                 "downgraded_from": t.downgraded_from.value if t.downgraded_from else None}
+                for i, t in enumerate(self.transitions)
+            ],
+            "cues": self.cues,
+        }
+
+
+def build_plan(screenplay: Screenplay, *, token: str, subshots: bool) -> DramaPlan:
+    return DramaPlan(screenplay, token=token, subshots=subshots)
+
+
+def assemble_boundaries(timeline: Timeline) -> list[media.AssembleBoundary]:
+    """The timeline's clip boundaries in `media.assemble`'s shape."""
+    return [
+        media.AssembleBoundary(kind=b.kind.value, overlap_s=b.overlap_s, audio_fade_s=b.audio_fade_s)
+        for b in timeline.boundaries
+        if b.clip_boundary
+    ]
 
 
 # --------------------------------------------------------------------- stages

@@ -5,10 +5,12 @@ The rules this project edits by. Derived from
 (MIT, © 2026 Hao0321 Studio) — see [attribution.md](attribution.md) for the
 per-module map and for what we deliberately left behind.
 
-> **Status: specified, not yet implemented.** The generation path is being built
-> first. Each rule below names the module that will enforce it; a rule is not
-> "done" until it has an implementation, a gate assertion, and a fixture that
-> fails without it.
+> **Status: partly implemented.** Each rule below names the module that
+> enforces it and says whether that module exists; a rule is not "done" until
+> it has an implementation, a gate assertion, and a fixture that fails without
+> it. Built: §2.3, §3.1–3.3 (`editing/transitions.py`), §4.1
+> (`render/timeline.py`), §5.3 and §5.5–5.6 (`media.py`), §6
+> (`editing/format_policy.py`). The gate assertions are still the shell.
 
 Every rule carries four fields:
 
@@ -20,8 +22,9 @@ Every rule carries four fields:
 | **Source** | where the number came from, and how much to trust it |
 
 Confidence tags follow the upstream convention: 📏 measured by us, `[reported]`
-measured by someone else and quoted, `[speculative]` inferred. **Everything on
-this page is currently `[reported]`** — nothing has been measured on our own
+measured by someone else and quoted, `[speculative]` inferred. **Almost
+everything on this page is `[reported]`** — only §6 is 📏, and the rules
+marked *ours* are `[speculative]`; nothing else has been measured on our own
 footage yet.
 
 ---
@@ -95,6 +98,15 @@ i2v source frames. It is just not the default path for model output.
 | **Mechanism** | This resolves the clip-quantum conflict. A 5s H3 clip contains no cut, so a strict cuts-per-minute rule would fail every generated scene on its face. It also matches what was actually measured: across seven competitor verticals, **caption-change rate exceeded cut rate in all seven**, by up to 8×. One sample ran 32s with 5 cuts and 40 caption changes. Rhythm is carried by captions, not by the edit. |
 | **Source** | Upstream `competitor-vertical-teardown-2026.md`, frame-accurate measurement of 7 shorts `[reported]` |
 
+### 2.3 Duration variance floor *(from upstream's pace gate)*
+
+| | |
+|---|---|
+| **Rule** | The coefficient of variation of segment durations is ≥ **0.11**; below that the cut rhythm is a metronome and **fails**. Two consecutive slow segments (over the band's warn threshold) **fail**. The band itself (min / warn / fail / total) belongs to the caller. |
+| **Lands in** | `editing/rhythm.py` (**built**: `PacingPolicy`, `check`); asserted by `gates/plan_gate.py` (not yet) |
+| **Mechanism** | Six equal ten-second shots was the first `/短劇` and it reads as a slideshow whatever the content. A variance floor forces unequal weights without anyone having to feel the rhythm. `fun_workflow/core/drama_spec.DRAMA_PACING` is the drama's band. |
+| **Source** | Upstream `pace_gate.py` D-E `[reported]` |
+
 Measured competitor figures, for calibration:
 
 | clip | duration | cuts/min | median cut gap | caption changes/min | median dwell |
@@ -113,18 +125,20 @@ Measured competitor figures, for calibration:
 | | |
 |---|---|
 | **Rule** | ≥90% of splices are hard cuts. Only a chapter boundary earns a motivated transition, and it is chosen from a table keyed by *meaning*: topic change → wipe/whip/slide; time passing → short dissolve; drilling into detail → zoom-through; default → hard cut. More than one non-hard-cut per chapter **fails**. |
-| **Lands in** | `editing/transitions.py`; asserted by `gates/pace_gate.py` |
+| **Lands in** | `editing/transitions.py` (**built**: `SEMANTIC_TABLE`, `choose`, `plan`); asserted by `gates/pace_gate.py` (not yet) |
 | **Mechanism** | A scene sheet may only contain a `TransitionReason`, never a `TransitionKind` — so you cannot write "put a wipe here" without first stating what the wipe means. That single indirection is what stops transitions accumulating as decoration. |
 | **Source** | Upstream `transitions.py` semantic table `[reported]` |
 
-Already modelled: `core/enums.TransitionReason` vs `TransitionKind`.
+Modelled in `core/enums.TransitionReason` vs `TransitionKind`; the table
+itself is `editing/transitions.SEMANTIC_TABLE`. `render/timeline` refuses
+any kind the assembly cannot draw rather than cutting silently.
 
 ### 3.2 Frequency caps and durations
 
 | | |
 |---|---|
 | **Rule** | Per video: `luma_wipe ≤ 3`, `zoom_punch ≤ 2`. Durations are exact: whip **0.30s**, wipe **0.50s**, zoom **0.33s**. Every transition carries a stinger SFX on the same frame (±1 frame). One forward direction per video; reverse is reserved for callbacks. Never stack two transition effects. |
-| **Lands in** | `editing/transitions.py` module docstring (caps live next to the code that could break them); asserted by `gates/pace_gate.py` |
+| **Lands in** | `editing/transitions.py` (**built**: caps in `plan`, durations as constants, `check` reports T-CAP-*/T-RATIO; the stinger SFX is not -- there is no SFX library); asserted by `gates/pace_gate.py` (not yet) |
 | **Mechanism** | A silent transition reads as cheap; the SFX is what sells it. The durations land on whole frames at both 24 and 30fps, which is not a coincidence. |
 | **Source** | Upstream `transitions.py` header `[reported]` |
 
@@ -133,8 +147,8 @@ Already modelled: `core/enums.TransitionReason` vs `TransitionKind`.
 | | |
 |---|---|
 | **Rule** | A transition may only be *named* if the shot-pair evidence exists. A whip-pan cut requires real whip motion in both shots, same direction, motion blur covering the cut. A foreground wipe requires >70% real occlusion. Without evidence it downgrades to `hard_cut`. |
-| **Lands in** | `editing/transitions.py` |
-| **Mechanism** | Naming a transition you cannot execute produces a labelled cut that does not look like the label. Downgrading is honest; faking is not. |
+| **Lands in** | `editing/transitions.py` (**built**: `Evidence`, `Transition.downgraded_from`) |
+| **Mechanism** | Naming a transition you cannot execute produces a labelled cut that does not look like the label. Downgrading is honest; faking is not. With generated clips nothing measures whip motion or occlusion yet, so every wipe/whip/zoom downgrades and only `dissolve` reaches the render -- which is the rule working, not a gap. |
 | **Source** | Upstream `mediastorm-craft-system.md` `[reported]` |
 
 ---
@@ -146,7 +160,7 @@ Already modelled: `core/enums.TransitionReason` vs `TransitionKind`.
 | | |
 |---|---|
 | **Rule** | `CaptionCue` carries a `segment_id` and no time fields. Absolute time is computed in exactly one function (`render/timeline.resolve_timeline`) and written to exactly one file (`offsets.json`). |
-| **Lands in** | `core/models.CaptionCue` (**already enforced** — the model has no time fields), `render/timeline.py` |
+| **Lands in** | `core/models.CaptionCue` (**already enforced** — the model has no time fields), `render/timeline.py` (**built**: `resolve_timeline` writes `offsets.json`; `media.assemble` and the caption writer read it and compute no time of their own) |
 | **Mechanism** | Upstream shipped captions 2–3 seconds out of sync because segments were split by hand and the timings drifted. Binding to an index makes mis-timing *structurally impossible* rather than merely detectable. It also collapses "a caption may never straddle a cut" into an assertion inside one function. |
 | **Source** | Upstream `word_captions.py` / M105 `[reported]` |
 
@@ -237,9 +251,18 @@ upstream needed for recorded narration. What remains is mixing and delivery.
 | | |
 |---|---|
 | **Rule** | Measure every generated clip's loudness independently and align before concatenation. |
-| **Lands in** | `editing/audio.py`. **Implemented for `/短劇`** as stage 4 of `fun_workflow/pipeline/drama.py`: every clip through `media.normalize_loudness` before `media.concat` |
+| **Lands in** | `editing/audio.py`. **Implemented for `/短劇`** as stage 4 of `fun_workflow/pipeline/drama.py`: every clip through `media.normalize_loudness` before `media.assemble` |
 | **Mechanism** | Upstream had one continuous recorded narration bed, so this problem did not exist. We have N independently generated clips whose native audio levels have no reason to match, and a level jump at a cut is far more noticeable than a picture jump. |
 | **Source** | Ours `[speculative]` — needs measuring on real H3 output |
+
+### 5.6 Audio crossfade at every splice *(ours, not upstream)*
+
+| | |
+|---|---|
+| **Rule** | At a hard cut between two separately generated clips the picture cuts and the audio crossfades over **0.125 s** (3 frames at 24 fps) with no overlap, so the piece does not shorten. At a dissolve the audio crossfades over the dissolve's own overlap. A sub-cut inside one clip gets nothing: its sound is already continuous. |
+| **Lands in** | `editing/transitions.AUDIO_DIP_S`; `render/timeline` decides which boundaries are clip boundaries; `media.assemble` emits the `acrossfade` |
+| **Mechanism** | Level alignment (§5.5) fixes the loudness jump; it does nothing for the *texture* jump -- two independent renders of "sizzling oil, a crowd" are two different crowds. Three frames of blend is under the ear's fusion threshold for ambience but long enough to hide the seam. |
+| **Source** | Ours `[speculative]` — the length has not been A/B'd |
 
 ---
 

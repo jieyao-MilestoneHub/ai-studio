@@ -53,9 +53,13 @@ the money, and the numbers — and nothing about who asked for a render:
   figure as data) and `metrics readme` renders the tables in `assets/metrics/README.md`.
 - An editing grammar derived from
   [`Hao0321/video-autopilot-kit`](https://github.com/Hao0321/video-autopilot-kit)
-  (MIT), **specified in `docs/editing-grammar.md` and not implemented**
-  (`editing/format_policy.py` is the only built piece; `gates/`, `planner/`,
-  `render/` are shells).
+  (MIT), specified in `docs/editing-grammar.md`. Built so far:
+  `editing/format_policy.py`, `editing/transitions.py` (the reason → kind
+  table, caps, evidence downgrade), `editing/rhythm.py` (pacing band, CV
+  floor), `render/timeline.py` (`resolve_timeline` → `offsets.json`, the
+  only place absolute time is computed) and `media.assemble` (the splice
+  that reads it). `gates/` is still the shell; `planner/` is empty. The
+  consumer is `fun_workflow`'s `/短劇`.
 
 Not here, by design: anything that knows what a LINE group is. The queue,
 worker loop, webhook, `/短劇` pipeline and screenwriter, the `/himonkey`

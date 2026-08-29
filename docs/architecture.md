@@ -182,7 +182,7 @@ generation is a receipt, not a check.
 | `config` | built |
 | `prompts` | built — MiniMax H3 structured schema, the Flux.1-dev prompt builder, the understanding models' questions (the `/短劇` screenwriter is `fun_workflow/prompts/drama.py`) |
 | `benchmark` | built — `records` (the log line a render emits), `report` (`runs/benchmark/<month>.json`, folded daily by `archive`), `rates` (live GPU rate + per-tier means) |
-| `editing` | `format_policy` built; the grammar is **specified, not implemented** |
+| `editing` | `format_policy`, `transitions` (reason → kind table, caps, evidence downgrade), `rhythm` (pacing band, CV floor) built; captions, audio ladder, motion still specified only |
 | `media` | built — ffmpeg/ffprobe invocation, still-image probing for Flux, two-pass `loudnorm` and concat for `/短劇` |
 | `storage` | `local` built; `s3` pending |
 | `comfy` | built — client, graph binding, turbo validation |
@@ -190,7 +190,8 @@ generation is a receipt, not a check.
 | `llm` | `scripted.py` only — the offline `LlmClient` for tests and dry runs; the production rewriter is `pipeline.pod_llm` |
 | `providers` | `stub`/`stub-understanding` and `comfyui` (clip, MiniMax H3) built; `flux` (image, Flux.1-dev) built; `understand-{image,audio,video}` (moondream3/Qwen3-Omni-Captioner/Tarsier2) built; `chat` (gpt-oss-20b) built |
 | `gates` | shell built; no rules yet |
-| `planner`, `render` | not started |
+| `render` | `timeline.resolve_timeline` → `offsets.json` built; `media.assemble` is the splice that reads it |
+| `planner` | not started |
 | `pipeline` | `residency` (one-card model hand-off) and `pod_llm` (gpt-oss-20b on the pod as an `LlmClient`). The request queue, worker with its prepare phase, drain loop and the resumable `/短劇` stage machine are `fun_workflow/pipeline/` |
 | `checks` | built — the pre-launch checklist machinery both packages' `preflight` commands build on |
 | `runtime` | `pod`, `session` (idle grace recorded per activity; `provision(extras=)` ships `pod_setup.d/` extensions), `budget` and `opens` (the daily pod-open ledger) built against the live REST v2 schema |

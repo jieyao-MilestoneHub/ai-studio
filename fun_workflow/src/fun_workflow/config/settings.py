@@ -87,6 +87,24 @@ class FunSettings(BaseSettings):
         "repaint: lower keeps the face, higher lets the scene change. "
         "[speculative] 0.55 -- retune from the first real drama's keyframes.",
     )
+    drama_keyframe_denoise_wide: float = Field(
+        default=0.70,
+        gt=0,
+        le=1.0,
+        alias="AI_STUDIO_DRAMA_KEYFRAME_DENOISE_WIDE",
+        description="The keyframe denoise for a shot that opens wide or as a "
+        "two-shot: the character sheet is a head-and-shoulders portrait, and "
+        "a wide frame repainted at 0.55 keeps the portrait's framing and "
+        "ignores the prompt's. [speculative] 0.70.",
+    )
+    drama_subshots: bool = Field(
+        default=True,
+        alias="AI_STUDIO_DRAMA_SUBSHOTS",
+        description="Ask H3 to cut to a second framing inside the longer /短劇 "
+        "clips (its multi-shot prompt). Off: every shot is one held framing "
+        "and the timeline has six segments. The hedge for a model that "
+        "ignores the cut time under image-to-video, which is unmeasured.",
+    )
 
     # ---------------------------------------------------------- delivery
 

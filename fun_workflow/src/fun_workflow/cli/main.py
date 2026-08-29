@@ -778,7 +778,8 @@ def preflight_cmd(
 
 DRYRUN_SCREENPLAY: dict[str, Any] = {
     # The canned screenwriter replies `drama-dryrun` feeds through the real
-    # `prompts.drama` parser, so the offline run exercises validation too.
+    # `prompts.drama` parser, so the offline run exercises validation too:
+    # the beat template, the framing alternation, the one push-in.
     "outline": {
         "title": "夜市的信",
         "logline": "A night-market stall owner finds a letter that says the market closes tomorrow.",
@@ -790,24 +791,47 @@ DRYRUN_SCREENPLAY: dict[str, Any] = {
             "wardrobe": "a faded red apron over a white t-shirt",
             "voice": "soft, low, slightly hoarse",
         },
-        "beats": [
-            "She lifts the stall's shutter before dawn and finds an envelope taped underneath.",
-            "She reads it between customers: the market closes tomorrow.",
-            "A regular asks what is wrong; she says nothing is.",
-            "Evening: she looks down the row of stalls packing up early.",
-            "She writes a reply on the back of the letter.",
-            "Dawn again: she tapes her reply where the first one was, and opens as usual.",
-        ],
+        "world": {
+            "location": "a narrow night-market food stall facing a single row of neighbouring stalls",
+            "light": "warm tungsten string lights from above left, cool blue dawn behind",
+            "signature_prop": "a folded paper letter",
+        },
+        "beats": {
+            "hook": "She lifts the stall's shutter before dawn and an envelope is taped underneath it.",
+            "setup": "She reads it between customers: the market closes tomorrow.",
+            "conflict": "A regular asks what is wrong; she says nothing is.",
+            "turn": "Evening: down the row, every other stall is already packing up for good.",
+            "payoff": "She writes a reply on the back of the letter.",
+            "cliffhanger": "Dawn again: she tapes her reply where the first one was, and opens as usual.",
+        },
         "overall_soundscape": "Sizzling oil, a crowd murmuring, scooters passing on the road behind.",
         "non_diegetic_music": "N/A",
     },
     "shots": [
-        {"index": 1, "scene": "a night-market stall before dawn, shutter half up, string lights off", "framing": "medium", "action": "the lead crouches and peels an envelope from under the counter", "camera": {"motion": "push_in", "amplitude": "small", "speed": "slow"}},
-        {"index": 2, "scene": "the same stall, mid-evening, steam from the wok, a paper letter in hand", "framing": "close-up", "action": "the lead reads the letter and her hands go still", "camera": {"motion": "static_shot"}},
-        {"index": 3, "scene": "the stall counter, a regular customer's shoulder in the foreground", "framing": "over-the-shoulder", "action": "the lead answers with a small shake of the head", "camera": {"motion": "static_shot"}, "dialogue": [{"speaker_id": "S1", "identity": "the lead", "language": "Mandarin Chinese", "text": "沒事,明天照常開。"}]},
-        {"index": 4, "scene": "the market row at night, neighbouring stalls stacking crates", "framing": "wide", "action": "the lead stands at her counter looking down the row", "camera": {"motion": "pan_right", "speed": "slow"}, "cut_reason": "time_passing"},
-        {"index": 5, "scene": "the counter under one work lamp, the letter turned face down, a pen", "framing": "medium close-up", "action": "the lead writes on the back of the letter", "camera": {"motion": "push_in", "amplitude": "small", "speed": "slow"}},
-        {"index": 6, "scene": "the stall before dawn again, shutter going up, first light", "framing": "close-up", "action": "the lead tapes the letter under the counter and stands", "camera": {"motion": "tilt_up", "speed": "slow"}, "cut_reason": "time_passing"},
+        {"index": 1, "scene": "the stall before dawn, shutter half up, string lights off", "sub_shots": [
+            {"framing": "close-up", "action": "the lead's hand peels an envelope from under the counter", "camera": {"motion": "static_shot"}},
+            {"framing": "medium", "action": "the lead stands and turns the envelope over", "camera": {"motion": "tilt_up", "speed": "slow"}},
+        ]},
+        {"index": 2, "scene": "the same stall mid-evening, steam from the wok, the letter in hand", "sub_shots": [
+            {"framing": "wide", "action": "the lead serves a customer with the letter tucked under the till", "camera": {"motion": "static_shot"}},
+            {"framing": "close-up", "action": "the lead unfolds the letter and her hands go still", "camera": {"motion": "static_shot"}},
+        ]},
+        {"index": 3, "scene": "the stall counter, a regular customer's shoulder in the foreground", "sub_shots": [
+            {"framing": "over-the-shoulder", "action": "the lead answers with a small shake of the head", "camera": {"motion": "static_shot"},
+             "line": "沒事,明天照常開。"},
+        ]},
+        {"index": 4, "scene": "the market row at night, neighbouring stalls stacking crates", "cut_reason": "time_passing", "sub_shots": [
+            {"framing": "wide", "action": "the lead stands at her counter looking down the row", "camera": {"motion": "pan_right", "speed": "slow"}},
+            {"framing": "medium close-up", "action": "the lead's face as she sees the empty stalls", "camera": {"motion": "push_in", "amplitude": "small", "speed": "slow"}},
+        ]},
+        {"index": 5, "scene": "the counter under one work lamp, the letter face down, a pen", "sub_shots": [
+            {"framing": "close-up", "action": "the lead writes on the back of the letter", "camera": {"motion": "static_shot"},
+             "line": "我不走。"},
+            {"framing": "medium", "action": "the lead folds the letter and holds it", "camera": {"motion": "static_shot"}},
+        ]},
+        {"index": 6, "scene": "the stall before dawn again, shutter going up, first light", "cut_reason": "time_passing", "sub_shots": [
+            {"framing": "wide", "action": "the lead tapes the letter under the counter and lifts the shutter", "camera": {"motion": "tilt_up", "speed": "slow"}},
+        ]},
     ],
 }
 
@@ -822,9 +846,10 @@ def drama_dryrun(
     ),
 ) -> None:
     """Run the whole /短劇 stage machine offline: scripted screenwriter, stub
-    Flux and H3 (ffmpeg testsrc2), real loudnorm + concat. Proves the state
-    file, the resume rule and the assembly with no pod and no money. Run it
-    twice: the second run must render nothing."""
+    Flux and H3 (ffmpeg testsrc2), real loudnorm + assembly. Proves the state
+    file, the resume rule, the timeline and the splice with no pod and no
+    money. Run it twice: the second run must render nothing paid for (the
+    plan and offsets files are rewritten; they cost nothing)."""
     try:
         asyncio.run(_drama_dryrun(premise, out, runs, screenplay))
     except AIStudioError as exc:
@@ -891,5 +916,11 @@ async def _drama_dryrun(premise: str, out: Path, runs: Path, screenplay_file: Pa
         f"  stills {len(state.character)}+{len(state.keyframes)}, clips {len(state.clips)}, "
         f"leveled {len(state.leveled)}, ffmpeg calls {len(state.ffmpeg_argv)}, "
         f"activity touches {touches}, face_repair={state.face_repair}"
+    )
+    manifest = _json.loads((runs / "drama" / job.token / "render_manifest.json").read_text(encoding="utf-8"))
+    tl = manifest.get("timeline", {})
+    console.print(
+        f"  timeline {tl.get('total_s', 0):.1f}s, segments {tl.get('segments')}, "
+        f"dissolves {tl.get('dissolves')}, plan_gate={state.plan_gate}"
     )
     console.print(f"  state: {runs / 'drama' / job.token / 'state.json'}  (run again: nothing re-renders)")
