@@ -92,34 +92,42 @@ class BeatSlot:
 
 
 BEAT_TEMPLATE: tuple[BeatSlot, ...] = (
-    BeatSlot(Beat.HOOK, 175, 60),          # 7.3 s, cut at 2.5 s: the first cut is the hook
+    BeatSlot(Beat.HOOK, 158, 60),          # 6.6 s, cut at 2.5 s: the first cut is the hook
     BeatSlot(Beat.SETUP, 243, 132),        # 10.1 s, cut at 5.5 s
-    BeatSlot(Beat.CONFLICT, 209, None),    # 8.7 s, one held shot
-    BeatSlot(Beat.TURN, 277, 144),         # 11.5 s, cut at 6.0 s
+    BeatSlot(Beat.CONFLICT, 192, None),    # 8.0 s, one held shot
+    BeatSlot(Beat.TURN, 243, 120),         # 10.1 s, cut at 5.0 s
     BeatSlot(Beat.PAYOFF, 243, 108),       # 10.1 s, cut at 4.5 s
-    BeatSlot(Beat.CLIFFHANGER, 192, None),  # 8.0 s, one held shot
+    BeatSlot(Beat.CLIFFHANGER, 209, None),  # 8.7 s, one held shot
 )
-"""[speculative] 1339 frames = 55.8 s; shot-length CV 0.155 (upstream's
-metronome floor is 0.11); ten segments, so ~11 visual events a minute
-before any caption change. All six lengths sit on the 17k+5 grid and under
-the 294-frame step the community guide puts drift risk above -- except the
-turn, which gets 277 because a reversal needs room to land."""
+"""1288 frames = 53.7 s; shot-length CV 0.149 (upstream's metronome floor is
+0.11); ten segments, so ~11 visual events a minute before any caption
+change. Every slot is on the 17k+5 grid and **none is above 243 frames**:
+📏 2026-08-29, the first real run, a 277-frame turn shot OOM'd three times
+on an RTX 4090 (7.6 GiB allocated, 1.9 GiB requested, 4 MiB free under
+ComfyUI's memory fraction) after three shorter clips had rendered, while
+every 243-frame shot succeeded. The 362-frame figure in
+`pipeline.convert_worker` was measured on a single job with nothing else
+resident; a drama is not that. The durations themselves stay
+`[speculative]`."""
+
+MAX_SHOT_FRAMES = 243
+"""📏 the longest H3 clip that renders inside a drama on a 24 GB card."""
 
 SHOT_COUNT = len(BEAT_TEMPLATE)
 TOTAL_FRAMES = sum(s.frames for s in BEAT_TEMPLATE)
-DURATION_BAND_S = (55.0, 65.0)
+DURATION_BAND_S = (50.0, 65.0)
 HOOK_CUT_MAX_S = 2.5
 
 for _slot in BEAT_TEMPLATE:
     assert (_slot.frames - 5) % FRAME_GRID == 0, f"{_slot.beat}: {_slot.frames} is off the 17k+5 grid"
-    assert MIN_FRAMES <= _slot.frames <= MAX_FRAMES, f"{_slot.beat}: {_slot.frames} frames out of range"
+    assert MIN_FRAMES <= _slot.frames <= MAX_SHOT_FRAMES, f"{_slot.beat}: {_slot.frames} frames out of range"
     assert _slot.internal_cut_frames is None or 0 < _slot.internal_cut_frames < _slot.frames
 assert DURATION_BAND_S[0] * FPS <= TOTAL_FRAMES <= DURATION_BAND_S[1] * FPS
 
 DRAMA_PACING = PacingPolicy(min_s=2.0, warn_s=8.0, fail_s=12.5, total_band_s=DURATION_BAND_S)
 """[speculative] The band the ten segments must sit in. Upstream's Shorts
 numbers (4.0 / 6.5 s) are for talking-head explainers; a drama beat needs
-longer to land, and the held conflict shot at 8.7 s is a slow shot by design
+longer to land, and the held cliffhanger at 8.7 s is a slow shot by design
 (one warning, never two in a row)."""
 
 DRAMA_PACING_HELD = PacingPolicy(min_s=2.0, warn_s=12.0, fail_s=12.5, total_band_s=DURATION_BAND_S)

@@ -240,13 +240,13 @@ async def test_all_flux_then_all_h3_then_one_file(parsed_job, tmp_path: Path, fa
     assert image.requests[2].width == 864 and image.requests[2].height == 480, "H3's canvas, not Flux's"
     assert all(r.first_frame_path.endswith(f"keyframes/shot_{i}.png") for i, r in enumerate(clip.requests, 1))
     assert clip.requests[0].mode is GenMode.I2V
-    assert [r.duration_s for r in clip.requests] == pytest.approx([f / 24 for f in (175, 243, 209, 277, 243, 192)])
+    assert [r.duration_s for r in clip.requests] == pytest.approx([f / 24 for f in (158, 243, 192, 243, 243, 209)])
     assert "At 00:02.500, the camera cuts to" in clip.requests[0].prompt
     assert fake_ffmpeg[:6] == [f"level:shot_{i}.mp4" for i in range(1, 7)]
     assert fake_ffmpeg[6].startswith("assemble:shot_1.mp4,shot_2.mp4")
     # Five clip boundaries: the cut into shot 4 is time_passing -> dissolve.
     assert fake_ffmpeg[7] == "boundaries:hard_cut,hard_cut,dissolve,hard_cut,hard_cut"
-    assert fake_ffmpeg[8] == f"total_s:{(1339 - 12) / 24:.3f}"
+    assert fake_ffmpeg[8] == f"total_s:{(1288 - 12) / 24:.3f}"
     assert fake_ffmpeg[9] == "subtitles:captions.ass"
     assert len(touches) == 2 + 6 + 6 + 1, "every artifact resets the reaper, plus the final file"
 
@@ -256,14 +256,14 @@ async def test_all_flux_then_all_h3_then_one_file(parsed_job, tmp_path: Path, fa
     assert len(plan["segments"]) == 10 == len(offsets["segments"])
     assert plan["transitions"][2] == {"after_clip": "3", "reason": "time_passing", "kind": "dissolve", "downgraded_from": None}
     assert [c["text"] for c in plan["cues"]] == ["沒事。"]
-    assert offsets["clip_offsets"][1] == pytest.approx(175 / 24)
+    assert offsets["clip_offsets"][1] == pytest.approx(158 / 24)
     gate = json.loads((run_dir / "gates" / "plan_gate.json").read_text(encoding="utf-8"))
     assert gate["gate"] == "plan_gate" and [f["rule_id"] for f in gate["findings"]] == ["R-BAND-WARN"]
     assert drama.load_state(run_dir).plan_gate == "passed with 1 warning(s): R-BAND-WARN"
     captions = (run_dir / "captions.ass").read_text(encoding="utf-8")
     assert "Dialogue: 0,0:00:00.00,0:00:01.50,Title,,0,0,0,,{\\fad(0,300)}夜市的信" in captions
-    # Shot 3 is one 8.7 s segment starting at 175+243 frames, minus the margin.
-    assert f"Dialogue: 0,0:00:{(175 + 243) / 24 + 0.1:05.2f},0:00:{(175 + 243 + 209) / 24 - 0.1:05.2f},Main,,0,0,0,,沒事。" in captions
+    # Shot 3 is one 8.0 s segment starting at 158+243 frames, minus the margin.
+    assert f"Dialogue: 0,0:00:{(158 + 243) / 24 + 0.1:05.2f},0:00:{(158 + 243 + 192) / 24 - 0.1:05.2f},Main,,0,0,0,,沒事。" in captions
     assert drama.load_state(run_dir).captions is not None
 
     state = drama.load_state(tmp_path / "runs" / "drama" / job.token)
@@ -290,7 +290,14 @@ async def test_make_room_for_evicts_the_other_side_not_comfyui(parsed_job, tmp_p
     await _render(job, providers, tmp_path)
 
     assert ledger.events.count("evict:chat") == 2  # once before Flux, once before H3
-    assert "evict:image" not in ledger.events and "evict:video" not in ledger.events
+    assert "evict:video" not in ledger.events
+    # Flux *is* released once, after its last still and before the first clip:
+    # it shares ComfyUI with H3, so make_room_for never touches it, and its
+    # staged weights cost the fourth clip its VRAM on 2026-08-29.
+    assert ledger.events.count("evict:image") == 1
+    last_image = max(i for i, e in enumerate(ledger.events) if e.startswith("image:"))
+    first_clip = min(i for i, e in enumerate(ledger.events) if e.startswith("clip:"))
+    assert last_image < ledger.events.index("evict:image") < first_clip
 
 
 # ---------------------------------------------------------------------- resume
@@ -503,7 +510,7 @@ async def test_every_artifact_and_stage_is_timestamped(parsed_job, tmp_path: Pat
     assert iso.fullmatch(manifest["generated_at"])
     assert manifest["token"] == job.token and manifest["job_id"] == job.id
     assert manifest["stages"]["assemble"]["finished_at"]
-    assert manifest["timeline"] == {"total_s": pytest.approx((1339 - 12) / 24), "segments": 10, "dissolves": 1}
+    assert manifest["timeline"] == {"total_s": pytest.approx((1288 - 12) / 24), "segments": 10, "dissolves": 1}
     assert len(manifest["ffmpeg"]) == 6 * 2 + 1
 
 
@@ -585,3 +592,31 @@ async def test_a_plan_that_fails_the_gate_spends_nothing(parsed_job, tmp_path: P
     run_dir = tmp_path / "runs" / "drama" / job.token
     assert (run_dir / "gates" / "plan_gate.json").is_file()
     assert drama.load_state(run_dir).plan_gate.startswith("failed: ")
+
+
+async def test_an_oom_releases_comfyui_before_the_attempt_is_handed_back(parsed_job, tmp_path: Path, fake_ffmpeg) -> None:
+    """After an OOM ComfyUI's own unload left 16 MiB free and the requeued
+    attempt died in a second, twice (2026-08-29). The provider is evicted
+    before the error propagates; any other failure is not."""
+    q, job = parsed_job
+    job = await _with_screenplay(q, job)
+    ledger = Ledger()
+
+    class Oom(FakeClipProvider):
+        async def submit(self, request: Any) -> ClipJob:
+            job_ = await super().submit(request)
+            if request.shot_id.endswith("_shot2"):
+                return job_.model_copy(update={"state": ClipState.FAILED,
+                                               "error": "Allocation on device 0 would exceed allowed memory. (out of memory)"})
+            return job_
+
+    clip = Oom(ledger)
+    with pytest.raises(ProviderError, match="out of memory"):
+        await _render(job, {MediaKind.IMAGE: FakeImageProvider(ledger), MediaKind.VIDEO: clip}, tmp_path)
+    assert ledger.events.count("evict:video") == 1
+    assert ledger.events.index("evict:video") > ledger.events.index(f"clip:job{job.id}_shot2")
+
+    ledger.events.clear()
+    with pytest.raises(ProviderError, match="boom"):
+        await _render(job, {MediaKind.IMAGE: FakeImageProvider(ledger), MediaKind.VIDEO: FakeClipProvider(ledger, fail_on={f"job{job.id}_shot2"})}, tmp_path)
+    assert "evict:video" not in ledger.events

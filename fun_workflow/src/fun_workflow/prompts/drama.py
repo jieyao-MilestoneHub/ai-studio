@@ -172,6 +172,8 @@ Rules:
   else use static_shot, a slow pan, a tilt or a tracking shot.
 - A line only when the beat implies speech, at most one per sub-shot, at most
   {MAX_LINE_CHARS} characters. Otherwise omit "line" and the lead is silent.
+- The lead is on screen in every sub-shot, doing the action. A prop alone
+  (a phone buzzing, a door opening) is not a shot: the lead reacts to it.
 - Never mention the lead's face, hair, age or ethnicity: the appearance is
   supplied separately and pasted in verbatim. Refer to "the lead".
 - Everything is English except "line", which stays in the premise's language.
@@ -303,17 +305,24 @@ def keyframe_prompt(anchor: CharacterAnchor, world: WorldBible, *, framing: Fram
     )
 
 
-def character_sheet_prompts(anchor: CharacterAnchor) -> dict[str, str]:
-    """The two reference stills every keyframe is repainted from."""
-    base = f"{anchor.appearance}, wearing {anchor.wardrobe}"
+def character_sheet_prompts(anchor: CharacterAnchor, world: WorldBible) -> dict[str, str]:
+    """The two reference stills every keyframe is repainted from.
+
+    Shot *in the world*, not in a grey studio: image-to-image keeps a lot of
+    the source's backdrop at any denoise a face survives, and 📏 2026-08-29
+    the first real drama's wide keyframes came out on the sheet's plain grey
+    wall with no store in sight. A sheet that already stands where the story
+    happens gives every keyframe the right room to start from.
+    """
+    base = f"{anchor.appearance}, wearing {anchor.wardrobe}, {world.prefix()}"
     return {
         "front": (
             f"{base}, front-facing head-and-shoulders portrait, neutral expression, "
-            f"plain grey studio background, soft even lighting, {QUALITY_SUFFIX}"
+            f"soft even lighting on the face, {QUALITY_SUFFIX}"
         ),
         "three_quarter": (
             f"{base}, three-quarter view portrait turned slightly left, neutral "
-            f"expression, plain grey studio background, soft even lighting, {QUALITY_SUFFIX}"
+            f"expression, soft even lighting on the face, {QUALITY_SUFFIX}"
         ),
     }
 

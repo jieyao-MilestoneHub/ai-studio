@@ -177,7 +177,7 @@ async def render_drama(
         await make_room_for(image, providers)
         state.stage_start("character", utc_now_iso())
 
-    for view, prompt in character_sheet_prompts(screenplay.anchor).items():
+    for view, prompt in character_sheet_prompts(screenplay.anchor, screenplay.world).items():
         if _fresh(state.character.get(view)):
             continue
         _require_time(deadline, "image")
@@ -258,6 +258,12 @@ async def render_drama(
     # -- stage 3: everything H3, one checkpoint residency
     if still_to_render["clips"] or not all(_fresh(state.clips.get(str(s.index))) for s in screenplay.shots):
         await make_room_for(clip, providers)
+        # Flux and H3 share the ComfyUI residency group, so `make_room_for`
+        # leaves Flux where it is -- and with dynamic VRAM staging ComfyUI
+        # keeps ~16 GB of it staged while H3 runs. 📏 2026-08-29: three clips
+        # fit beside it, the fourth did not. The stills are all on disk by
+        # now; nothing is lost by releasing them.
+        await image.evict()
 
     state.stage_start("clips", utc_now_iso())
     for shot in screenplay.shots:
@@ -452,7 +458,18 @@ async def _render_clip(
     provider: Any, request: ClipRequest, dest: Path, deadline: datetime, poll_s: float
 ) -> ArtifactRecord:
     clip_job = await provider.submit(request)
-    clip_job = await _await_terminal(provider, clip_job, deadline, poll_s, what="clip")
+    try:
+        clip_job = await _await_terminal(provider, clip_job, deadline, poll_s, what="clip")
+    except ProviderError as exc:
+        if "out of memory" in str(exc).lower():
+            # After an OOM ComfyUI's own "unloading all loaded models" left
+            # 16 MiB free (📏 2026-08-29), so the requeued attempt failed in a
+            # second, twice. Release explicitly before handing the attempt
+            # back; whether that recovers the staged memory is [speculative]
+            # until a pod shows it, but a retry into a full card never can.
+            _log.warning("clip %s hit an OOM; releasing ComfyUI's models before the retry", request.shot_id)
+            await provider.evict()
+        raise
     asset = await provider.fetch(clip_job, dest)
     return ArtifactRecord(
         path=str(dest), sha256=sha256_file(dest), created_at=utc_now_iso(), cost_usd=float(asset.cost_usd), job_id=clip_job.job_id
