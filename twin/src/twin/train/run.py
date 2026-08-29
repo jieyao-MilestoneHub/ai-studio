@@ -204,6 +204,7 @@ def main(
         # 'BFloat16'". Upcasting only the trainable params is the standard QLoRA
         # fix (what peft.prepare_model_for_kbit_training does) — memory cost is a
         # few hundred MiB at r=64, well inside the probe's headroom.
+        assert trainer.model is not None
         for param in trainer.model.parameters():
             if param.requires_grad and param.dtype != torch.float32:
                 param.data = param.data.float()
