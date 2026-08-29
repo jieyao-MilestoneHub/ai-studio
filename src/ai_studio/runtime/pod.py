@@ -267,7 +267,13 @@ class PodManager:
 
     def list_pods(self) -> list[PodStatus]:
         payload = self._get("/pods")
-        items = payload.get("items", payload if isinstance(payload, list) else [])
+        # 📏 2026-08-29: the real response wraps under "pods" (confirmed against
+        # openapi.json's ListPodsResponse), not "items". This looked for the
+        # wrong key since the module was written and always returned [] --
+        # `pod status` (no argument) has been reporting "no pods, nothing is
+        # billing" while a pod was live and billing. `status(pod_id)` was
+        # unaffected: GET /pods/{id} returns the Pod object unwrapped.
+        items = payload.get("pods", payload if isinstance(payload, list) else [])
         return [_parse_status(p) for p in items if isinstance(p, dict)]
 
     def health_warnings(self, status: PodStatus) -> list[str]:
@@ -348,9 +354,12 @@ def _parse_status(payload: dict[str, Any]) -> PodStatus:
         gpu_id=gpu.get("id") if isinstance(gpu, dict) else None,
         cuda_version=payload.get("cudaVersion"),
         host_ram_gb=_ram_gb(cpu, runtime, machine, payload),
-        cost_per_hr=_as_float(payload.get("cost", {}).get("perHr"))
-        if isinstance(payload.get("cost"), dict)
-        else _as_float(payload.get("costPerHr")),
+        # 📏 2026-08-29: `cost` is a bare number per the schema ("Current cost
+        # in USD per hour"), never nested under `.perHr`, and there is no
+        # `costPerHr` field on this endpoint (that name belongs to the
+        # runpodctl CLI's own JSON, a different contract -- see
+        # `runtime.session._runpodctl`, which is right to use it).
+        cost_per_hr=_as_float(payload.get("cost")),
         uptime_s=_uptime_s(payload),
         raw=payload,
     )

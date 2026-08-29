@@ -647,26 +647,52 @@ async def _wait_for_idle(backend: ModelBackend, *, timeout_s: float = UNLOAD_WAI
         await asyncio.sleep(0.5)
 
 
-RELEASE_CEILING_GIB = 1.0
+RELEASE_CEILING_GIB = 2.0
 """What this process may still hold on the card after an unload and be
 believed. Above it the weights are still referenced from somewhere, and the
 only release that has ever worked is the process ending: 📏 2026-08-29,
 twice in a row, `POST /unload` after a gpt-oss-20b chat session left this
-process holding 12.7 GiB (nvidia-smi) with `_release_vram` run -- H3 then
-had ~10 GiB and OOMed on the fourth clip, and on the second clip. Job 86 on
-2026-08-27 was the same thing wearing moondream3's face."""
+process holding ~13 GiB (nvidia-smi) -- H3 then had ~10 GiB and OOMed on
+the fourth clip, and on the second clip. Job 86 on 2026-08-27 was the same
+thing wearing moondream3's face. Set above typical CUDA-context + cuDNN/
+cuBLAS handle overhead for one idle process (a few hundred MiB) so a clean
+unload never trips a spurious restart; `[speculative]` until a run's log
+shows that baseline number."""
 
 
 def _held_vram_gib() -> float:
-    """What this process still has allocated on the card, in GiB. 0 without CUDA."""
-    try:
-        import torch
+    """This process's own GPU memory, as every *other* process on the card
+    sees it -- not `torch.cuda.memory_allocated()`.
 
-        if not torch.cuda.is_available():
-            return 0.0
-        return torch.cuda.memory_allocated() / 2**30
+    📏 2026-08-29 (job 108): right after `_release_vram()` ran, that counter
+    read 0.01 GiB -- clean -- while `nvidia-smi` independently showed this
+    same process still holding ~13 GiB, unmoved, minutes later. gpt-oss-20b
+    loads through bitsandbytes, and its quantised buffers are allocated
+    outside PyTorch's own caching allocator, so `torch.cuda.*` is blind to
+    them even though the CUDA driver -- and the next process that wants the
+    card -- is not. `nvidia-smi --query-compute-apps` is what H3 actually
+    contends with, so it is what this checks. 0 without a readable
+    `nvidia-smi` (no CUDA, not installed, or the query itself failed) --
+    the caller must treat that as "unknown", not as "clean".
+    """
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10.0, check=False,
+        )
     except Exception:  # pragma: no cover - a measurement must never raise
         return 0.0
+    if proc.returncode != 0:
+        return 0.0
+    pid = os.getpid()
+    for line in proc.stdout.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) == 2 and parts[0].isdigit() and int(parts[0]) == pid:
+            try:
+                return float(parts[1]) / 1024  # MiB -> GiB
+            except ValueError:
+                return 0.0
+    return 0.0
 
 
 def _reexec() -> None:

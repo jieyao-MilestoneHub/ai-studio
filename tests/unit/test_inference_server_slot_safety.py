@@ -249,6 +249,46 @@ async def test_unload_restarts_the_process_when_vram_stays_held(monkeypatch) -> 
     assert calls == []
 
 
+# --------------------------------------------------------------- vram check
+
+
+def test_held_vram_gib_reads_this_process_own_row(monkeypatch) -> None:
+    """📏 2026-08-29 (job 108): torch.cuda.memory_allocated() read 0.01 GiB
+    right after a clean gpt-oss unload while nvidia-smi independently showed
+    the same process still holding ~13 GiB (bitsandbytes allocates outside
+    PyTorch's own allocator). This checks nvidia-smi's own accounting,
+    filtered to this process's pid, not torch's."""
+    import subprocess
+
+    own_pid = 4242
+    monkeypatch.setattr(srv.os, "getpid", lambda: own_pid)
+
+    def fake_run(argv, **kw):
+        assert argv[0] == "nvidia-smi"
+        out = f"{own_pid}, 13312\n99999, 594\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(srv.subprocess, "run", fake_run)
+    assert srv._held_vram_gib() == pytest.approx(13.0, abs=0.01)
+
+
+def test_held_vram_gib_is_zero_when_this_pid_is_absent_or_the_call_fails(monkeypatch) -> None:
+    import subprocess
+
+    monkeypatch.setattr(srv.os, "getpid", lambda: 4242)
+    monkeypatch.setattr(srv.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="99999, 594\n", stderr=""))
+    assert srv._held_vram_gib() == 0.0
+
+    monkeypatch.setattr(srv.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 1, stdout="", stderr="no GPU"))
+    assert srv._held_vram_gib() == 0.0
+
+    def raises(argv, **kw):
+        raise FileNotFoundError("nvidia-smi not found")
+
+    monkeypatch.setattr(srv.subprocess, "run", raises)
+    assert srv._held_vram_gib() == 0.0
+
+
 # ------------------------------------------------------------------- gpt-oss
 
 
