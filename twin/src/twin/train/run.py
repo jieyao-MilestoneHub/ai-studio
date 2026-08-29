@@ -157,6 +157,11 @@ def main(
         # `verify_assistant_masking` above is this same codebase's pre-flight check
         # that the chat-template resolution this flag depends on actually holds for
         # the pinned base model (train/loss_mask.py).
+        gradient_checkpointing=True,  # Memory-only (recompute activations), numerically
+        # identical training — hence not a TrainingConfig/config_hash field. Required for
+        # an 8B QLoRA step to fit a 16 GB T4 at all (rank probe, Modal, 2026-08-29).
+        gradient_checkpointing_kwargs={"use_reentrant": False},  # PEFT + checkpointing
+        # with the reentrant impl silently yields no grads for the adapter.
         learning_rate=config.learning_rate,
         per_device_train_batch_size=config.per_device_train_batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
