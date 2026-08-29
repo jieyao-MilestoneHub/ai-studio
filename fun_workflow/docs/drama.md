@@ -216,15 +216,31 @@ Job 105, 「最後一個飯糰」. What it measured, and what it changed:
 - **Wide keyframes came out on the character sheet's grey wall**, no store in
   sight: image-to-image at 0.70 keeps the source's backdrop. The sheet is
   now shot inside the world bible's location.
-- **The OOM's real owner is the inference server.** On the second pod
-  (job 106) `nvidia-smi` showed it holding 12.7 GiB *after* `POST /unload`
-  had answered `ok` — gpt-oss-20b's exact footprint — so H3 had ~10 GiB and
-  clip 2 died on "VRAM grow failed". `_release_vram`'s gc + `empty_cache`
-  does not reach it; job 86 on 08-27 (moondream3 OOM after chat) was the
-  same leak. `/unload` now measures what is still allocated and re-execs
-  the server process when it is over 1 GiB — the one release that always
-  works. `[speculative]` until the next pod's `inference.log` shows the
-  restart and a clean `nvidia-smi` after it.
+- **The OOM's real owner is the inference server** — confirmed a third time
+  (job 108), and this time the first fix's own measurement was shown wrong.
+  `POST /unload` logged "0.01 GiB still allocated" (clean, by
+  `torch.cuda.memory_allocated()`) right after the screenwriter's four
+  calls; nvidia-smi independently showed the same process still holding
+  ~13 GiB half an hour later, with nothing in `inference.log` having
+  reloaded it in between. gpt-oss-20b loads through bitsandbytes, whose
+  quantised buffers sit outside PyTorch's own caching allocator — invisible
+  to `torch.cuda.*`, real to the CUDA driver and to whatever else wants the
+  card. `_held_vram_gib()` now shells out to `nvidia-smi
+  --query-compute-apps` filtered to this process's own pid, the same
+  ground truth H3 actually contends with; the restart trigger (over
+  `RELEASE_CEILING_GIB`, now 2.0 to allow ordinary idle overhead) is
+  unchanged. `[speculative]` until the next pod's `inference.log` shows a
+  correctly-measured restart.
+- **`ai-studio pod status` has been lying.** Found while chasing the above:
+  `PodManager.list_pods()` read key `"items"`; the real REST v2 response
+  (confirmed against `openapi.json`) wraps under `"pods"`, so it always
+  returned `[]` — "no pods, nothing is billing" printed while a pod was
+  confirmed live and billing via a direct API query at the same moment.
+  `_parse_status`'s cost field had the same problem: `cost` is a bare
+  number per the schema, never nested under `.perHr`/`costPerHr` (that
+  name belongs to the unrelated runpodctl CLI's own JSON, correctly used
+  elsewhere in `runtime.session`). Both fixed, with fixtures taken from the
+  spec's own example.
 - **FaceDetailer MISS, twice.** First `No module named 'skimage'` (pip's
   exit code lost in a grep pipe), then `No module named 'piexif'`: the
   `git+…sam2` line in Impact-Pack's requirements wants a torch this venv
