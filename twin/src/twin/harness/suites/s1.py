@@ -53,7 +53,14 @@ _MAX_PROMPT_CHARS = 60_000
 class _GeneratedItem(BaseModel):
     prompt: str
     options: list[str] = Field(min_length=2)
-    source_fragment_ids: list[str] = Field(min_length=1)
+    source_refs: list[str] = Field(
+        min_length=1,
+        description="片段標籤（例如 F007），只能引用 prompt 中實際列出的標籤",
+    )
+
+
+def _label(index: int) -> str:
+    return f"F{index + 1:03d}"
 
 
 class _ItemBankResponse(BaseModel):
@@ -90,16 +97,22 @@ def _load_held_out_fragments(fragment_ids: list[str], *, fragment_store_uri: str
 
 
 def _render_prompt(fragments: list[Fragment]) -> str:
+    """Fragments are shown under short labels (F001, F002, ...) rather than
+    their 32-hex `fragment_id`: on the first real run (2026-08-29) the model
+    cited a well-formed hex id that existed nowhere in the store — an LLM
+    copying long hashes is exactly the kind of "plausible fabrication" this
+    project is built to detect elsewhere. `build_item_bank` maps labels back
+    to real ids, so a citation outside the given set is still a TeacherError."""
     lines = [
         "你是在為本人（principal）建立一份人格保真度測驗（EVAL.md §3.2）。",
         "以下是本人 held-out 時段的真實資料片段，每則格式為",
-        "[fragment_id] (event_time, precision) content：",
+        "[標籤] (event_time, precision) content：",
         "",
     ]
-    for fragment in fragments:
+    for index, fragment in enumerate(fragments):
         marker = " [第三方內容，僅供脈絡，勿逐字引用]" if fragment.third_party_spans else ""
         lines.append(
-            f"[{fragment.fragment_id}] ({fragment.event_time.value}, "
+            f"[{_label(index)}] ({fragment.event_time.value}, "
             f"precision={fragment.event_time.precision.value}){marker} {fragment.content}"
         )
     lines += [
@@ -114,7 +127,7 @@ def _render_prompt(fragments: list[Fragment]) -> str:
         "規則（MUST）：",
         "1. 每題描述的情境本人從未明確表態過——recall 題除外，其目的正是測試能否",
         "   準確回想片段中的內容（EVAL.md §3.1）。",
-        "2. 每題的 source_fragment_ids 只能引用上面實際列出的 fragment_id，不可捏造。",
+        "2. 每題的 source_refs 只能引用上面實際列出的標籤（例如 F007），不可捏造。",
         "3. 每題至少 2 個選項；李克特題請用完整量表標籤（例如：非常不同意/不同意/普通/同意/非常同意）。",
     ]
     prompt = "\n".join(lines)
@@ -147,28 +160,29 @@ def _to_items(
     item_type: Literal["value_tradeoff", "preference", "reaction_tendency", "recall"],
     generated_items: list[_GeneratedItem],
     *,
-    valid_fragment_ids: set[str],
+    label_to_id: dict[str, str],
 ) -> list[S1Item]:
     items: list[S1Item] = []
     for generated in generated_items:
-        cited = set(generated.source_fragment_ids)
-        if not cited <= valid_fragment_ids:
+        unknown = sorted(set(generated.source_refs) - label_to_id.keys())
+        if unknown:
             raise TeacherError(
-                f"generated {item_type} item cites fragment id(s) outside the held-out "
-                f"set it was given: {sorted(cited - valid_fragment_ids)}"
+                f"generated {item_type} item cites label(s) outside the held-out "
+                f"set it was given: {unknown}"
             )
+        source_fragment_ids = [label_to_id[ref] for ref in generated.source_refs]
         items.append(
             S1Item(
                 item_id=_item_id(
                     item_type=item_type,
                     prompt=generated.prompt,
                     options=generated.options,
-                    source_fragment_ids=generated.source_fragment_ids,
+                    source_fragment_ids=source_fragment_ids,
                 ),
                 item_type=item_type,
                 prompt=generated.prompt,
                 options=generated.options,
-                source_fragment_ids=generated.source_fragment_ids,
+                source_fragment_ids=source_fragment_ids,
             )
         )
     return items
@@ -211,15 +225,15 @@ def build_item_bank(*, held_out_fragment_ids: list[str], teacher: Teacher, fragm
 
     fragments = _load_held_out_fragments(held_out_fragment_ids, fragment_store_uri=fragment_store_uri)
     prompt = _render_prompt(fragments)  # raises HarnessError before any Teacher call if oversized
-    valid_ids = {fragment.fragment_id for fragment in fragments}
+    label_to_id = {_label(i): fragment.fragment_id for i, fragment in enumerate(fragments)}
 
     response = teacher.generate(prompt, response_schema=_ItemBankResponse)  # exactly one call — D9
 
     bank: list[S1Item] = [
-        *_to_items("value_tradeoff", response.value_tradeoff, valid_fragment_ids=valid_ids),
-        *_to_items("preference", response.preference, valid_fragment_ids=valid_ids),
-        *_to_items("reaction_tendency", response.reaction_tendency, valid_fragment_ids=valid_ids),
-        *_to_items("recall", response.recall, valid_fragment_ids=valid_ids),
+        *_to_items("value_tradeoff", response.value_tradeoff, label_to_id=label_to_id),
+        *_to_items("preference", response.preference, label_to_id=label_to_id),
+        *_to_items("reaction_tendency", response.reaction_tendency, label_to_id=label_to_id),
+        *_to_items("recall", response.recall, label_to_id=label_to_id),
     ]
 
     if not (MIN_ITEMS <= len(bank) <= MAX_ITEMS):
