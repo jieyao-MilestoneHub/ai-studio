@@ -44,7 +44,7 @@ file rather than a philosophy spread through the codebase.
 | `editing/motion.py` | `fx_lib.py` | sub-pixel PIL AFFINE push-in, easing curves, the `zoompan` ban | gated on `source_kind` — generated clips already contain camera motion, so motion defaults off for them |
 | `editing/rhythm.py` (built: the duration band and CV floor; the dual-mode wave is not) | `pace_gate.py`, `teardown.py` | dual-mode wave, the caption-rate-exceeds-cut-rate finding | "visual event" widened to include sub-cuts, so fixed-length model clips can participate in fast pacing |
 | `editing/format_policy.py` | `delivery.py`, `constants.py` | raise-on-unknown platform, banned-filter list, lanczos-only | targets re-derived from H3's native canvases rather than from phone footage |
-| `gates/core.py` | `gate_core.py` | `make_assert`, shared report shape, `selftest_runner` | pydantic `GateReport` |
+| `gates/core.py`, `gates/plan_gate.py` (built) | `gate_core.py`, `pace_gate.py`, `shorts_gate.py` | `make_assert`, shared report shape, `selftest_runner`; the PRE-gate idea | pydantic `GateReport`; one gate over one `plan.json` rather than one gate per rule family |
 | `gates/pace_gate.py`, `caption_gate.py`, `audio_gate.py` | same names | structural rules | — |
 | **— not ported —** | **`proof_stage.py`**, S-P risky-claim gate | — | excluded, see above |
 

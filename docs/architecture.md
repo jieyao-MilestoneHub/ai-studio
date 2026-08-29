@@ -189,7 +189,7 @@ generation is a receipt, not a check.
 | `inference` | built — `InferenceClient`, the HTTP surface for `deploy/inference_server.py`'s three understanding models |
 | `llm` | `scripted.py` only — the offline `LlmClient` for tests and dry runs; the production rewriter is `pipeline.pod_llm` |
 | `providers` | `stub`/`stub-understanding` and `comfyui` (clip, MiniMax H3) built; `flux` (image, Flux.1-dev) built; `understand-{image,audio,video}` (moondream3/Qwen3-Omni-Captioner/Tarsier2) built; `chat` (gpt-oss-20b) built |
-| `gates` | shell built; no rules yet |
+| `gates` | shell + `plan_gate` (PRE: pacing, transitions, captions over `plan.json`; fixtures under `tests/fixtures/gates/plan_gate/`); the POST gates are not built |
 | `render` | `timeline.resolve_timeline` → `offsets.json` built; `media.assemble` is the splice that reads it |
 | `planner` | not started |
 | `pipeline` | `residency` (one-card model hand-off) and `pod_llm` (gpt-oss-20b on the pod as an `LlmClient`). The request queue, worker with its prepare phase, drain loop and the resumable `/短劇` stage machine are `fun_workflow/pipeline/` |

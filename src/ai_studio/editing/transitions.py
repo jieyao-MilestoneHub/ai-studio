@@ -165,11 +165,16 @@ def check(transitions: Sequence[Transition]) -> list[GateFinding]:
                 observed=str(n), expected=f"<= {cap}", source_url=SOURCE_URL,
             ))
     if kinds:
-        ratio = kinds.count(TransitionKind.HARD_CUT) / len(kinds)
-        if ratio < MIN_HARD_CUT_RATIO:
+        # "Only a chapter boundary earns a transition": one is always allowed,
+        # then the 90% floor applies -- nine splices with one dissolve is the
+        # rule working, not a 88.9% violation of it.
+        non_hard = len(kinds) - kinds.count(TransitionKind.HARD_CUT)
+        allowed = max(1, int(len(kinds) * (1 - MIN_HARD_CUT_RATIO)))
+        if non_hard > allowed:
+            ratio = 1 - non_hard / len(kinds)
             findings.append(GateFinding(
                 rule_id="T-RATIO", severity=Severity.WARN,
-                message=f"hard cuts are {ratio:.0%} of splices, grammar wants >= {MIN_HARD_CUT_RATIO:.0%}",
-                observed=f"{ratio:.2f}", expected=f">= {MIN_HARD_CUT_RATIO}", source_url=SOURCE_URL,
+                message=f"hard cuts are {ratio:.0%} of {len(kinds)} splices, grammar wants >= {MIN_HARD_CUT_RATIO:.0%}",
+                observed=f"{non_hard} non-hard", expected=f"<= {allowed}", source_url=SOURCE_URL,
             ))
     return findings

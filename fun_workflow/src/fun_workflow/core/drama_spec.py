@@ -122,6 +122,17 @@ numbers (4.0 / 6.5 s) are for talking-head explainers; a drama beat needs
 longer to land, and the held conflict shot at 8.7 s is a slow shot by design
 (one warning, never two in a row)."""
 
+DRAMA_PACING_HELD = PacingPolicy(min_s=2.0, warn_s=12.0, fail_s=12.5, total_band_s=DURATION_BAND_S)
+"""The band with `AI_STUDIO_DRAMA_SUBSHOTS=false`: six held shots of 7-12 s
+*are* a slow rhythm, and the gate would rightly say so at every run. The
+setting exists as a hedge for a model that ignores its cut times, so the
+band only asks what that mode can deliver: the template's variance and
+total, no shot past the ceiling."""
+
+
+def pacing_for(*, subshots: bool) -> PacingPolicy:
+    return DRAMA_PACING if subshots else DRAMA_PACING_HELD
+
 
 class CharacterAnchor(BaseModel):
     """The lead, described once, precisely, and never re-described."""
@@ -336,6 +347,9 @@ class DramaState(BaseModel):
     keyframes: dict[str, ArtifactRecord] = Field(default_factory=dict)
     clips: dict[str, ArtifactRecord] = Field(default_factory=dict)
     leveled: dict[str, ArtifactRecord] = Field(default_factory=dict)
+    captions: ArtifactRecord | None = None
+    """`captions.ass`, rewritten with the output; recorded so the manifest
+    and a reader can find what was burned in."""
     output: ArtifactRecord | None = None
 
     face_repair: str = "pending"

@@ -9,8 +9,12 @@ per-module map and for what we deliberately left behind.
 > enforces it and says whether that module exists; a rule is not "done" until
 > it has an implementation, a gate assertion, and a fixture that fails without
 > it. Built: §2.3, §3.1–3.3 (`editing/transitions.py`), §4.1
-> (`render/timeline.py`), §5.3 and §5.5–5.6 (`media.py`), §6
-> (`editing/format_policy.py`). The gate assertions are still the shell.
+> (`render/timeline.py` + `render/captions_ass.py`), §4.2–4.4 in part
+> (`editing/captions.py`: white-only registry, read speed, no emoji), §5.3
+> and §5.5–5.6 (`media.py`), §6 (`editing/format_policy.py`). The first
+> gate exists: `gates/plan_gate.py` asserts §2.3, §3.1–3.2 and §4.2–4.4
+> over `plan.json` with fixtures under `tests/fixtures/gates/plan_gate/`
+> that each break one rule. The other gates named below are not built.
 
 Every rule carries four fields:
 
@@ -103,7 +107,7 @@ i2v source frames. It is just not the default path for model output.
 | | |
 |---|---|
 | **Rule** | The coefficient of variation of segment durations is ≥ **0.11**; below that the cut rhythm is a metronome and **fails**. Two consecutive slow segments (over the band's warn threshold) **fail**. The band itself (min / warn / fail / total) belongs to the caller. |
-| **Lands in** | `editing/rhythm.py` (**built**: `PacingPolicy`, `check`); asserted by `gates/plan_gate.py` (not yet) |
+| **Lands in** | `editing/rhythm.py` (**built**: `PacingPolicy`, `check`); asserted by `gates/plan_gate.py` (**built**, fixtures `metronome`, `slow_pair`) |
 | **Mechanism** | Six equal ten-second shots was the first `/短劇` and it reads as a slideshow whatever the content. A variance floor forces unequal weights without anyone having to feel the rhythm. `fun_workflow/core/drama_spec.DRAMA_PACING` is the drama's band. |
 | **Source** | Upstream `pace_gate.py` D-E `[reported]` |
 
@@ -125,7 +129,7 @@ Measured competitor figures, for calibration:
 | | |
 |---|---|
 | **Rule** | ≥90% of splices are hard cuts. Only a chapter boundary earns a motivated transition, and it is chosen from a table keyed by *meaning*: topic change → wipe/whip/slide; time passing → short dissolve; drilling into detail → zoom-through; default → hard cut. More than one non-hard-cut per chapter **fails**. |
-| **Lands in** | `editing/transitions.py` (**built**: `SEMANTIC_TABLE`, `choose`, `plan`); asserted by `gates/pace_gate.py` (not yet) |
+| **Lands in** | `editing/transitions.py` (**built**: `SEMANTIC_TABLE`, `choose`, `plan`); asserted by `gates/plan_gate.py` (**built**: T-RATIO, with one motivated transition always allowed) |
 | **Mechanism** | A scene sheet may only contain a `TransitionReason`, never a `TransitionKind` — so you cannot write "put a wipe here" without first stating what the wipe means. That single indirection is what stops transitions accumulating as decoration. |
 | **Source** | Upstream `transitions.py` semantic table `[reported]` |
 
@@ -138,7 +142,7 @@ any kind the assembly cannot draw rather than cutting silently.
 | | |
 |---|---|
 | **Rule** | Per video: `luma_wipe ≤ 3`, `zoom_punch ≤ 2`. Durations are exact: whip **0.30s**, wipe **0.50s**, zoom **0.33s**. Every transition carries a stinger SFX on the same frame (±1 frame). One forward direction per video; reverse is reserved for callbacks. Never stack two transition effects. |
-| **Lands in** | `editing/transitions.py` (**built**: caps in `plan`, durations as constants, `check` reports T-CAP-*/T-RATIO; the stinger SFX is not -- there is no SFX library); asserted by `gates/pace_gate.py` (not yet) |
+| **Lands in** | `editing/transitions.py` (**built**: caps in `plan`, durations as constants, `check` reports T-CAP-*/T-RATIO; the stinger SFX is not -- there is no SFX library); asserted by `gates/plan_gate.py` (**built**: T-CAP-*) |
 | **Mechanism** | A silent transition reads as cheap; the SFX is what sells it. The durations land on whole frames at both 24 and 30fps, which is not a coincidence. |
 | **Source** | Upstream `transitions.py` header `[reported]` |
 
@@ -169,7 +173,7 @@ any kind the assembly cannot draw rather than cutting silently.
 | | |
 |---|---|
 | **Rule** | Base colour is always white. At most **2** non-white colours per video. Coloured characters ≤ **35%** of all characters. Colour words, never whole sentences — if a coloured word is ≥60% of its sentence, cancel the colouring. Same meaning keeps the same colour throughout. |
-| **Lands in** | `editing/captions.py`; asserted by `gates/caption_gate.py` |
+| **Lands in** | `editing/captions.py` (**built** as a one-entry registry: `COLOR_KEYS = {"w"}`, `resolve_color` raises on anything else; the 35% and two-colour caps wait for a palette); asserted by `gates/plan_gate.py` (C-COLOR) |
 | **Mechanism** | Colour carries meaning only while it is scarce. Numbers and prices take the accent; everything else stays white. |
 | **Source** | Upstream `caption-art-direction.md` `[reported]` |
 
@@ -178,7 +182,7 @@ any kind the assembly cannot draw rather than cutting silently.
 | | |
 |---|---|
 | **Rule** | Chinese: **>5 chars/sec warns, >7 chars/sec fails.** Target caption cadence is median dwell ≤1.8s and ≥30 changes/min — but read speed wins the conflict. Sacrifice density for legibility, never the reverse. |
-| **Lands in** | `gates/caption_gate.py` |
+| **Lands in** | `editing/captions.py` (**built**: `read_speed`, `check` reports C-READ-WARN/FAIL); asserted by `gates/plan_gate.py` (**built**, fixture `caption_too_fast`) |
 | **Mechanism** | Upstream's phrasing: 讀不完＝白寫 — a caption nobody can finish reading was not written. Dense captions that cannot be read are worse than sparse ones that can. |
 | **Source** | Upstream `shorts_gate.py` S-R/S-O `[reported]` |
 
@@ -187,7 +191,7 @@ any kind the assembly cannot draw rather than cutting silently.
 | | |
 |---|---|
 | **Rule** | `strip_emoji()` runs on every caption before ASS emission. Real emoji require a PNG sticker overlay. |
-| **Lands in** | `editing/captions.py`; asserted by `gates/caption_gate.py` |
+| **Lands in** | `editing/captions.py` (**built**: `strip_emoji`, applied by `render/captions_ass` before emission); asserted by `gates/plan_gate.py` (**built**, fixture `emoji`) |
 | **Mechanism** | libass with a CJK font has no emoji glyphs, so an emoji renders as a tofu box — and it renders that way *into the finished video*, discovered after delivery. |
 | **Source** | Upstream `shorts_vertical.py` `[reported]` |
 

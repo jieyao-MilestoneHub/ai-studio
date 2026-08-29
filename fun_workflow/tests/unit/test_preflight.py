@@ -85,8 +85,26 @@ def test_every_skip_says_why() -> None:
 def test_all_checks_run_in_order() -> None:
     results = run_all(run_suite=False)
 
-    assert [r.number for r in results] == list(range(1, 7))
-    assert len({r.name for r in results}) == 6
+    assert [r.number for r in results] == list(range(1, 8))
+    assert len({r.name for r in results}) == 7
+
+
+def test_the_caption_font_check_asks_fontconfig_or_says_it_cannot(monkeypatch, tmp_path) -> None:
+    """libass substitutes silently; the check must not. A fontsdir with no
+    font files fails, one with a .ttc passes, no fc-match is a SKIP."""
+    from fun_workflow.config import settings as fun_settings
+
+    fun = fun_settings.get_fun_settings()
+    monkeypatch.setattr(fun, "drama_fonts_dir", tmp_path)
+    assert preflight.check_caption_font().status is Status.FAIL
+    (tmp_path / "NotoSansCJK-Regular.ttc").write_bytes(b"x")
+    result = preflight.check_caption_font()
+    assert result.status is Status.PASS and "NotoSansCJK-Regular.ttc" in result.detail
+
+    monkeypatch.setattr(fun, "drama_fonts_dir", None)
+    monkeypatch.setattr(preflight.shutil, "which", lambda _: None)
+    result = preflight.check_caption_font()
+    assert result.status is Status.SKIP and "fc-match" in result.detail
 
 
 def test_the_range_check_proves_206_end_to_end() -> None:
