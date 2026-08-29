@@ -149,7 +149,7 @@ INTERVIEW.md §6 把訪談員釘死為「Teacher 模型（Gemini Flash 免費層
 **類型**：程式。
 
 **仍待辦**：
-1. `examples/probe_lora_rank.py` 在實際目標硬體（T4 或同級）上跑過，把選定的 LoRA rank（TRL 現行參考設定 r=256 起，含 §11 項目 G 要求的降級留痕）記錄進真實的 `TrainingConfig`。
+1. ~~`examples/probe_lora_rank.py` 在實際目標硬體上跑過~~ **已完成（2026-08-29，Modal Tesla T4 14.6 GiB，Qwen3-8B 4-bit + all-linear LoRA + 真實 AdamW step，1×512 tokens）**：r=256 **OOM**（峰值 14.40 GiB）、r=128 OK（12.39）、r=64 OK（9.16）、r=32 OK（7.51）。**§11-G 裁決：`lora_rank=64`**——r=128 只剩約 2 GiB 餘裕，真實資料序列長尾（最長 11k 字元）加上 batch 2 會踩線；r=64 留下約 5 GiB。記錄於 `launch/configs/qwen3-8b-t4-r64-v1.json`（lr 1e-4、batch 2×8=16、max_steps 1000 ≈ 一個 epoch）。第一次真實 probe 曾把四個 rung 全報成 ~14.3 GiB OOM——except 路徑沒釋放前一個模型，且未計 optimizer state；已修正並補上 `run.py` 的 gradient checkpointing（記憶體用、非 config_hash 欄位）。
 2. ~~精簡軌跡集本身（真實行為資料，非玩具/合成）。~~ 已完成 2026-08-29，見上。
 3. Phase 0 待辦的 GCP/Modal/R2/Kaggle/Lightning 帳號就緒後，第一次真實訓練跑；抽測繁簡一致性。
 
