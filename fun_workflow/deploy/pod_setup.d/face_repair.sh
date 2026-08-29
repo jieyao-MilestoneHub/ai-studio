@@ -30,12 +30,24 @@ for repo in ltdrdata/ComfyUI-Impact-Pack ltdrdata/ComfyUI-Impact-Subpack; do
     exit 0
   fi
   if [ -f "$name/requirements.txt" ]; then
-    # Through ComfyUI's own venv, like everything else ComfyUI loads.
-    "$CU/.venv-cu128/bin/pip" install -q -r "$name/requirements.txt" 2>&1 \
-      | grep -viE 'warning|notice' | tail -2 \
-      || log "face-repair: WARNING pip install for $name reported errors"
+    # Through ComfyUI's own venv, like everything else ComfyUI loads. The
+    # exit code is pip's own: a pipe into grep hid a failed install on
+    # 2026-08-29 and Impact-Pack then died on import ("No module named
+    # 'skimage'") while this script reported nothing.
+    if ! "$CU/.venv-cu128/bin/pip" install -q -r "$name/requirements.txt" \
+        > "/workspace/dl-logs/pip-$name.log" 2>&1; then
+      log "face-repair: WARNING pip install for $name failed (see dl-logs/pip-$name.log)"
+    fi
   fi
 done
+# Impact-Pack imports scikit-image at load and its requirements have not
+# always pinned it; install it by name and prove the import before the
+# restart below, so a MISS is explained here rather than in comfy.log.
+"$CU/.venv-cu128/bin/pip" install -q scikit-image > /workspace/dl-logs/pip-scikit-image.log 2>&1 \
+  || log "face-repair: WARNING scikit-image install failed (see dl-logs)"
+"$PY" -c 'import skimage, cv2, segment_anything' 2>/dev/null \
+  && log "face-repair: Impact-Pack imports OK" \
+  || log "face-repair: WARNING Impact-Pack dependencies still missing; FaceDetailer will be MISS"
 mkdir -p "$M/ultralytics/bbox" /workspace/dl-logs
 if [ ! -f "$M/ultralytics/bbox/face_yolov8m.pt" ]; then
   hf download Bingsu/adetailer face_yolov8m.pt --local-dir "$M/ultralytics/bbox" \

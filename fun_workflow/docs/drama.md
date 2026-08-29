@@ -76,14 +76,14 @@ Six equal ten-second shots -- the first dramas -- read as a slideshow:
 
 | shot | beat | frames | seconds | sub-shots | H3 cuts at |
 |---|---|---|---|---|---|
-| 1 | hook | 175 | 7.3 | 2 | 2.5 s (the first cut is the hook) |
+| 1 | hook | 158 | 6.6 | 2 | 2.5 s (the first cut is the hook) |
 | 2 | setup | 243 | 10.1 | 2 | 5.5 s |
-| 3 | conflict | 209 | 8.7 | 1 | — |
-| 4 | turn | 277 | 11.5 | 2 | 6.0 s (the one push-in lives here) |
+| 3 | conflict | 192 | 8.0 | 1 | — |
+| 4 | turn | 243 | 10.1 | 2 | 5.0 s (the one push-in lives here) |
 | 5 | payoff | 243 | 10.1 | 2 | 4.5 s |
-| 6 | cliffhanger | 192 | 8.0 | 1 | — |
+| 6 | cliffhanger | 209 | 8.7 | 1 | — |
 
-1339 frames = 55.8 s before dissolves; ten segments; shot-length CV 0.155
+1288 frames = 53.7 s before dissolves; ten segments; shot-length CV 0.149
 against the upstream kit's 0.11 metronome floor. Framings must alternate
 across all ten sub-shots (a closed vocabulary: wide, medium, medium
 close-up, close-up, over-the-shoulder, two-shot), the anchor and the world
@@ -196,7 +196,37 @@ Every parameter on the `FaceDetailer` node in `workflows/flux_dev_i2i_face.json`
 (`guide_size 512, denoise 0.35, cfg 1.0, steps 12`) is `[speculative]`, authored
 from the node's signature and not yet run.
 
-## What to measure on the first real run
+## The first real run (📏 2026-08-29, RTX 4090 SECURE, EUR-IS-1)
+
+Job 105, 「最後一個飯糰」. What it measured, and what it changed:
+
+- **H3 honours `cut_at_s` under image-to-video.** Shot 1 (wide → medium at
+  2.5 s): frames at 2.4 s and 2.7 s are two different framings of the same
+  woman. The multi-shot prompt works from a keyframe. `AI_STUDIO_DRAMA_SUBSHOTS`
+  stays on.
+- **A clip inside a drama renders in 📏 219–244 s** (209–243 frames), not the
+  79 s the single-job benchmark measured: Flux stays staged in VRAM and the
+  whole H3 stack reloads. `STAGE_RESERVE_S["video"]` = 360 s still covers it.
+- **277 frames OOMs beside the staged Flux weights** (7.6 GiB allocated,
+  1.9 GiB requested, 4 MiB free) after three shorter clips succeeded; after
+  that first OOM ComfyUI's own unload left 16 MiB free and both requeued
+  attempts died in a second. Hence: every template slot ≤ 243 frames
+  (`MAX_SHOT_FRAMES`), `image.evict()` before the first clip, and
+  `clip.evict()` on an OOM before the attempt is handed back.
+- **Wide keyframes came out on the character sheet's grey wall**, no store in
+  sight: image-to-image at 0.70 keeps the source's backdrop. The sheet is
+  now shot inside the world bible's location.
+- **FaceDetailer MISS** — Impact-Pack failed to import (`No module named
+  'skimage'`); `face_repair.sh` piped pip into grep and lost its exit code.
+  Fixed; unverified until the next pod.
+- The three screenwriter calls took 📏 107 s / 45 s / 49 s on gpt-oss-20b
+  (the first includes the 72 s model load); no retry needed. Two clips would
+  have been the wrong beat: shot 6 was written as the phone buzzing, not the
+  lead — the shots prompt should say the lead is in every shot.
+- LINE's monthly push quota was already exhausted, so the group heard
+  nothing either way;「讓我看看」is the pull path.
+
+## What to measure on the next real run
 
 Record these in this file, then say 「可以測試了」:
 

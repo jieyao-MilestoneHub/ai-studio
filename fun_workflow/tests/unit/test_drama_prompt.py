@@ -103,7 +103,7 @@ async def test_three_calls_make_a_six_shot_screenplay() -> None:
     assert len(client.calls) == 3
     assert [s.index for s in screenplay.shots] == list(range(1, SHOT_COUNT + 1))
     assert [s.beat for s in screenplay.shots] == [slot.beat for slot in BEAT_TEMPLATE]
-    assert [s.frames for s in screenplay.shots] == [175, 243, 209, 277, 243, 192]
+    assert [s.frames for s in screenplay.shots] == [158, 243, 192, 243, 243, 209]
     assert screenplay.anchor.appearance == APPEARANCE
     assert screenplay.shots[2].dialogue[0].text == "明天就要收了嗎?"
     assert screenplay.shots[2].dialogue[0].identity == "阿玲, soft, low, slightly hoarse"
@@ -129,8 +129,8 @@ async def test_the_model_never_gets_to_write_the_face_and_hears_the_seam() -> No
     _, shots_user_2 = client.calls[2]
     assert APPEARANCE not in shots_user_1
     assert "阿玲" in shots_user_1
-    assert "Shot 1 (HOOK, 7.3 s, 2 sub-shots: 2.5 s then 4.8 s)" in shots_user_1
-    assert "Shot 3 (CONFLICT, 8.7 s, 1 sub-shot)" in shots_user_1
+    assert "Shot 1 (HOOK, 6.6 s, 2 sub-shots: 2.5 s then 4.1 s)" in shots_user_1
+    assert "Shot 3 (CONFLICT, 8.0 s, 1 sub-shot)" in shots_user_1
     assert "ended on a over-the-shoulder framing" in shots_user_2
 
 
@@ -147,7 +147,7 @@ def test_h3_prompt_cuts_inside_the_clip_at_the_template_time() -> None:
     assert APPEARANCE in rendered and screenplay.world.prefix() in rendered
     assert "[Shot 2] At 00:02.500, the camera cuts to" in rendered
     assert rendered.count("lips remain closed") == 2  # both sub-shots silent
-    assert drama.h3_prompt(screenplay.shots[0], screenplay).duration_s == pytest.approx(175 / 24)
+    assert drama.h3_prompt(screenplay.shots[0], screenplay).duration_s == pytest.approx(158 / 24)
 
     spoken = drama.h3_prompt(screenplay.shots[2], screenplay).render()
     assert "<d>[Mandarin Chinese] 明天就要收了嗎?</d>" in spoken
@@ -166,7 +166,7 @@ def test_status_payload_carries_shots_the_page_already_knows_how_to_render() -> 
     payload = drama.screenplay_payload(screenplay, "llm")
     assert payload["_built_by"] == "llm"
     assert [s["index"] for s in payload["shots"]] == [1, 2, 3, 4, 5, 6]
-    assert payload["shots"][0]["description"].startswith("[hook 7.3s] [close-up]")
+    assert payload["shots"][0]["description"].startswith("[hook 6.6s] [close-up]")
     assert Screenplay.model_validate(payload["screenplay"]) == screenplay
 
 
@@ -245,15 +245,31 @@ def test_a_screenplay_whose_keyframe_lost_the_anchor_does_not_validate() -> None
 def test_a_shot_off_its_template_slot_does_not_validate() -> None:
     sub = SubShot(index=1, framing=Framing.MEDIUM, action="a")
     sub2 = SubShot(index=2, framing=Framing.WIDE, action="b")
-    with pytest.raises(ValidationError, match="must be 175 frames"):
+    with pytest.raises(ValidationError, match="must be 158 frames"):
         DramaShot(index=1, beat=Beat.HOOK, frames=243, scene="s", sub_shots=(sub, sub2), keyframe_prompt="k")
     with pytest.raises(ValidationError, match="has 2 sub-shot"):
-        DramaShot(index=1, beat=Beat.HOOK, frames=175, scene="s", sub_shots=(sub,), keyframe_prompt="k")
+        DramaShot(index=1, beat=Beat.HOOK, frames=158, scene="s", sub_shots=(sub,), keyframe_prompt="k")
     with pytest.raises(ValidationError, match="is the hook"):
-        DramaShot(index=1, beat=Beat.TURN, frames=175, scene="s", sub_shots=(sub, sub2), keyframe_prompt="k")
+        DramaShot(index=1, beat=Beat.TURN, frames=158, scene="s", sub_shots=(sub, sub2), keyframe_prompt="k")
 
 
 def test_shot_indices_must_be_one_to_six() -> None:
     good = _screenplay()
     with pytest.raises(ValidationError, match="exactly 6 shots"):
         Screenplay(title="t", logline="l", anchor=good.anchor, world=good.world, shots=good.shots[:1], overall_soundscape="q")
+
+
+def test_the_character_sheet_stands_in_the_world_not_a_studio() -> None:
+    screenplay = _screenplay()
+    sheets = drama.character_sheet_prompts(screenplay.anchor, screenplay.world)
+    assert set(sheets) == {"front", "three_quarter"}
+    for prompt in sheets.values():
+        assert prompt.startswith(APPEARANCE) and screenplay.world.prefix() in prompt
+        assert "studio" not in prompt
+
+
+def test_no_slot_is_above_the_measured_frame_ceiling() -> None:
+    from fun_workflow.core.drama_spec import MAX_SHOT_FRAMES
+
+    assert MAX_SHOT_FRAMES == 243
+    assert all(slot.frames <= MAX_SHOT_FRAMES for slot in BEAT_TEMPLATE)
