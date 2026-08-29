@@ -47,6 +47,12 @@ image = (
 
 checkpoint_volume = modal.Volume.from_name("twin-checkpoints", create_if_missing=True)
 gemini_secret = modal.Secret.from_name("twin-gemini")  # unused by train.py itself; kept for parity with teacher.py runs sharing this image
+# Everything train.py reads from twin/.env locally (TWIN_CHECKPOINT_STORE_URI,
+# TWIN_TRAJECTORY_STORE_URI, TWIN_ADAPTER_ENCRYPTION_KEY, AWS_* for R2,
+# TWIN_PRINCIPAL_ID) — the image deliberately excludes .env, so on Modal these
+# arrive as a Secret. Create it once from the local .env:
+#   uv run modal secret create twin-train $(grep -E '^(TWIN_(CHECKPOINT|TRAJECTORY)_STORE_URI|TWIN_ADAPTER_ENCRYPTION_KEY|TWIN_PRINCIPAL_ID|AWS_)' .env | xargs)
+train_secret = modal.Secret.from_name("twin-train")
 
 
 @app.function(
@@ -54,7 +60,7 @@ gemini_secret = modal.Secret.from_name("twin-gemini")  # unused by train.py itse
     gpu="T4",
     timeout=6 * 60 * 60,  # SPEC.md §7.3: Modal Starter is the primary loop; long runs go to Kaggle instead of a longer timeout here
     volumes={"/checkpoints": checkpoint_volume},
-    secrets=[gemini_secret],
+    secrets=[gemini_secret, train_secret],
     # SPEC.md §7.3 "MUST 優先使用 spot/preemptible": no opt-in needed here —
     # checked live against Modal's docs (2026-08-27): "All Modal Functions
     # are subject to preemption by default," and the `nonpreemptible`
@@ -67,3 +73,11 @@ gemini_secret = modal.Secret.from_name("twin-gemini")  # unused by train.py itse
 def train_entrypoint(*args: str) -> None:
     subprocess.run(["uv", "sync"], cwd="/twin", check=True)
     subprocess.run(["python", "train.py", "--resume", "auto", *args], cwd="/twin", check=True)
+
+
+@app.function(image=image, gpu="T4", timeout=30 * 60, secrets=[train_secret])
+def probe_entrypoint() -> None:
+    """examples/probe_lora_rank.py on the real target GPU (SPEC.md §11 item G:
+    a human reads the output and records the chosen rank in TrainingConfig)."""
+    subprocess.run(["uv", "sync"], cwd="/twin", check=True)
+    subprocess.run(["python", "examples/probe_lora_rank.py"], cwd="/twin", check=True)

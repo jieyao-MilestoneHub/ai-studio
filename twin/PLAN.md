@@ -130,7 +130,7 @@ INTERVIEW.md §6 把訪談員釘死為「Teacher 模型（Gemini Flash 免費層
 **狀態：訓練垂直切片（`train/model.py`、`checkpoint.py`、`run.py`、`reproducibility.py`、新增 `train/formatting.py`、根目錄 `train.py`、`launch/*`）程式部分已完成（2026-08-27）。最小 `recall()` 已在 §3.8 建好；精簡軌跡集本身（取自真實行為資料）與 LoRA rank 的硬體 probe、真實一輪訓練仍待辦，見下方「仍待辦」。**
 
 - 最小 `recall(query, time_hint)`，以一般工具（C4）形式包在 Phase 1 的碎片之上——刻意簡陋（關鍵字 + 時間窗過濾），尚非完整的 Episode/Period 分層。（已於 §3.8 落地）
-- 精簡軌跡集（§4.10），取自容易觀測、有明確 ground truth 的行為資料——刻意跳過嚴謹的硬負例篩選（§4.3 明確允許在大規模歷史 ingest 之前，先以較低信心或無曝光門檻的負例上路，因為 S3 不在 kill switch 的關鍵路徑上）。**仍待辦**：這批真實精簡軌跡集本身尚未產生，`train/formatting.py` 已備妥把 `Trajectory` 轉成 SFTTrainer 訓練樣本的管線（含 §5.3/D16 的工具名稱遮蔽），等軌跡資料就緒即可餵入。
+- 精簡軌跡集（§4.10），取自容易觀測、有明確 ground truth 的行為資料——刻意跳過嚴謹的硬負例篩選（§4.3 明確允許在大規模歷史 ingest 之前，先以較低信心或無曝光門檻的負例上路，因為 S3 不在 kill switch 的關鍵路徑上）。**已產生（2026-08-29）**：`ingest/trajectories.py::trajectories_from_line_messages()` + `examples/build_trajectories.py`，從同一批 LINE 匯出（同一 manifest、同一組 cutoffs，寫入 `<store>.manifest.json` 供比對）建出 **19,976 筆**（train 15,673 / heldout 3,531 / sealed 772）至 `~/twin-data/data/trajectories.jsonl`。建構規則：對方訊息 burst（同發話者間隔 ≤5 min；實測 p90=2 min）為刺激；相鄰對方 burst 若間隔 ≤ reply_window 且中間無本人發言則合併為一個刺激（`data-hygiene` 指出 22% 的「硬負例」其實是對方連發、本人一併回覆）；本人在 **120 min**（實測回覆延遲 p90）內回覆 → `ActionStep(surface=line)`，否則 `NoActionStep`。曝光證據：LINE 匯出無已讀（§11-H），本人在該室 **24 h 內**再有活動 → `inferred`/`hard`（§4.3 歷史資料低信心，manifest `exposure_note` 明載 **MUST NOT 作 S3 評測來源**），否則 `absent`/`trivial`。晚於 120 min 的回覆在該 tick 記為 `no_action`（`--late-reply skip` 可改為略過）。結果：train 不回應率 14.9%，hard 佔負例 88%（§4.11 SHOULD ≥ 50%；若低於一半腳本直接拒寫，§4.11 MUST NOT）。`train/formatting.build_sft_dataset` 對真實 store 產出 15,673 筆訓練列（中位 203 字元）。`spec-auditor` PASS（三項需人裁決：曝光時點上界、晚回覆歸類、trivial 過半——前兩項已做成參數並取上述預設，第三項改為拒寫）；`data-hygiene` PASS（split 逐筆 0 不符、負例不集中睡眠時段、train 內 0 筆 cutoff 後日期）。**兩個預設（24 h 曝光上界、晚回覆=no_action）是本輪代決，可用 `--exposure-horizon-h`／`--late-reply` 重建推翻。**
 - 選定底模：**Qwen3-8B**（dense、Apache-2.0，2025-05 發布）——8B 級、open-weight、permissive license（§5.1）。與 Qwen3.5-9B（Unsloth 官方文件明講不建議 QLoRA 4-bit，量化品質劣化，bf16-LoRA 需 22GB 超出 T4 預算）、Breeze-7B-Instruct-v1.0（唯一過授權關的繁中專用選項，但生態小、agentic 能力弱、已停止更新）、Llama-3-Taiwan／TAIDE／Gemma 2-3（皆因授權條款不符「Apache-2.0 同等」被排除）比較後定案。繁中/台灣用語預設偏簡體的已知代價，計畫靠訓練資料本身（精簡軌跡集）矯正，而非 prompt。**抽測繁簡一致性仍待辦**（需真實訓練跑完成後才能做）。
 - `train.py` 走 TRL + Accelerate（§7.6 禁止自建 trainer）；checkpoint 契約（§7.4：adapter、optimizer state、LR schedule、RNG state、`global_step`、dataloader cursor）——**已用真實 `kill -9` + `--resume auto` 驗證**（`tests/unit/test_train_checkpoint_kill_resume.py`：全本地、無網路依賴的玩具 Qwen3 模型，真子行程 `SIGKILL`，比對中斷續跑與不中斷對照組的逐步 loss 曲線，容忍度依實測校準）；`run_id` 綁定 seed/dataset_hash/config_hash（§7.5，`train/reproducibility.py`）；載入時做工具名稱遮蔽（§5.3/D16，接在 `train/formatting.py`）；Modal/Kaggle/Lightning 的 `launch/*`（D12）。
 - **Adapter 權重（checkpoint 與最終產出）皆加密儲存**（§8：「Adapter 為個資...MUST 加密儲存」）——`core/encryption.py`（Fernet 對稱加密）、`train/checkpoint.py` 把每次 checkpoint／最終 adapter 打包成單一加密封存檔上傳，`config/settings.py` 新增 `TWIN_ADAPTER_ENCRYPTION_KEY`（無預設值，理由同 `gemini_model`），`examples/generate_adapter_encryption_key.py` 供操作者產生金鑰。範圍明確界定於 adapter 權重本身，不含 `AdapterManifest` JSON（後者是 run_id/雜湊/時間戳等 metadata，本身無法反推行為特徵）。
@@ -150,7 +150,7 @@ INTERVIEW.md §6 把訪談員釘死為「Teacher 模型（Gemini Flash 免費層
 
 **仍待辦**：
 1. `examples/probe_lora_rank.py` 在實際目標硬體（T4 或同級）上跑過，把選定的 LoRA rank（TRL 現行參考設定 r=256 起，含 §11 項目 G 要求的降級留痕）記錄進真實的 `TrainingConfig`。
-2. 精簡軌跡集本身（真實行為資料，非玩具/合成）。
+2. ~~精簡軌跡集本身（真實行為資料，非玩具/合成）。~~ 已完成 2026-08-29，見上。
 3. Phase 0 待辦的 GCP/Modal/R2/Kaggle/Lightning 帳號就緒後，第一次真實訓練跑；抽測繁簡一致性。
 
 ### Phase 5 — Baseline + Judge harness（平行，等待期間完成）
