@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import torch
 from peft import PeftModel
 from pydantic import BaseModel, ConfigDict, model_validator
 from trl import SFTConfig, SFTTrainer
@@ -194,6 +195,18 @@ def main(
             )
         ],
     )
+
+    if config.fp16:
+        # fp16 AMP keeps fp32 master weights and unscales fp32 grads; the LoRA
+        # params are otherwise created in the base checkpoint's dtype (Qwen3-8B:
+        # bf16), and the first real T4 run (Modal, 2026-08-29) died at step 0 with
+        # "_amp_foreach_non_finite_check_and_unscale_cuda not implemented for
+        # 'BFloat16'". Upcasting only the trainable params is the standard QLoRA
+        # fix (what peft.prepare_model_for_kbit_training does) — memory cost is a
+        # few hundred MiB at r=64, well inside the probe's headroom.
+        for param in trainer.model.parameters():
+            if param.requires_grad and param.dtype != torch.float32:
+                param.data = param.data.float()
 
     trainer.train(resume_from_checkpoint=local_checkpoint)
 
