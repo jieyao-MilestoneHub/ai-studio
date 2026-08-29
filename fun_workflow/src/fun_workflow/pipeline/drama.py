@@ -60,12 +60,15 @@ from ai_studio.core.models import CaptionCue, Segment
 from ai_studio.core.observability import utc_now_iso
 from ai_studio.core.provider_spec import ClipRequest
 from ai_studio.editing import transitions
+from ai_studio.gates import plan_gate
+from ai_studio.gates.core import GateContext, enforce, write_report
 from ai_studio.pipeline.residency import make_room_for
 from ai_studio.render import captions_ass
 from ai_studio.render.timeline import Timeline, resolve_timeline, write_offsets
 from ai_studio.storage.base import sha256_file
 
 from fun_workflow.config.settings import get_fun_settings
+from fun_workflow.core import drama_spec
 from fun_workflow.core.drama_spec import (
     FPS,
     WIDE_FRAMINGS,
@@ -132,7 +135,20 @@ async def render_drama(
     # written to disk before any submit. Cheap and deterministic, so it is
     # rewritten on every call; resume semantics stay on the paid artifacts.
     plan = build_plan(screenplay, token=job.token, subshots=fun.drama_subshots)
-    (run_dir / "plan.json").write_text(json.dumps(plan.as_json(), indent=2, ensure_ascii=False), encoding="utf-8")
+    (run_dir / plan_gate.PLAN_FILE).write_text(
+        json.dumps(plan.as_json(), indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    # -- PRE gate: pacing, transitions, captions, as a pure function of plan.json.
+    # A failure is terminal and told to the group; at 2-6 GPU-minutes a clip, a
+    # check after generation is a receipt, not a check.
+    report = plan_gate.run(GateContext(run_dir))
+    write_report(run_dir, report)
+    state.plan_gate = plan_gate.describe(report)
+    save_state(run_dir, state)
+    _log.info("plan gate %s", state.plan_gate.split(":")[0],
+              extra={"stage": "plan_gate", "outcome": "fail" if report.failures else "pass",
+                     "reason": state.plan_gate[:200], "warnings": len(report.warnings)})
+    enforce(report)
     timeline = resolve_timeline(plan.segments, plan.clip_of, plan.transitions, fps=fps)
     write_offsets(run_dir, timeline)
 
@@ -343,6 +359,7 @@ class DramaPlan:
     Ids are derived from the job token, so a resume builds the same plan."""
 
     def __init__(self, screenplay: Screenplay, *, token: str, subshots: bool) -> None:
+        self.subshots = subshots
         self.segments: list[Segment] = []
         self.clip_of: dict[str, str] = {}
         self.cues: list[dict[str, str]] = []
@@ -361,15 +378,22 @@ class DramaPlan:
                 self.clip_of[seg_id] = str(shot.index)
                 lines = sub.dialogue if subshots else shot.dialogue
                 for k, line in enumerate(lines):
-                    self.cues.append({"cue_id": ids.cue_id(seg_id, k), "segment_id": seg_id, "text": line.text})
+                    self.cues.append({"cue_id": ids.cue_id(seg_id, k), "segment_id": seg_id,
+                                      "text": line.text, "color_key": "w"})
             if shot.index > 1:
                 reasons.append(shot.cut_reason)
         self.reasons = reasons
         self.transitions = transitions.plan(reasons)
 
     def as_json(self) -> dict[str, Any]:
+        pacing = drama_spec.pacing_for(subshots=self.subshots)
         return {
             "fps": FPS,
+            "pacing": {
+                "min_s": pacing.min_s, "warn_s": pacing.warn_s, "fail_s": pacing.fail_s,
+                "cv_floor": pacing.cv_floor, "max_consecutive_slow": pacing.max_consecutive_slow,
+                "total_band_s": list(pacing.total_band_s) if pacing.total_band_s else None,
+            },
             "segments": [{**s.model_dump(), "clip": self.clip_of[s.segment_id]} for s in self.segments],
             "transitions": [
                 {"after_clip": str(i + 1), "reason": t.reason.value, "kind": t.kind.value,

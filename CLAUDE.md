@@ -60,8 +60,11 @@ the money, and the numbers — and nothing about who asked for a render:
   white-only colour registry), `render/timeline.py` (`resolve_timeline` →
   `offsets.json`, the only place absolute time is computed),
   `render/captions_ass.py` (segment-bound cues → ASS, the title card) and
-  `media.assemble` (the splice that reads both). `gates/` is still the shell; `planner/` is empty. The
-  consumer is `fun_workflow`'s `/短劇`.
+  `media.assemble` (the splice that reads both), and `gates/plan_gate.py`,
+  the PRE gate over `plan.json` (pacing, transitions, captions) with
+  one-rule-each fixtures under `tests/fixtures/gates/plan_gate/`. The
+  POST gates and `planner/` are not built. The consumer is
+  `fun_workflow`'s `/短劇`.
 
 Not here, by design: anything that knows what a LINE group is. The queue,
 worker loop, webhook, `/短劇` pipeline and screenwriter, the `/himonkey`

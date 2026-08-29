@@ -329,7 +329,8 @@ def _drama_block(job: Job, plan: dict[str, Any]) -> str:
             parts.append(
                 f"<p><b>進度</b> 角色 {len(state.character)}/2 · 首幀 {len(state.keyframes)}/{SHOT_COUNT}"
                 f" · 影片 {len(state.clips)}/{SHOT_COUNT} · {done}"
-                f"<br><b>臉部修復</b> {html.escape(state.face_repair)}"
+                f"<br><b>剪接檢查</b> {html.escape(state.plan_gate)}"
+                f" · <b>臉部修復</b> {html.escape(state.face_repair)}"
                 f" · <b>GPU 花費</b> ${state.spent_usd:.2f}</p>"
             )
     shots = plan.get("shots") or []

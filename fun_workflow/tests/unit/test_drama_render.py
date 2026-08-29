@@ -257,6 +257,9 @@ async def test_all_flux_then_all_h3_then_one_file(parsed_job, tmp_path: Path, fa
     assert plan["transitions"][2] == {"after_clip": "3", "reason": "time_passing", "kind": "dissolve", "downgraded_from": None}
     assert [c["text"] for c in plan["cues"]] == ["沒事。"]
     assert offsets["clip_offsets"][1] == pytest.approx(175 / 24)
+    gate = json.loads((run_dir / "gates" / "plan_gate.json").read_text(encoding="utf-8"))
+    assert gate["gate"] == "plan_gate" and [f["rule_id"] for f in gate["findings"]] == ["R-BAND-WARN"]
+    assert drama.load_state(run_dir).plan_gate == "passed with 1 warning(s): R-BAND-WARN"
     captions = (run_dir / "captions.ass").read_text(encoding="utf-8")
     assert "Dialogue: 0,0:00:00.00,0:00:01.50,Title,,0,0,0,,{\\fad(0,300)}夜市的信" in captions
     # Shot 3 is one 8.7 s segment starting at 175+243 frames, minus the margin.
@@ -562,3 +565,23 @@ def test_a_state_file_with_the_old_concat_stage_still_loads(tmp_path: Path) -> N
     )
     state = drama.load_state(tmp_path)
     assert state.stages["concat"].started_at and state.plan_gate == "pending"
+
+
+async def test_a_plan_that_fails_the_gate_spends_nothing(parsed_job, tmp_path: Path, fake_ffmpeg, monkeypatch) -> None:
+    """The PRE gate runs before the cost gate and before any submit; a
+    metronome floor no template can meet proves the order."""
+    from ai_studio.core.errors import GateFailure
+    from ai_studio.editing.rhythm import PacingPolicy
+
+    from fun_workflow.core import drama_spec
+
+    monkeypatch.setattr(drama_spec, "DRAMA_PACING", PacingPolicy(min_s=2.0, warn_s=8.0, fail_s=12.5, cv_floor=0.9))
+    q, job = parsed_job
+    job = await _with_screenplay(q, job)
+    ledger = Ledger()
+    with pytest.raises(GateFailure, match="R-CV"):
+        await _render(job, {MediaKind.IMAGE: FakeImageProvider(ledger), MediaKind.VIDEO: FakeClipProvider(ledger)}, tmp_path)
+    assert ledger.events == [] and fake_ffmpeg == []
+    run_dir = tmp_path / "runs" / "drama" / job.token
+    assert (run_dir / "gates" / "plan_gate.json").is_file()
+    assert drama.load_state(run_dir).plan_gate.startswith("failed: ")

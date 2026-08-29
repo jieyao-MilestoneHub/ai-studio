@@ -48,7 +48,9 @@ real drama shows whether the keyframe chain alone holds the face.
                           1-2 × sub_shot{framing, action, camera, line}} }
       │        stored in jobs.prompt_json; ScreenplayError ⇒ job FAILED + LINE reply
       ▼  render_drama()   —  runs/drama/<token>/state.json after every artifact
-   0  plan       plan.json (segments, cut reasons, cues) → render.timeline →
+   0  plan       plan.json (segments, cut reasons, cues, pacing band) →
+                 gates/plan_gate.json: pacing / transitions / captions checked,
+                 a FAIL is terminal before any submit → render.timeline →
                  offsets.json: the only place absolute time is computed   (CPU, free)
    1  character  Flux T2I ×2  front + three-quarter, 864×480     ┐ make_room_for(IMAGE)
    2  keyframes  Flux i2i ×6  from character/front.png, denoise 0.55  │ once
@@ -89,6 +91,15 @@ bible are pasted verbatim into every keyframe and H3 prompt, and `push_in`
 is allowed once, on the turn. All of that is `Screenplay`'s validator, so a
 screenplay that breaks it fails at conversion, not on the pod.
 
+**The gate runs before the money.** `ai_studio.gates.plan_gate` reads
+`plan.json` and nothing else: the pacing band (`DRAMA_PACING`, or the
+looser `DRAMA_PACING_HELD` with sub-shots off), the transition caps and
+hard-cut ratio, every caption's read speed and line length, and that every
+cue points at a real segment. Warnings are recorded; a failure ends the
+job with the rule id in the LINE reply. The fixture drama warns twice --
+the held conflict shot, and two dissolves over nine splices -- which is
+the gate reading the grammar correctly.
+
 **Cuts mean something.** `cut_reason` on a shot is what the cut *into* it
 means; `ai_studio.editing.transitions` maps it to an effect and downgrades
 anything it has no evidence for -- with generated clips, only
@@ -110,7 +121,8 @@ graph scales and centre-crops the source to the bound size, so the keyframe
 
 ```
 state.json            DramaState: every artifact with path + sha256 + cost, face_repair, spent_usd
-plan.json             segments, clip boundaries with their cut reasons, caption cues -- no times
+plan.json             segments, clip boundaries with their cut reasons, caption cues, the pacing band -- no times
+gates/plan_gate.json  the PRE gate's report; its one-line verdict is state.json's plan_gate and the status page's 剪接檢查
 offsets.json          the timeline: every segment's start/end, every boundary, clip offsets, total
 captions.ass          the title card and every spoken line, times copied from offsets.json
 character/{front,three_quarter}.png
@@ -120,7 +132,7 @@ leveled/shot_{1..6}.mp4
 render_manifest.json  every ffmpeg argv, literally
 ```
 
-`plan.json` and `offsets.json` are rewritten on every call -- they are
+`plan.json`, `gates/plan_gate.json` and `offsets.json` are rewritten on every call -- they are
 derived from the screenplay and cost nothing. An artifact counts only if
 the file exists **and still hashes right**. A lease
 end, a requeue or a worker restart re-renders exactly what is missing or
