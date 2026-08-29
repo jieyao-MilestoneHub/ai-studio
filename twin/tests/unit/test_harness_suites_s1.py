@@ -238,3 +238,22 @@ def test_sample_held_out_windows_is_deterministic_stratified_and_heldout_only() 
     )
     with pytest.raises(HarnessError):
         sample_held_out_windows([sealed])
+
+
+def test_sample_held_out_windows_never_returns_a_fragment_twice() -> None:
+    from datetime import datetime, timedelta
+
+    from twin.harness.suites.s1 import sample_held_out_windows
+    from twin.ingest.fragment import fragment_from_text_record
+
+    frags = [
+        fragment_from_text_record(
+            principal_id="p", content=f"m{i}", event_time=datetime(2026, 3, 1) + timedelta(minutes=i),
+            precision=Precision.MINUTE, confidence=1.0, source_class=SourceClass.BEHAVIOR,
+            modality=Modality.MESSAGE, train_cutoff=datetime(2026, 1, 1), sealed_cutoff=datetime(2027, 1, 1),
+        )
+        for i in range(481)
+    ]
+    for n in (481, 490, 499):
+        picked = sample_held_out_windows(frags[:n])
+        assert len(picked) == len({f.fragment_id for f in picked})

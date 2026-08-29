@@ -215,8 +215,17 @@ def sample_held_out_windows(
         base = int(i * stride)
         start = min(base + rng.randrange(max(1, int(stride) - window_size + 1)), len(ordered) - window_size)
         chosen.extend(ordered[start : start + window_size])
-    # windows never overlap when stride >= window_size, which the size guard above guarantees
-    return chosen
+    # Windows can overlap when the set is only slightly larger than
+    # window_size * window_count (stride < window_size) — spec-auditor found
+    # 481 fragments yielding 469 unique. Dedupe in order so no fragment ever
+    # carries two labels or appears twice in the bank's dataset hash.
+    seen: set[str] = set()
+    unique: list[Fragment] = []
+    for fragment in chosen:
+        if fragment.fragment_id not in seen:
+            seen.add(fragment.fragment_id)
+            unique.append(fragment)
+    return unique
 
 
 def build_item_bank(*, held_out_fragment_ids: list[str], teacher: Teacher, fragment_store_uri: str) -> list[S1Item]:
