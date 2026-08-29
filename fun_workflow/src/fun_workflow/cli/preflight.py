@@ -14,6 +14,8 @@ behind a flag rather than merely credential-gated.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -311,6 +313,34 @@ def check_files_range() -> CheckResult:
 
 
 
+def check_caption_font() -> CheckResult:
+    """7. The /短劇 caption font resolves to a CJK face on this host.
+
+    libass never fails on a missing font: it substitutes, and Mandarin
+    captions come out as boxes in a file that has already been pushed. The
+    check asks fontconfig what it would actually use.
+    """
+    fun = get_fun_settings()
+    name = f"caption font '{fun.drama_font_name}' resolves to a CJK face"
+    if fun.drama_fonts_dir is not None:
+        files = [p.name for p in Path(fun.drama_fonts_dir).glob("*") if p.suffix.lower() in (".ttf", ".ttc", ".otf")]
+        if not files:
+            return fail(7, name, f"AI_STUDIO_DRAMA_FONTS_DIR={fun.drama_fonts_dir} holds no font files")
+        return passed(7, name, f"fontsdir with {len(files)} file(s): {', '.join(files[:3])}")
+    if shutil.which("fc-match") is None:
+        return skip(7, name, "fc-match not on PATH (no fontconfig); set AI_STUDIO_DRAMA_FONTS_DIR")
+    proc = subprocess.run(
+        ["fc-match", "-f", "%{family}|%{file}", fun.drama_font_name],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30.0, check=False,
+    )
+    if proc.returncode != 0:
+        return fail(7, name, (proc.stderr or proc.stdout).strip()[:200])
+    family, _, file = proc.stdout.strip().partition("|")
+    if "cjk" not in family.lower() and "cjk" not in file.lower():
+        return fail(7, name, f"fontconfig substitutes {family!r} ({file}); captions would render as boxes")
+    return passed(7, name, f"{family} ({Path(file).name})")
+
+
 def run_all(*, run_suite: bool = True, send_push: bool = False) -> list[CheckResult]:
     """The request side's checklist. Numbered as a person reads it."""
     return run_checks([
@@ -320,4 +350,5 @@ def run_all(*, run_suite: bool = True, send_push: bool = False) -> list[CheckRes
         check_out_of_hours,
         lambda: check_push(send=send_push),
         check_files_range,
+        check_caption_font,
     ])

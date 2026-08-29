@@ -22,6 +22,11 @@ the expensive mistakes are all about ordering and re-payment:
   segments and cut reasons become `plan.json`; `render.timeline` lays them
   out into `offsets.json`; `media.assemble` splices the clips with exactly
   those numbers. Nothing in this module adds seconds together.
+- **Captions are bound to segments, never to seconds.** The screenplay's
+  lines ride in `plan.json` as cues on a segment id; `render.captions_ass`
+  windows each one to its segment's timeline entry, and the title card is
+  the hook's first 1.5 s. The Mandarin text is the screenwriter's; the
+  typesetting is ai-studio's.
 - **The face is re-anchored every shot.** Keyframes are image-to-image from the
   *character sheet* -- never from the previous shot's last frame -- with the
   anchor string verbatim in the prompt, so drift cannot accumulate across
@@ -51,11 +56,12 @@ from ai_studio.core import ids
 from ai_studio.core.enums import GenMode, MediaKind, TransitionReason
 from ai_studio.core.errors import AIStudioError, CostCeilingExceeded, DramaResume, ProviderError
 from ai_studio.core.image_provider_spec import ImageRequest
-from ai_studio.core.models import Segment
+from ai_studio.core.models import CaptionCue, Segment
 from ai_studio.core.observability import utc_now_iso
 from ai_studio.core.provider_spec import ClipRequest
 from ai_studio.editing import transitions
 from ai_studio.pipeline.residency import make_room_for
+from ai_studio.render import captions_ass
 from ai_studio.render.timeline import Timeline, resolve_timeline, write_offsets
 from ai_studio.storage.base import sha256_file
 
@@ -286,11 +292,16 @@ async def render_drama(
     state.stage_start("assemble", utc_now_iso())
     if not _fresh(state.output):
         ordered = [Path(state.leveled[str(s.index)].path) for s in screenplay.shots]
+        captions = write_captions(run_dir, screenplay, plan, timeline, font=fun.drama_font_name,
+                                  play_res=(width, height))
+        state.captions = ArtifactRecord(path=str(captions), sha256=sha256_file(captions), created_at=utc_now_iso())
         argv = media.assemble(
             ordered, output,
             boundaries=assemble_boundaries(timeline),
             clip_offsets=timeline.clip_offsets,
             total_s=timeline.total_s,
+            subtitles=captions,
+            fonts_dir=fun.drama_fonts_dir,
         )
         state.ffmpeg_argv.append(argv)
         state.output = ArtifactRecord(path=str(output), sha256=sha256_file(output), created_at=utc_now_iso())
@@ -310,6 +321,7 @@ async def render_drama(
                     "plan_gate": state.plan_gate,
                     "timeline": {"total_s": timeline.total_s, "segments": len(timeline.segments),
                                  "dissolves": sum(b.kind.value == "dissolve" for b in timeline.boundaries)},
+                    "captions": {"file": captions_ass.CAPTIONS_FILE, "cues": len(plan.cues)},
                     "stages": {k: v.model_dump() for k, v in state.stages.items()},
                     "ffmpeg": state.ffmpeg_argv,
                 },
@@ -370,6 +382,20 @@ class DramaPlan:
 
 def build_plan(screenplay: Screenplay, *, token: str, subshots: bool) -> DramaPlan:
     return DramaPlan(screenplay, token=token, subshots=subshots)
+
+
+def write_captions(
+    run_dir: Path, screenplay: Screenplay, plan: DramaPlan, timeline: Timeline, *,
+    font: str, play_res: tuple[int, int],
+) -> Path:
+    """`runs/drama/<token>/captions.ass`: the title card over the hook, then
+    every spoken line windowed to the segment it belongs to."""
+    cues = [CaptionCue(cue_id=c["cue_id"], segment_id=c["segment_id"], text=c["text"]) for c in plan.cues]
+    events = [captions_ass.title_card(screenplay.title), *captions_ass.cue_events(cues, timeline)]
+    doc = captions_ass.AssDocument(
+        play_res=play_res, styles=captions_ass.default_styles(font, play_res), events=tuple(events),
+    )
+    return captions_ass.write(run_dir / captions_ass.CAPTIONS_FILE, doc)
 
 
 def assemble_boundaries(timeline: Timeline) -> list[media.AssembleBoundary]:

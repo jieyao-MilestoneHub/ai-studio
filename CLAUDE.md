@@ -56,9 +56,11 @@ the money, and the numbers — and nothing about who asked for a render:
   (MIT), specified in `docs/editing-grammar.md`. Built so far:
   `editing/format_policy.py`, `editing/transitions.py` (the reason → kind
   table, caps, evidence downgrade), `editing/rhythm.py` (pacing band, CV
-  floor), `render/timeline.py` (`resolve_timeline` → `offsets.json`, the
-  only place absolute time is computed) and `media.assemble` (the splice
-  that reads it). `gates/` is still the shell; `planner/` is empty. The
+  floor), `editing/captions.py` (line breaking, read speed, no emoji,
+  white-only colour registry), `render/timeline.py` (`resolve_timeline` →
+  `offsets.json`, the only place absolute time is computed),
+  `render/captions_ass.py` (segment-bound cues → ASS, the title card) and
+  `media.assemble` (the splice that reads both). `gates/` is still the shell; `planner/` is empty. The
   consumer is `fun_workflow`'s `/短劇`.
 
 Not here, by design: anything that knows what a LINE group is. The queue,

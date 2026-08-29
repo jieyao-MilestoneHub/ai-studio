@@ -336,6 +336,9 @@ class DramaState(BaseModel):
     keyframes: dict[str, ArtifactRecord] = Field(default_factory=dict)
     clips: dict[str, ArtifactRecord] = Field(default_factory=dict)
     leveled: dict[str, ArtifactRecord] = Field(default_factory=dict)
+    captions: ArtifactRecord | None = None
+    """`captions.ass`, rewritten with the output; recorded so the manifest
+    and a reader can find what was burned in."""
     output: ArtifactRecord | None = None
 
     face_repair: str = "pending"

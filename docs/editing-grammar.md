@@ -9,8 +9,10 @@ per-module map and for what we deliberately left behind.
 > enforces it and says whether that module exists; a rule is not "done" until
 > it has an implementation, a gate assertion, and a fixture that fails without
 > it. Built: §2.3, §3.1–3.3 (`editing/transitions.py`), §4.1
-> (`render/timeline.py`), §5.3 and §5.5–5.6 (`media.py`), §6
-> (`editing/format_policy.py`). The gate assertions are still the shell.
+> (`render/timeline.py` + `render/captions_ass.py`), §4.2–4.4 in part
+> (`editing/captions.py`: white-only registry, read speed, no emoji), §5.3
+> and §5.5–5.6 (`media.py`), §6 (`editing/format_policy.py`). The gate
+> assertions are still the shell.
 
 Every rule carries four fields:
 
@@ -169,7 +171,7 @@ any kind the assembly cannot draw rather than cutting silently.
 | | |
 |---|---|
 | **Rule** | Base colour is always white. At most **2** non-white colours per video. Coloured characters ≤ **35%** of all characters. Colour words, never whole sentences — if a coloured word is ≥60% of its sentence, cancel the colouring. Same meaning keeps the same colour throughout. |
-| **Lands in** | `editing/captions.py`; asserted by `gates/caption_gate.py` |
+| **Lands in** | `editing/captions.py` (**built** as a one-entry registry: `COLOR_KEYS = {"w"}`, `resolve_color` raises on anything else; the 35% and two-colour caps wait for a palette); asserted by `gates/caption_gate.py` (not yet) |
 | **Mechanism** | Colour carries meaning only while it is scarce. Numbers and prices take the accent; everything else stays white. |
 | **Source** | Upstream `caption-art-direction.md` `[reported]` |
 
@@ -178,7 +180,7 @@ any kind the assembly cannot draw rather than cutting silently.
 | | |
 |---|---|
 | **Rule** | Chinese: **>5 chars/sec warns, >7 chars/sec fails.** Target caption cadence is median dwell ≤1.8s and ≥30 changes/min — but read speed wins the conflict. Sacrifice density for legibility, never the reverse. |
-| **Lands in** | `gates/caption_gate.py` |
+| **Lands in** | `editing/captions.py` (**built**: `read_speed`, `check` reports C-READ-WARN/FAIL); asserted by `gates/caption_gate.py` (not yet) |
 | **Mechanism** | Upstream's phrasing: 讀不完＝白寫 — a caption nobody can finish reading was not written. Dense captions that cannot be read are worse than sparse ones that can. |
 | **Source** | Upstream `shorts_gate.py` S-R/S-O `[reported]` |
 
@@ -187,7 +189,7 @@ any kind the assembly cannot draw rather than cutting silently.
 | | |
 |---|---|
 | **Rule** | `strip_emoji()` runs on every caption before ASS emission. Real emoji require a PNG sticker overlay. |
-| **Lands in** | `editing/captions.py`; asserted by `gates/caption_gate.py` |
+| **Lands in** | `editing/captions.py` (**built**: `strip_emoji`, applied by `render/captions_ass` before emission); asserted by `gates/caption_gate.py` (not yet) |
 | **Mechanism** | libass with a CJK font has no emoji glyphs, so an emoji renders as a tofu box — and it renders that way *into the finished video*, discovered after delivery. |
 | **Source** | Upstream `shorts_vertical.py` `[reported]` |
 
