@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -171,6 +172,37 @@ def _to_items(
             )
         )
     return items
+
+
+def sample_held_out_windows(
+    fragments: list[Fragment], *, window_size: int = 12, window_count: int = 40, seed: int = 0
+) -> list[Fragment]:
+    """Pick a deterministic, time-stratified subset of held-out fragments to
+    render into the one Teacher prompt. A real held-out set (2026-08-29:
+    15,106 messages, ~1.7M chars) is ~30x over `_MAX_PROMPT_CHARS`, and the
+    cap must not be met by truncation. Windows are *contiguous runs* in
+    event_time order — recall/reaction items need the surrounding exchange,
+    not isolated lines — and their starts are spread evenly across the
+    held-out span with a seeded jitter, so every month is represented and the
+    same (fragments, seed) always yields the same subset (the frozen bank's
+    `source_fragment_dataset_hash` stays reproducible). Only `Split.HELDOUT`
+    fragments are accepted (EVAL.md §3.1, §12 anti-pattern #7)."""
+    if window_size < 1 or window_count < 1:
+        raise ValueError("window_size and window_count must be >= 1")
+    if any(f.split != Split.HELDOUT for f in fragments):
+        raise HarnessError("sample_held_out_windows only accepts Split.HELDOUT fragments")
+    ordered = sorted(fragments, key=lambda f: (f.event_time.value, f.fragment_id))
+    if len(ordered) <= window_size * window_count:
+        return ordered
+    rng = random.Random(seed)
+    stride = (len(ordered) - window_size) / window_count
+    chosen: list[Fragment] = []
+    for i in range(window_count):
+        base = int(i * stride)
+        start = min(base + rng.randrange(max(1, int(stride) - window_size + 1)), len(ordered) - window_size)
+        chosen.extend(ordered[start : start + window_size])
+    # windows never overlap when stride >= window_size, which the size guard above guarantees
+    return chosen
 
 
 def build_item_bank(*, held_out_fragment_ids: list[str], teacher: Teacher, fragment_store_uri: str) -> list[S1Item]:

@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 
 from twin.core.enums import Split
-from twin.ingest.line_ingest import IngestRefused, ingest_line_export
+from twin.ingest.line_ingest import (
+    IngestRefused,
+    LineExportSource,
+    ingest_line_export,
+    ingest_line_exports,
+)
 from twin.ingest.store import read_fragments_jsonl
 
 EXPORT = """2026.01.10 星期六
@@ -80,3 +85,36 @@ def test_refuses_when_sealed_window_is_empty(tmp_path: Path) -> None:
     with pytest.raises(IngestRefused, match="0 sealed"):
         _run(tmp_path, now=datetime(2027, 6, 1))
     assert not (tmp_path / "data" / "fragments.jsonl").exists()
+
+
+EXPORT_2 = """2026.04.01 星期三
+08:00 Carol 嗨
+08:01 Alice Chen 嗨
+"""
+
+
+def test_multiple_rooms_merge_into_one_store_sorted_by_time(tmp_path: Path) -> None:
+    uri = f"file://{tmp_path}/data/fragments.jsonl"
+    summary = ingest_line_exports(
+        [
+            LineExportSource(text=EXPORT, known_senders=KNOWN, label="a"),
+            LineExportSource(text=EXPORT_2, known_senders=["Alice Chen", "Carol"], label="b"),
+        ],
+        uri=uri, principal_id="p", principal_display_name="Alice Chen",
+        train_cutoff=TRAIN_CUTOFF, now=NOW,
+    )
+    stored = list(read_fragments_jsonl(uri))
+    assert summary.total == len(stored) == 8
+    times = [f.event_time.value for f in stored]
+    assert times == sorted(times)
+    assert sum(1 for f in stored if f.split == Split.HELDOUT) == 4
+    assert sum(1 for f in stored if f.content.startswith("Carol:") and f.third_party_spans) == 1
+
+
+def test_multiple_rooms_refuse_when_one_omits_principal(tmp_path: Path) -> None:
+    with pytest.raises(IngestRefused, match="known_senders"):
+        ingest_line_exports(
+            [LineExportSource(text=EXPORT_2, known_senders=["Carol"], label="b")],
+            uri=f"file://{tmp_path}/x.jsonl", principal_id="p", principal_display_name="Alice Chen",
+            train_cutoff=TRAIN_CUTOFF, now=NOW,
+        )

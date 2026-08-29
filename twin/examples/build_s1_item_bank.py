@@ -33,9 +33,11 @@ from twin.config.settings import get_settings
 from twin.core.enums import Split
 from twin.core.hashing import dataset_hash
 from twin.harness.item_bank import S1BankManifest, bank_hash, write_item_bank_once
-from twin.harness.suites.s1 import build_item_bank
+from twin.harness.suites.s1 import build_item_bank, sample_held_out_windows
 from twin.ingest.store import read_fragments_jsonl
 from twin.teacher.gemini import GeminiTeacher
+
+SAMPLE_SEED = 0  # deterministic: same store + seed -> same sampled subset -> same dataset hash
 
 _ITEM_TYPES = ("value_tradeoff", "preference", "reaction_tendency", "recall")
 
@@ -52,17 +54,18 @@ def main() -> None:
             f"LINE-export ingest first (twin/PLAN.md)."
         )
 
-    held_out_ids = [
-        fragment.fragment_id
-        for fragment in read_fragments_jsonl(settings.fragment_store_uri)
-        if fragment.split == Split.HELDOUT
-    ]
-    if not held_out_ids:
+    held_out = [f for f in read_fragments_jsonl(settings.fragment_store_uri) if f.split == Split.HELDOUT]
+    if not held_out:
         sys.exit(
             f"0 held-out fragments found in {settings.fragment_store_uri} — run "
             f"Phase 1's real LINE-export ingest first (twin/PLAN.md)."
         )
-    print(f"{len(held_out_ids)} held-out fragments found — making one Teacher call...")
+    sampled = sample_held_out_windows(held_out, seed=SAMPLE_SEED)
+    held_out_ids = [f.fragment_id for f in sampled]
+    print(
+        f"{len(held_out)} held-out fragments found; {len(held_out_ids)} sampled in time-stratified "
+        f"windows (seed={SAMPLE_SEED}) — making one Teacher call..."
+    )
 
     teacher = GeminiTeacher.from_settings(settings)
     bank = build_item_bank(

@@ -99,6 +99,15 @@ def check_split_order(summary: IngestSummary) -> None:
         )
 
 
+@dataclass(frozen=True)
+class LineExportSource:
+    """One export file's text plus the closed set of display names in it."""
+
+    text: str
+    known_senders: list[str]
+    label: str = ""
+
+
 def ingest_line_export(
     text: str,
     *,
@@ -111,32 +120,67 @@ def ingest_line_export(
     sealed_fraction: float = 0.2,
     overwrite: bool = False,
 ) -> IngestSummary:
-    """Parse, split, tag, write. Raises `IngestRefused` (nothing written) when
-    the store already exists without `overwrite`, or when the export yields
-    no held-out fragment (Phase 2's item bank has nothing to draw from — the
-    fix is an earlier `train_cutoff`, not an empty bank)."""
+    """Single-export convenience over `ingest_line_exports`."""
+    return ingest_line_exports(
+        [LineExportSource(text=text, known_senders=known_senders)],
+        uri=uri,
+        principal_id=principal_id,
+        principal_display_name=principal_display_name,
+        train_cutoff=train_cutoff,
+        now=now,
+        sealed_fraction=sealed_fraction,
+        overwrite=overwrite,
+    )
+
+
+def ingest_line_exports(
+    sources: list[LineExportSource],
+    *,
+    uri: str,
+    principal_id: str,
+    principal_display_name: str,
+    train_cutoff: datetime,
+    now: datetime,
+    sealed_fraction: float = 0.2,
+    overwrite: bool = False,
+) -> IngestSummary:
+    """Parse, split, tag, write — several chat rooms of ONE principal, merged
+    into one store under one set of cutoffs (SPEC.md §4.8/D21: a store holds
+    exactly one split policy, which is why this takes all exports at once
+    rather than appending). Raises `IngestRefused` (nothing written) when the
+    store already exists without `overwrite`, when any source's
+    `known_senders` omits the principal, or when the merged result has no
+    held-out / no sealed fragment (Phase 2's item bank has nothing to draw
+    from — the fix is an earlier `train_cutoff`, not an empty bank)."""
     fs, path = fsspec.core.url_to_fs(uri)
     if fs.exists(path) and not overwrite:
         raise IngestRefused(
             f"fragment store already exists at {uri} — write_fragments_jsonl overwrites wholesale, "
             f"and a frozen S1 item bank may reference it. Pass overwrite=True only if you mean it."
         )
-    if principal_display_name not in known_senders:
-        raise IngestRefused(
-            f"principal_display_name {principal_display_name!r} is not in known_senders {known_senders!r}"
-        )
+    if not sources:
+        raise IngestRefused("no export sources given")
+    for source in sources:
+        if principal_display_name not in source.known_senders:
+            raise IngestRefused(
+                f"principal_display_name {principal_display_name!r} is not in known_senders "
+                f"{source.known_senders!r} (source {source.label or '?'})"
+            )
 
     sealed_cutoff = sealed_cutoff_for(train_cutoff=train_cutoff, now=now, sealed_fraction=sealed_fraction)
-    fragments = list(
-        fragments_from_line_export(
-            text,
-            principal_id=principal_id,
-            principal_display_name=principal_display_name,
-            known_senders=known_senders,
-            train_cutoff=train_cutoff,
-            sealed_cutoff=sealed_cutoff,
+    fragments: list[Fragment] = []
+    for source in sources:
+        fragments.extend(
+            fragments_from_line_export(
+                source.text,
+                principal_id=principal_id,
+                principal_display_name=principal_display_name,
+                known_senders=source.known_senders,
+                train_cutoff=train_cutoff,
+                sealed_cutoff=sealed_cutoff,
+            )
         )
-    )
+    fragments.sort(key=lambda f: f.event_time.value)
     summary = summarize(fragments, train_cutoff=train_cutoff, sealed_cutoff=sealed_cutoff, uri=uri)
     check_split_order(summary)
     if summary.splits[Split.HELDOUT].count == 0:

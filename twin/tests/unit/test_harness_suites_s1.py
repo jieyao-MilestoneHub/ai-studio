@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from twin.core.enums import Modality, SourceClass, Split
+from twin.core.enums import Modality, Precision, SourceClass, Split
 from twin.core.fragment import EventTime, Fragment
 from twin.harness.schema import HarnessError
 from twin.harness.suites.s1 import (
@@ -199,3 +199,39 @@ def test_prompt_contains_fragment_ids_and_content(tmp_path: Path) -> None:
 
     assert "frag-1" in teacher.calls[0]
     assert "the actual content" in teacher.calls[0]
+
+
+def test_sample_held_out_windows_is_deterministic_stratified_and_heldout_only() -> None:
+    from datetime import datetime, timedelta
+
+    from twin.harness.suites.s1 import sample_held_out_windows
+    from twin.ingest.fragment import fragment_from_text_record
+
+    t0 = datetime(2026, 3, 1)
+    frags = [
+        fragment_from_text_record(
+            principal_id="p", content=f"m{i}", event_time=t0 + timedelta(hours=i), precision=Precision.MINUTE,
+            confidence=1.0, source_class=SourceClass.BEHAVIOR, modality=Modality.MESSAGE,
+            train_cutoff=datetime(2026, 1, 1), sealed_cutoff=datetime(2027, 1, 1),
+        )
+        for i in range(1000)
+    ]
+    a = sample_held_out_windows(frags, window_size=5, window_count=10, seed=3)
+    b = sample_held_out_windows(frags, window_size=5, window_count=10, seed=3)
+    assert [f.fragment_id for f in a] == [f.fragment_id for f in b]
+    assert len(a) == 50 and len({f.fragment_id for f in a}) == 50
+    # contiguous windows: consecutive picks inside a window are 1h apart
+    times = [datetime.fromisoformat(f.event_time.value) for f in a]
+    assert all((times[i + 1] - times[i]) == timedelta(hours=1) for i in range(len(a) - 1) if (i + 1) % 5)
+    # stratified: first window in the first tenth, last window in the last tenth
+    assert times[0] < t0 + timedelta(hours=100) and times[-1] > t0 + timedelta(hours=900)
+    assert sample_held_out_windows(frags[:20], window_size=5, window_count=10) == sorted(
+        frags[:20], key=lambda f: f.event_time.value
+    )
+    sealed = fragment_from_text_record(
+        principal_id="p", content="x", event_time=datetime(2027, 6, 1), precision=Precision.MINUTE,
+        confidence=1.0, source_class=SourceClass.BEHAVIOR, modality=Modality.MESSAGE,
+        train_cutoff=datetime(2026, 1, 1), sealed_cutoff=datetime(2027, 1, 1),
+    )
+    with pytest.raises(HarnessError):
+        sample_held_out_windows([sealed])
