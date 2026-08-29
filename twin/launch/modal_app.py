@@ -43,6 +43,11 @@ image = (
         # `twin-gemini` Modal Secret, not by shipping the plaintext file.
         ignore=[".env", ".git", ".venv", "__pycache__", "data", "adapters", "transcripts", "eval"],
     )
+    # Resolve the venv at image-build time (cached across calls) — the first
+    # real run (2026-08-29) did `uv sync` per call and then invoked bare
+    # `python`, i.e. the system interpreter without torch. Every entrypoint
+    # below MUST go through `uv run` for the same reason.
+    .run_commands("cd /twin && uv sync --no-dev")
 )
 
 checkpoint_volume = modal.Volume.from_name("twin-checkpoints", create_if_missing=True)
@@ -71,13 +76,11 @@ train_secret = modal.Secret.from_name("twin-train")
     # (SPEC.md §7.4) matters here specifically, not just in theory.
 )
 def train_entrypoint(*args: str) -> None:
-    subprocess.run(["uv", "sync"], cwd="/twin", check=True)
-    subprocess.run(["python", "train.py", "--resume", "auto", *args], cwd="/twin", check=True)
+    subprocess.run(["uv", "run", "--no-sync", "python", "train.py", "--resume", "auto", *args], cwd="/twin", check=True)
 
 
 @app.function(image=image, gpu="T4", timeout=30 * 60, secrets=[train_secret])
 def probe_entrypoint() -> None:
     """examples/probe_lora_rank.py on the real target GPU (SPEC.md §11 item G:
     a human reads the output and records the chosen rank in TrainingConfig)."""
-    subprocess.run(["uv", "sync"], cwd="/twin", check=True)
-    subprocess.run(["python", "examples/probe_lora_rank.py"], cwd="/twin", check=True)
+    subprocess.run(["uv", "run", "--no-sync", "python", "examples/probe_lora_rank.py"], cwd="/twin", check=True)
