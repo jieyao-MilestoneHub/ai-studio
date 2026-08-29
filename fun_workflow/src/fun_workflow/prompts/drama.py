@@ -407,10 +407,20 @@ async def write_screenplay(
 async def _ask(
     client: LlmClient, system: str, user: str, max_tokens: int, build: Any, attempts: int
 ) -> tuple[Any, bool]:
+    """Up to `attempts` tries; a retry restates the exact violation, not the
+    same prompt again. 📏 2026-08-29 (job 107): the model wrote the
+    cliffhanger as a bare prop shot on both attempts, in the same words,
+    because nothing told it what it had done wrong the second time. A
+    validator that repeats a systematic mistake back at itself catches
+    nothing; one that is told the specific rule it broke usually fixes it."""
     last = ""
     for attempt in range(attempts):
+        prompt = user if attempt == 0 else (
+            f"{user}\n\nYour previous reply was invalid: {last}\n"
+            "Fix exactly that and reply with the corrected JSON object only."
+        )
         try:
-            reply = await client.complete(system, user, max_tokens=max_tokens)
+            reply = await client.complete(system, prompt, max_tokens=max_tokens)
             return build(extract_json(reply)), attempt > 0
         except ScreenplayError as exc:
             last = str(exc)

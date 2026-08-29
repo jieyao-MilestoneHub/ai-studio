@@ -140,6 +140,20 @@ async def test_a_retry_is_recorded_as_llm_retry() -> None:
     assert how == "llm-retry"
 
 
+async def test_a_retry_is_told_the_exact_violation_it_made() -> None:
+    """📏 2026-08-29 (job 107): the model repeated a validation failure
+    verbatim on attempt 2 because the retry sent the same prompt. Now the
+    retry states the specific error."""
+    bad_shots = _shots([4, 5, 6])
+    bad_shots["shots"][2]["sub_shots"][0]["action"] = "the phone buzzes with a new message, screen off"
+    client = _client(OUTLINE, _shots([1, 2, 3]), bad_shots, _shots([4, 5, 6]))
+    _, how = await drama.write_screenplay("x", client)
+    assert how == "llm-retry"
+    _, retried_user = client.calls[-1]
+    assert "Your previous reply was invalid: shot 6 sub-shot 1" in retried_user
+    assert "the lead must be in the action" in retried_user
+
+
 def test_h3_prompt_cuts_inside_the_clip_at_the_template_time() -> None:
     screenplay = _screenplay()
     rendered = drama.h3_prompt(screenplay.shots[0], screenplay).render()
