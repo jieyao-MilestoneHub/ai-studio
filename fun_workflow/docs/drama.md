@@ -7,7 +7,9 @@ paints a character sheet and six keyframes, MiniMax H3 animates each keyframe
 for 7–12 s -- cutting to a second framing inside the longer clips itself --
 and ffmpeg levels the clips and splices them with the timeline's numbers:
 hard cuts with a short audio crossfade, a dissolve where the screenplay says
-time passed, a fade in and out. One LINE video message comes back.
+time passed, a fade in and out, the title over the first 1.5 s and every
+spoken line burned in as a Mandarin caption. One LINE video message comes
+back.
 
 > **Every number on this page is `[speculative]` until the first real drama has
 > run.** The per-step figures come from the single-job measurements in
@@ -55,8 +57,10 @@ real drama shows whether the keyframe chain alone holds the face.
    3  clips      H3 I2V ×6    first_frame = keyframe_i, 175-277 frames ┐ make_room_for(VIDEO)
                               prompt = h3_prompt(shot): 1-2 PromptShots ┘ once
    4  level      ffmpeg loudnorm, two-pass, linear=true, per clip     (CPU)
-   5  assemble   ffmpeg filter_complex from offsets.json: concat / xfade,
-                 acrossfade at every clip boundary, fade in/out
+   5  assemble   captions.ass from plan.json cues + offsets.json (title card,
+                 one event per line, windowed to its segment), then one
+                 ffmpeg filter_complex: concat / xfade, acrossfade at every
+                 clip boundary, fade in/out, ass burn-in
                  (libx264 crf 18, aac, +faststart)                    (CPU)
       │
       ▼  files/<token>.mp4 → poster → LINE video message, caption 🎭《title》logline
@@ -108,6 +112,7 @@ graph scales and centre-crops the source to the bound size, so the keyframe
 state.json            DramaState: every artifact with path + sha256 + cost, face_repair, spent_usd
 plan.json             segments, clip boundaries with their cut reasons, caption cues -- no times
 offsets.json          the timeline: every segment's start/end, every boundary, clip offsets, total
+captions.ass          the title card and every spoken line, times copied from offsets.json
 character/{front,three_quarter}.png
 keyframes/shot_{1..6}.png
 clips/shot_{1..6}.mp4
@@ -159,6 +164,8 @@ still or clip, so the grace only ever measures a real gap.
 | `AI_STUDIO_DRAMA_KEYFRAME_DENOISE` | 0.55 | i2i denoise for keyframes: lower keeps the face, higher frees the scene `[speculative]` |
 | `AI_STUDIO_DRAMA_KEYFRAME_DENOISE_WIDE` | 0.70 | the same for a shot that opens wide or as a two-shot: the sheet is a portrait and 0.55 keeps its framing `[speculative]` |
 | `AI_STUDIO_DRAMA_SUBSHOTS` | true | ask H3 to cut to the second framing inside a clip; off = one held framing per shot |
+| `AI_STUDIO_DRAMA_FONT_NAME` | Noto Sans CJK TC | the caption font, resolved by fontconfig; `funapp preflight` check 7 confirms it lands on a CJK face |
+| `AI_STUDIO_DRAMA_FONTS_DIR` | — | a directory of font files for libass on a host without fontconfig |
 | `AI_STUDIO_MAX_COST_USD` | 5.00 | the per-run ceiling the cost gate checks |
 
 ## Face repair on the pod
@@ -198,3 +205,7 @@ Record these in this file, then say 「可以測試了」:
    the portrait behind while keeping the face?
 8. The two shots replies' length in tokens: two sub-shots each is the
    longest reply the screenwriter has been asked for.
+9. Captions against speech: a line is shown for its whole segment because
+   nobody knows *when* inside the clip H3 places the words. Note how far
+   off the spoken line is from the caption's window; if it is consistently
+   late, the window can start later.

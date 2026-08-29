@@ -105,6 +105,19 @@ class FunSettings(BaseSettings):
         "and the timeline has six segments. The hedge for a model that "
         "ignores the cut time under image-to-video, which is unmeasured.",
     )
+    drama_font_name: str = Field(
+        default="Noto Sans CJK TC",
+        alias="AI_STUDIO_DRAMA_FONT_NAME",
+        description="The font family libass renders /短劇 captions in. Resolved "
+        "through fontconfig on the host; the Jetson has Noto Sans CJK TC. "
+        "`funapp preflight` checks it resolves to a CJK face.",
+    )
+    drama_fonts_dir: Path | None = Field(
+        default=None,
+        alias="AI_STUDIO_DRAMA_FONTS_DIR",
+        description="A directory of font files handed to libass as fontsdir, "
+        "for a host without fontconfig (Windows). None: fontconfig only.",
+    )
 
     # ---------------------------------------------------------- delivery
 
