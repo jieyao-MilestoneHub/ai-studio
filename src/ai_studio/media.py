@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -392,6 +393,152 @@ def concat(clips: list[Path], dest: Path, *, timeout_s: float = 900.0) -> list[s
         str(dest),
     ]
     run(argv, timeout_s=timeout_s)
+    return argv
+
+
+# ------------------------------------------------------------------ assembly
+
+
+@dataclass(frozen=True)
+class AssembleBoundary:
+    """The splice after one clip, as the timeline resolved it.
+
+    `kind` is "hard_cut" or "dissolve"; `overlap_s` is how much the two clips
+    overlap on the output (0 for a hard cut); `audio_fade_s` is the audio
+    crossfade length -- at a hard cut it runs with *no* overlap, so the
+    picture cuts and the two soundtracks blend across the cut.
+    """
+
+    kind: str
+    overlap_s: float = 0.0
+    audio_fade_s: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.kind not in ("hard_cut", "dissolve"):
+            raise ValueError(f"unknown boundary kind {self.kind!r}")
+        if self.kind == "hard_cut" and self.overlap_s:
+            raise ValueError("a hard cut has no overlap")
+        if self.kind == "dissolve" and self.overlap_s <= 0:
+            raise ValueError("a dissolve needs an overlap")
+
+
+def _filter_path(path: Path) -> str:
+    """A path as an ffmpeg filter option value: backslashes and colons escaped
+    (C:\\x is what Windows hands us), then the whole thing single-quoted."""
+    text = str(Path(path).resolve()).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+    return f"'{text}'"
+
+
+def assemble(
+    clips: Sequence[Path],
+    dest: Path,
+    *,
+    boundaries: Sequence[AssembleBoundary],
+    clip_offsets: Sequence[float],
+    total_s: float,
+    subtitles: Path | None = None,
+    fonts_dir: Path | None = None,
+    fade_s: float = 0.5,
+    timeout_s: float = 900.0,
+) -> list[str]:
+    """Splice `clips` into `dest` the way the timeline says. Returns the argv.
+
+    One `filter_complex`: clips between dissolves are joined by `concat`,
+    dissolves are `xfade` with the offset taken from `clip_offsets` (the
+    timeline's numbers -- nothing here computes time), audio is chained
+    `acrossfade` at every boundary, and the whole piece fades in and out.
+    With `subtitles`, an ASS file is burned in last so it sits over the
+    fades. Inputs are probed first: `xfade` needs equal size, rate and pixel
+    format, and a mismatch should say so rather than surface as a stack
+    trace after a minute of encoding. The output's length is checked
+    against `total_s`: an assembly that drifted from its timeline would put
+    every caption out of sync, silently.
+    """
+    paths = [Path(c) for c in clips]
+    if not paths:
+        raise FFmpegError("nothing to assemble")
+    if len(boundaries) != len(paths) - 1:
+        raise FFmpegError(f"{len(paths)} clips need {len(paths) - 1} boundaries, got {len(boundaries)}")
+    if len(clip_offsets) != len(paths):
+        raise FFmpegError(f"{len(paths)} clips need {len(paths)} offsets, got {len(clip_offsets)}")
+    for path in paths:
+        if not path.is_file():
+            raise FFmpegError(f"cannot assemble a missing clip: {path}")
+    infos = [probe(p) for p in paths]
+    shape = {(i.width, i.height, round(i.fps, 3)) for i in infos}
+    if len(shape) != 1:
+        raise FFmpegError(f"clips differ in size or rate, xfade cannot join them: {sorted(shape)}")
+    if not all(i.has_audio for i in infos):
+        raise FFmpegError("every clip needs an audio track to crossfade")
+    if subtitles is not None and not Path(subtitles).is_file():
+        raise FFmpegError(f"subtitle file missing: {subtitles}")
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    graph: list[str] = []
+    # -- video: runs of hard cuts concat'd, runs joined by xfade
+    runs: list[list[int]] = [[0]]
+    for i, b in enumerate(boundaries, start=1):
+        if b.kind == "dissolve":
+            runs.append([i])
+        else:
+            runs[-1].append(i)
+    # xfade refuses inputs with different timebases, and concat's output has
+    # a different one from a bare stream: put every input on the same clock.
+    for i in range(len(paths)):
+        graph.append(f"[{i}:v]settb=AVTB[v{i}]")
+    run_labels: list[str] = []
+    for r, members in enumerate(runs):
+        label = f"[r{r}]"
+        if len(members) == 1:
+            graph.append(f"[v{members[0]}]null{label}")
+        else:
+            graph.append("".join(f"[v{m}]" for m in members) + f"concat=n={len(members)}:v=1:a=0{label}")
+        run_labels.append(label)
+    video = run_labels[0]
+    for r in range(1, len(runs)):
+        b = boundaries[runs[r][0] - 1]
+        offset = clip_offsets[runs[r][0]]  # where the next run starts on the output: xfade's offset
+        out = f"[x{r}]"
+        graph.append(f"{video}{run_labels[r]}xfade=transition=fade:duration={b.overlap_s:g}:offset={offset:g}{out}")
+        video = out
+    # -- audio: chained acrossfade at every boundary
+    audio = "[0:a]"
+    for i, b in enumerate(boundaries, start=1):
+        out = f"[a{i}]"
+        if b.kind == "dissolve":
+            graph.append(f"{audio}[{i}:a]acrossfade=d={b.overlap_s:g}:o=1:c1=tri:c2=tri{out}")
+        elif b.audio_fade_s > 0:
+            graph.append(f"{audio}[{i}:a]acrossfade=d={b.audio_fade_s:g}:o=0:c1=tri:c2=tri{out}")
+        else:
+            graph.append(f"{audio}[{i}:a]concat=n=2:v=0:a=1{out}")
+        audio = out
+    # -- tail: fades, then captions over everything
+    vf = [f"fade=t=in:st=0:d={fade_s:g}", f"fade=t=out:st={max(total_s - fade_s, 0):g}:d={fade_s:g}"]
+    if subtitles is not None:
+        ass = f"ass=filename={_filter_path(subtitles)}"
+        if fonts_dir is not None:
+            ass += f":fontsdir={_filter_path(fonts_dir)}"
+        vf.append(ass)
+    graph.append(f"{video}" + ",".join(vf) + "[vout]")
+    graph.append(f"{audio}afade=t=in:st=0:d={fade_s:g},afade=t=out:st={max(total_s - fade_s, 0):g}:d={fade_s:g}[aout]")
+
+    argv = [get_settings().ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-y"]
+    for p in paths:
+        argv += ["-i", str(p)]
+    argv += [
+        "-filter_complex", ";".join(graph),
+        "-map", "[vout]", "-map", "[aout]",
+        "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
+        "-movflags", "+faststart",
+        str(dest),
+    ]
+    run(argv, timeout_s=timeout_s)
+    got = probe(dest).duration_s
+    tolerance = 2 / max(infos[0].fps, 1.0) + 0.1  # two frames plus AAC priming
+    if abs(got - total_s) > tolerance:
+        raise FFmpegError(f"assembled {got:.3f}s but the timeline says {total_s:.3f}s; captions would drift")
     return argv
 
 

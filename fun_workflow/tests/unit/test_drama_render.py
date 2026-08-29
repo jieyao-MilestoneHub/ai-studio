@@ -36,17 +36,25 @@ OUTLINE = {
     "style": "Live-action, cinematic",
     "anchor": {"name": "阿玲", "appearance": APPEARANCE,
                "wardrobe": "a faded red apron over a white t-shirt", "voice": "soft, low"},
-    "beats": [f"beat {i}" for i in range(1, 7)],
+    "world": {"location": "a narrow night-market food stall facing one row of stalls",
+              "light": "warm tungsten string lights from above left", "signature_prop": "a folded paper letter"},
+    "beats": {b: f"{b} beat" for b in ("hook", "setup", "conflict", "turn", "payoff", "cliffhanger")},
     "overall_soundscape": "Sizzling oil, a crowd murmuring.",
     "non_diegetic_music": "N/A",
+}
+FRAMINGS = {
+    1: ["close-up", "medium"], 2: ["wide", "close-up"], 3: ["over-the-shoulder"],
+    4: ["wide", "medium close-up"], 5: ["close-up", "medium"], 6: ["wide"],
 }
 
 
 def _shots(indices: list[int]) -> dict:
-    framings = ["medium", "close-up", "over-the-shoulder", "wide", "medium close-up", "close-up"]
     return {"shots": [
-        {"index": i, "scene": f"the night market stall, beat {i}", "framing": framings[i - 1],
-         "action": f"the lead does thing {i}", "camera": {"motion": "static_shot"}}
+        {"index": i, "scene": f"the night market stall, beat {i}",
+         "cut_reason": "time_passing" if i == 4 else "default",
+         "sub_shots": [{"framing": f, "action": f"the lead does thing {i}.{k}", "camera": {"motion": "static_shot"},
+                        **({"line": "沒事。"} if i == 3 else {})}
+                       for k, f in enumerate(FRAMINGS[i], start=1)]}
         for i in indices
     ]}
 
@@ -163,14 +171,16 @@ def fake_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         calls.append(f"level:{Path(src).name}")
         return [["ffmpeg", "measure"], ["ffmpeg", "apply", "linear=true"]]
 
-    def fake_concat(clips: list[Path], dest: Path, **_: Any) -> list[str]:
+    def fake_assemble(clips: list[Path], dest: Path, **kw: Any) -> list[str]:
         Path(dest).parent.mkdir(parents=True, exist_ok=True)
         Path(dest).write_bytes(b"".join(Path(c).read_bytes() for c in clips))
-        calls.append("concat:" + ",".join(Path(c).name for c in clips))
-        return ["ffmpeg", "concat"]
+        calls.append("assemble:" + ",".join(Path(c).name for c in clips))
+        calls.append(f"boundaries:{','.join(b.kind for b in kw['boundaries'])}")
+        calls.append(f"total_s:{kw['total_s']:.3f}")
+        return ["ffmpeg", "assemble"]
 
     monkeypatch.setattr(media, "normalize_loudness", fake_normalize)
-    monkeypatch.setattr(media, "concat", fake_concat)
+    monkeypatch.setattr(media, "assemble", fake_assemble)
     return calls
 
 
@@ -228,10 +238,23 @@ async def test_all_flux_then_all_h3_then_one_file(parsed_job, tmp_path: Path, fa
     assert image.requests[2].source_image_path.endswith("character/front.png")
     assert image.requests[2].width == 864 and image.requests[2].height == 480, "H3's canvas, not Flux's"
     assert all(r.first_frame_path.endswith(f"keyframes/shot_{i}.png") for i, r in enumerate(clip.requests, 1))
-    assert clip.requests[0].mode is GenMode.I2V and clip.requests[0].duration_s == pytest.approx(243 / 24)
+    assert clip.requests[0].mode is GenMode.I2V
+    assert [r.duration_s for r in clip.requests] == pytest.approx([f / 24 for f in (175, 243, 209, 277, 243, 192)])
+    assert "At 00:02.500, the camera cuts to" in clip.requests[0].prompt
     assert fake_ffmpeg[:6] == [f"level:shot_{i}.mp4" for i in range(1, 7)]
-    assert fake_ffmpeg[6].startswith("concat:shot_1.mp4,shot_2.mp4")
+    assert fake_ffmpeg[6].startswith("assemble:shot_1.mp4,shot_2.mp4")
+    # Five clip boundaries: the cut into shot 4 is time_passing -> dissolve.
+    assert fake_ffmpeg[7] == "boundaries:hard_cut,hard_cut,dissolve,hard_cut,hard_cut"
+    assert fake_ffmpeg[8] == f"total_s:{(1339 - 12) / 24:.3f}"
     assert len(touches) == 2 + 6 + 6 + 1, "every artifact resets the reaper, plus the final file"
+
+    run_dir = tmp_path / "runs" / "drama" / job.token
+    plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
+    offsets = json.loads((run_dir / "offsets.json").read_text(encoding="utf-8"))
+    assert len(plan["segments"]) == 10 == len(offsets["segments"])
+    assert plan["transitions"][2] == {"after_clip": "3", "reason": "time_passing", "kind": "dissolve", "downgraded_from": None}
+    assert [c["text"] for c in plan["cues"]] == ["沒事。"]
+    assert offsets["clip_offsets"][1] == pytest.approx(175 / 24)
 
     state = drama.load_state(tmp_path / "runs" / "drama" / job.token)
     assert state.face_repair == "applied"
@@ -461,7 +484,7 @@ async def test_every_artifact_and_stage_is_timestamped(parsed_job, tmp_path: Pat
         assert bucket and all(iso.fullmatch(r.created_at) for r in bucket.values())
     assert state.output is not None and iso.fullmatch(state.output.created_at)
     assert iso.fullmatch(state.created_at) and iso.fullmatch(state.updated_at)
-    assert set(state.stages) == {"character", "keyframes", "clips", "level", "concat"}
+    assert set(state.stages) == {"character", "keyframes", "clips", "level", "assemble"}
     for name, timing in state.stages.items():
         assert iso.fullmatch(timing.started_at) and iso.fullmatch(timing.finished_at), name
         assert timing.started_at <= timing.finished_at, name
@@ -469,7 +492,8 @@ async def test_every_artifact_and_stage_is_timestamped(parsed_job, tmp_path: Pat
     manifest = json.loads((run_dir / "render_manifest.json").read_text(encoding="utf-8"))
     assert iso.fullmatch(manifest["generated_at"])
     assert manifest["token"] == job.token and manifest["job_id"] == job.id
-    assert manifest["stages"]["concat"]["finished_at"]
+    assert manifest["stages"]["assemble"]["finished_at"]
+    assert manifest["timeline"] == {"total_s": pytest.approx((1339 - 12) / 24), "segments": 10, "dissolves": 1}
     assert len(manifest["ffmpeg"]) == 6 * 2 + 1
 
 
@@ -482,3 +506,52 @@ def test_a_state_file_from_before_timestamps_still_loads(tmp_path: Path) -> None
     )
     state = mod.load_state(tmp_path)
     assert state.character["front"].created_at == "" and state.stages == {}
+
+
+async def test_a_wide_opening_gets_the_wide_denoise(parsed_job, tmp_path: Path, fake_ffmpeg) -> None:
+    from fun_workflow.config import settings as fun_settings
+
+    q, job = parsed_job
+    job = await _with_screenplay(q, job)
+    ledger = Ledger()
+    image = FakeImageProvider(ledger)
+    await _render(job, {MediaKind.IMAGE: image, MediaKind.VIDEO: FakeClipProvider(ledger)}, tmp_path)
+    fun = fun_settings.get_fun_settings()
+    by_shot = {r.shot_id: r.extra["denoise"] for r in image.requests if "_kf" in r.shot_id}
+    assert by_shot[f"job{job.id}_kf1"] == fun.drama_keyframe_denoise  # opens close-up
+    assert by_shot[f"job{job.id}_kf2"] == fun.drama_keyframe_denoise_wide  # opens wide
+
+
+async def test_subshots_off_makes_six_segments_and_one_prompt_shot(parsed_job, tmp_path: Path, fake_ffmpeg, monkeypatch) -> None:
+    from fun_workflow.config import settings as fun_settings
+
+    monkeypatch.setattr(fun_settings.get_fun_settings(), "drama_subshots", False)
+    q, job = parsed_job
+    job = await _with_screenplay(q, job)
+    ledger = Ledger()
+    clip = FakeClipProvider(ledger)
+    await _render(job, {MediaKind.IMAGE: FakeImageProvider(ledger), MediaKind.VIDEO: clip}, tmp_path)
+    assert "[Shot 2]" not in clip.requests[0].prompt
+    offsets = json.loads((tmp_path / "runs" / "drama" / job.token / "offsets.json").read_text(encoding="utf-8"))
+    assert len(offsets["segments"]) == 6
+
+
+async def test_a_provider_off_the_template_frame_rate_is_terminal(parsed_job, tmp_path: Path, fake_ffmpeg) -> None:
+    q, job = parsed_job
+    job = await _with_screenplay(q, job)
+
+    class Thirty(FakeClipProvider):
+        def capabilities(self) -> ProviderCapabilities:
+            return CLIP_CAPS.model_copy(update={"native_fps": 30})
+
+    with pytest.raises(AIStudioError, match="24 fps grid"):
+        await _render(job, {MediaKind.IMAGE: FakeImageProvider(Ledger()), MediaKind.VIDEO: Thirty(Ledger())}, tmp_path)
+
+
+def test_a_state_file_with_the_old_concat_stage_still_loads(tmp_path: Path) -> None:
+    (tmp_path / "state.json").write_text(
+        '{"stages": {"concat": {"started_at": "2026-08-28T00:00:00.000+00:00"}}, "spent_usd": 0.3}',
+        encoding="utf-8",
+    )
+    state = drama.load_state(tmp_path)
+    assert state.stages["concat"].started_at and state.plan_gate == "pending"

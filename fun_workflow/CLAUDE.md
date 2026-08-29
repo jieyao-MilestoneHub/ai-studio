@@ -15,9 +15,10 @@ trigger any model ai-studio serves — `/影片` for video, `/圖片` for image,
 photo then `/圖影` / `/圖圖` for image-to-video / image-to-image, photo/audio/
 video then `/說圖` / `/說音` / `/說影` to describe it, `/himonkey` for plain-text
 chat via gpt-oss-20b, video then `/影音` to get its audio track as an M4A
-(ffmpeg on the host, no pod), `/短劇` for a one-minute six-shot drama with a
-stable lead (gpt-oss-20b screenplay → Flux keyframes → H3 image-to-video →
-ffmpeg; `docs/drama.md`), and「讓我看看」— quote-reply an earlier request to
+(ffmpeg on the host, no pod), `/短劇` for a one-minute six-beat drama with a
+stable lead (gpt-oss-20b screenplay into a fixed beat template → Flux
+keyframes → H3 image-to-video with in-clip cuts → timeline → ffmpeg splice;
+`docs/drama.md`), and「讓我看看」— quote-reply an earlier request to
 pull that one result back as a free reply when push quota is gone. One
 spelling each, no aliases. Full spec: `docs/line-bot.md`.
 
@@ -33,7 +34,7 @@ owns the pod, the models, the money and the measurements. This package owns
 | `pipeline/worker.py` — the always-on loop; `pipeline/drain.py` — one render per kind | `providers/`, `comfy/`, `inference/` — the models |
 | `pipeline/convert_worker.py` — which rewriter each request needs; `prompts/understanding.py` — the questions `/說圖 /說音 /說影` send (`prompt` + `audio_prompt`), their rewriter, and `compose_answer` (【畫面】/【聲音】) | `prompts/{convert,flux}` + `pipeline/pod_llm` — the H3/Flux rewriting itself; the pod server, which holds no wording |
 | `core/kinds.py` — `JobKind`, the queue's discriminator (with DRAMA); `pipeline/idle.py` — the grace each kind earns a quiet pod | `core/enums.MediaKind` — what a model serves; `runtime.session.touch_activity(grace_minutes=)` — the clock |
-| `pipeline/drama.py`, `prompts/drama.py`, `core/drama_spec.py`, `workflows/flux_dev_i2i_face.json`, `deploy/pod_setup.d/face_repair.sh` — `/短劇` | `prompts/h3`, `providers/flux` (takes the face graph as `i2i_face_workflow=`), `pod_setup.sh` (runs the shipped extension) |
+| `pipeline/drama.py`, `prompts/drama.py`, `core/drama_spec.py` (the beat template, the framing rules), `workflows/flux_dev_i2i_face.json`, `deploy/pod_setup.d/face_repair.sh` — `/短劇` | `prompts/h3`, `providers/flux` (takes the face graph as `i2i_face_workflow=`), `editing/{transitions,rhythm}`, `render/timeline`, `media.assemble` — the grammar the drama is cut by, `pod_setup.sh` (runs the shipped extension) |
 | `bots/line/limits.py` — every LINE ceiling, passed into ai-studio's tools as parameters | `media.poster/extract_audio(max_bytes=)`, providers' `max_output_chars` |
 | `prompts/chat.py` — the `/himonkey` persona | `providers/chat` |
 | `config/settings.py` — `FunSettings`: LINE credentials, caps, delivery dirs, drama knobs; `.studio` is ai-studio's `Settings` | `config/settings.py` — GPU, money, logs |
