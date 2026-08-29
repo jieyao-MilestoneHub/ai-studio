@@ -233,8 +233,11 @@ Job 105, 「最後一個飯糰」. What it measured, and what it changed:
   the next pod.
 - **The cliffhanger came back as a prop shot** ("the phone buzzes") both
   times despite the prompt rule; `SubShot` now refuses an action without
-  "the lead" in it, so the screenwriter retries instead of the keyframe
-  being a phone.
+  "the lead" in it -- but on the third run (job 107) the retry sent the
+  *same* prompt and the model wrote the *same* violation back, verbatim,
+  and the whole drama failed with nothing spent. `_ask`'s retry now states
+  the exact `ScreenplayError` it is fixing rather than repeating the
+  original prompt; unverified until the model actually corrects on retry.
 - The three screenwriter calls took 📏 107 s / 45 s / 49 s on gpt-oss-20b
   (the first includes the 72 s model load); no retry needed. Two clips would
   have been the wrong beat: shot 6 was written as the phone buzzing, not the
