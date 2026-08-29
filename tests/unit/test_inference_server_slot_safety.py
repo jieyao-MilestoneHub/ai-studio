@@ -225,6 +225,30 @@ async def test_unload_endpoint_also_waits_for_in_flight_work() -> None:
     assert srv._slot.backend is None
 
 
+@pytest.mark.asyncio
+async def test_unload_restarts_the_process_when_vram_stays_held(monkeypatch) -> None:
+    """📏 2026-08-29: after unloading gpt-oss this process kept 12.7 GiB and
+    H3 OOMed twice. The endpoint measures, answers, and re-execs; below the
+    ceiling it does neither."""
+    calls: list[str] = []
+    monkeypatch.setattr(srv, "_reexec", lambda: calls.append("reexec"))
+    monkeypatch.setattr(srv, "_release_vram", lambda: None)
+
+    srv._slot.backend = _FakeBackend("chat")
+    monkeypatch.setattr(srv, "_held_vram_gib", lambda: 12.7)
+    result = await srv.unload()
+    assert result == {"ok": True, "held_gib": 12.7, "restarting": True}
+    await asyncio.sleep(0.7)
+    assert calls == ["reexec"]
+
+    calls.clear()
+    srv._slot.backend = _FakeBackend("chat")
+    monkeypatch.setattr(srv, "_held_vram_gib", lambda: 0.3)
+    assert await srv.unload() == {"ok": True}
+    await asyncio.sleep(0.7)
+    assert calls == []
+
+
 # ------------------------------------------------------------------- gpt-oss
 
 

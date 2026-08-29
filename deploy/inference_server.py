@@ -63,9 +63,10 @@ and run standalone (`python3 inference_server.py`), so it has no access to
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
-import json
+import sys
 import logging
 import time
 import uuid
@@ -646,6 +647,36 @@ async def _wait_for_idle(backend: ModelBackend, *, timeout_s: float = UNLOAD_WAI
         await asyncio.sleep(0.5)
 
 
+RELEASE_CEILING_GIB = 1.0
+"""What this process may still hold on the card after an unload and be
+believed. Above it the weights are still referenced from somewhere, and the
+only release that has ever worked is the process ending: 📏 2026-08-29,
+twice in a row, `POST /unload` after a gpt-oss-20b chat session left this
+process holding 12.7 GiB (nvidia-smi) with `_release_vram` run -- H3 then
+had ~10 GiB and OOMed on the fourth clip, and on the second clip. Job 86 on
+2026-08-27 was the same thing wearing moondream3's face."""
+
+
+def _held_vram_gib() -> float:
+    """What this process still has allocated on the card, in GiB. 0 without CUDA."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return 0.0
+        return torch.cuda.memory_allocated() / 2**30
+    except Exception:  # pragma: no cover - a measurement must never raise
+        return 0.0
+
+
+def _reexec() -> None:
+    """Replace this process with a fresh copy of itself: same argv, same
+    stdout (the nohup'd inference.log), same port once the old socket closes.
+    Models are lazy-loaded, so nothing but the leak is lost."""
+    _log.warning("restarting the inference server process to return its VRAM")
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
 def _release_vram() -> None:
     """Best-effort VRAM release after a failed `backend.load()`.
 
@@ -942,10 +973,23 @@ async def unload() -> dict[str, Any]:
         await _wait_for_idle(current)
     async with _slot.lock:
         if _slot.backend is not None:
-            _log.info("unloading %s (GPU hand-off to ComfyUI)", _slot.backend.modality)
+            modality = _slot.backend.modality
+            _log.info("unloading %s (GPU hand-off to ComfyUI)", modality)
             await asyncio.to_thread(_slot.backend.unload)
             _slot.backend = None
             await asyncio.to_thread(_release_vram)
+            held = await asyncio.to_thread(_held_vram_gib)
+            _log.info("unloaded %s; %.2f GiB still allocated in this process", modality, held)
+            if held > RELEASE_CEILING_GIB:
+                # Answer first, then go: the caller only needs the card, and
+                # it needs it now. See RELEASE_CEILING_GIB.
+                _log.warning(
+                    "%.2f GiB still held after unloading %s (ceiling %.1f); the weights are "
+                    "still referenced and the card is not free -- restarting this process",
+                    held, modality, RELEASE_CEILING_GIB,
+                )
+                asyncio.get_running_loop().call_later(0.5, _reexec)
+                return {"ok": True, "held_gib": round(held, 2), "restarting": True}
     return {"ok": True}
 
 

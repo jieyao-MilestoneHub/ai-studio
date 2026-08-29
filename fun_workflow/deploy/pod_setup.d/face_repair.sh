@@ -33,19 +33,20 @@ for repo in ltdrdata/ComfyUI-Impact-Pack ltdrdata/ComfyUI-Impact-Subpack; do
     # Through ComfyUI's own venv, like everything else ComfyUI loads. The
     # exit code is pip's own: a pipe into grep hid a failed install on
     # 2026-08-29 and Impact-Pack then died on import ("No module named
-    # 'skimage'") while this script reported nothing.
-    if ! "$CU/.venv-cu128/bin/pip" install -q -r "$name/requirements.txt" \
+    # 'skimage'") while this script reported nothing. The `git+...sam2`
+    # line is dropped: building it wants a torch this venv does not have,
+    # the resolver then refuses the *whole* file (📏 the same day, second
+    # pod), and FaceDetailer needs none of SAM2.
+    grep -v '^git+' "$name/requirements.txt" > "/workspace/dl-logs/req-$name.txt"
+    if ! "$CU/.venv-cu128/bin/pip" install -q -r "/workspace/dl-logs/req-$name.txt" \
         > "/workspace/dl-logs/pip-$name.log" 2>&1; then
       log "face-repair: WARNING pip install for $name failed (see dl-logs/pip-$name.log)"
     fi
   fi
 done
-# Impact-Pack imports scikit-image at load and its requirements have not
-# always pinned it; install it by name and prove the import before the
-# restart below, so a MISS is explained here rather than in comfy.log.
-"$CU/.venv-cu128/bin/pip" install -q scikit-image > /workspace/dl-logs/pip-scikit-image.log 2>&1 \
-  || log "face-repair: WARNING scikit-image install failed (see dl-logs)"
-"$PY" -c 'import skimage, cv2, segment_anything' 2>/dev/null \
+# Prove the imports Impact-Pack's __init__ needs before the restart below,
+# so a MISS is explained here rather than in comfy.log.
+"$PY" -c 'import skimage, cv2, piexif, dill, segment_anything' 2>/dev/null \
   && log "face-repair: Impact-Pack imports OK" \
   || log "face-repair: WARNING Impact-Pack dependencies still missing; FaceDetailer will be MISS"
 mkdir -p "$M/ultralytics/bbox" /workspace/dl-logs

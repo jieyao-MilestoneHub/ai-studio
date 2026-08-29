@@ -173,7 +173,7 @@ def test_status_payload_carries_shots_the_page_already_knows_how_to_render() -> 
 def test_the_older_one_framing_reply_shape_still_parses_for_one_sub_shot_beats() -> None:
     anchor = CharacterAnchor.model_validate(OUTLINE["anchor"])
     world = WorldBible.model_validate(OUTLINE["world"])
-    old = {"shots": [{"index": 3, "scene": "s", "framing": "medium", "action": "a",
+    old = {"shots": [{"index": 3, "scene": "s", "framing": "medium", "action": "the lead nods",
                       "dialogue": [{"speaker_id": "S1", "text": "嗯。"}]}]}
     [shot] = drama.build_shots(old, expected=[3], anchor=anchor, world=world)
     assert shot.dialogue[0].text == "嗯。" and shot.framing is Framing.MEDIUM
@@ -243,8 +243,8 @@ def test_a_screenplay_whose_keyframe_lost_the_anchor_does_not_validate() -> None
 
 
 def test_a_shot_off_its_template_slot_does_not_validate() -> None:
-    sub = SubShot(index=1, framing=Framing.MEDIUM, action="a")
-    sub2 = SubShot(index=2, framing=Framing.WIDE, action="b")
+    sub = SubShot(index=1, framing=Framing.MEDIUM, action="the lead waits")
+    sub2 = SubShot(index=2, framing=Framing.WIDE, action="the lead leaves")
     with pytest.raises(ValidationError, match="must be 158 frames"):
         DramaShot(index=1, beat=Beat.HOOK, frames=243, scene="s", sub_shots=(sub, sub2), keyframe_prompt="k")
     with pytest.raises(ValidationError, match="has 2 sub-shot"):
@@ -273,3 +273,12 @@ def test_no_slot_is_above_the_measured_frame_ceiling() -> None:
 
     assert MAX_SHOT_FRAMES == 243
     assert all(slot.frames <= MAX_SHOT_FRAMES for slot in BEAT_TEMPLATE)
+
+
+def test_a_sub_shot_without_the_lead_is_a_screenplay_error() -> None:
+    anchor = CharacterAnchor.model_validate(OUTLINE["anchor"])
+    world = WorldBible.model_validate(OUTLINE["world"])
+    bad = _shots([4, 5, 6])
+    bad["shots"][2]["sub_shots"][0]["action"] = "the phone buzzes with a new message, screen off"
+    with pytest.raises(drama.ScreenplayError, match="the lead must be in the action"):
+        drama.build_shots(bad, expected=[4, 5, 6], anchor=anchor, world=world)
