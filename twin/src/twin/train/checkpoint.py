@@ -69,6 +69,14 @@ ARCHIVE_FILENAME = "adapter_weights.tar.enc"
 # what the six-item contract actually intends.
 COMPLETION_MARKER = "_TWIN_CHECKPOINT_COMPLETE"
 
+# Remote retention. A resume-capable checkpoint (SPEC.md §7.4: adapter +
+# optimizer + scheduler + RNG + state) is ~2.6 GB at r=64 on Qwen3-8B, and
+# R2's free tier is 10 GB-month — the first real run reached 17 GB after six
+# uploads (2026-08-29). Two are kept, not one: a kill *during* an upload
+# leaves the newest directory without its COMPLETION_MARKER, and the one
+# before it is then the only resumable state.
+REMOTE_CHECKPOINTS_TO_KEEP = 2
+
 
 def _fs_and_path(uri: str) -> tuple[fsspec.AbstractFileSystem, str]:
     return fsspec.core.url_to_fs(uri)  # type: ignore[no-any-return]
@@ -154,6 +162,25 @@ def list_checkpoints(run_root_uri: str) -> list[tuple[int, str]]:
     return sorted(pairs, key=lambda pair: pair[0])
 
 
+def prune_remote_checkpoints(run_root_uri: str, *, keep: int = REMOTE_CHECKPOINTS_TO_KEEP) -> list[str]:
+    """Deletes all but the `keep` highest-step checkpoints under
+    `run_root_uri`. Only complete checkpoints count toward `keep`; an
+    incomplete (torn) one is never what protects resume, so it is removed
+    too unless it is newer than everything kept. Returns the removed URIs."""
+    if keep < 1:
+        raise ValueError("keep must be >= 1 — pruning every checkpoint would destroy resume")
+    complete = [(step, uri) for step, uri in list_checkpoints(run_root_uri) if is_checkpoint_complete(uri)]
+    kept_steps = {step for step, _ in complete[-keep:]}
+    removed: list[str] = []
+    for step, uri in list_checkpoints(run_root_uri):
+        if step in kept_steps or (complete and step > max(kept_steps)):
+            continue
+        fs, path = _fs_and_path(uri)
+        fs.rm(path, recursive=True)
+        removed.append(uri)
+    return removed
+
+
 def find_latest_complete_checkpoint(run_root_uri: str) -> str | None:
     """Newest-first scan via `list_checkpoints`, skipping incomplete
     directories (a checkpoint mid-upload when the run was killed). Returns
@@ -214,4 +241,7 @@ class R2CheckpointCallback(TrainerCallback):
         local_checkpoint_dir = f"{args.output_dir.rstrip('/')}/checkpoint-{state.global_step}"
         remote_checkpoint_uri = f"{self.remote_run_root_uri.rstrip('/')}/checkpoint-{state.global_step}"
         upload_checkpoint(local_checkpoint_dir, remote_checkpoint_uri, encryption_key=self.encryption_key)
+        # Only after the new one is complete: the retention floor above is
+        # measured in *complete* checkpoints, so pruning never runs ahead.
+        prune_remote_checkpoints(self.remote_run_root_uri)
         return control

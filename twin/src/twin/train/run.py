@@ -219,6 +219,16 @@ def main(
     # Save locally first, then upload+encrypt via the same mechanism
     # checkpoints use (SPEC.md §8).
     local_final_adapter_dir = "./.twin_train_scratch/final"
+    # Weights only, fp16: `save_pretrained` on a PeftModel writes just the
+    # adapter tensors + adapter_config.json (no optimizer/scheduler/RNG — those
+    # live in the resume checkpoints, which are pruned separately). Halving to
+    # fp16 is lossless for inference on the fp16 T4 target and keeps the
+    # artifact ~0.35 GB at r=64 instead of ~0.7 GB (R2 free tier, 2026-08-29).
+    # Done AFTER training and after the last checkpoint, so nothing that
+    # resumes ever sees the downcast.
+    for param in trainer.model.parameters():
+        if param.requires_grad:
+            param.data = param.data.to(torch.float16)
     trainer.model.save_pretrained(local_final_adapter_dir)
     checkpoint.upload_adapter(local_final_adapter_dir, final_adapter_uri, encryption_key=encryption_key)
 

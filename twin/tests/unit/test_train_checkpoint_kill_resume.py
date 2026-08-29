@@ -282,6 +282,14 @@ def test_kill_and_resume_preserves_step_continuity_and_loss_curve(tmp_path: Path
     )
     assert (Path(downloaded_adapter_dir) / "adapter_model.safetensors").exists()
     assert (Path(downloaded_adapter_dir) / "adapter_config.json").exists()
+    # Final adapter is weights-only fp16 (R2 free-tier budget, 2026-08-29);
+    # resume checkpoints stay fp32 — this must never leak into them.
+    from safetensors import safe_open
+
+    with safe_open(str(Path(downloaded_adapter_dir) / "adapter_model.safetensors"), framework="pt") as f:
+        dtypes = {f.get_tensor(k).dtype for k in f.keys()}
+    assert dtypes == {torch.float16}, dtypes
+    assert not (Path(downloaded_adapter_dir) / "optimizer.pt").exists()
 
     resumed_by_step = _log_history_by_step(run_cwd / ".twin_train_scratch" / "output")
     post_resume_steps = sorted(step for step in resumed_by_step if step > step_at_kill)

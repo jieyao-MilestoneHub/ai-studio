@@ -16,6 +16,7 @@ from twin.train.checkpoint import (
     find_latest_complete_checkpoint,
     is_checkpoint_complete,
     list_checkpoints,
+    prune_remote_checkpoints,
     upload_adapter,
     upload_checkpoint,
 )
@@ -143,3 +144,23 @@ def test_upload_adapter_rejects_missing_artifacts(tmp_path: Path) -> None:
 
     with pytest.raises(AssertionError):
         upload_adapter(str(local), f"file://{tmp_path / 'remote'}", encryption_key=generate_key())
+
+
+def test_prune_remote_checkpoints_keeps_latest_two_complete(tmp_path: Path) -> None:
+    key = generate_key()
+    run_root = f"file://{tmp_path / 'remote'}"
+    for step in (30, 55, 80, 105):
+        local = tmp_path / f"local-{step}"
+        _write_local_checkpoint(local)
+        upload_checkpoint(str(local), f"{run_root}/checkpoint-{step}", encryption_key=key)
+    # a torn newest upload: archive present, no completion marker
+    torn = tmp_path / "remote" / "checkpoint-130"
+    torn.mkdir()
+    (torn / "adapter_weights.tar.enc").write_bytes(b"partial")
+
+    removed = prune_remote_checkpoints(run_root)
+
+    remaining = sorted(p.name for p in (tmp_path / "remote").iterdir())
+    assert remaining == ["checkpoint-105", "checkpoint-130", "checkpoint-80"]
+    assert sorted(removed) == [f"{run_root}/checkpoint-30", f"{run_root}/checkpoint-55"]
+    assert find_latest_complete_checkpoint(run_root) == f"{run_root}/checkpoint-105"
