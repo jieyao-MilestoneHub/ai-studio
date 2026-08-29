@@ -40,11 +40,23 @@ from twin.train.model import (
 def probe_rank(rank: int) -> tuple[bool, float]:
     """Returns (succeeded, peak_memory_gib). Reloads the model fresh per rank
     — this is a one-shot manual script, not a hot loop; correctness over
-    speed."""
+    speed. Runs one real optimizer step (AdamW keeps two fp32 moments per
+    trainable param, which at r=256 all-linear on an 8B model is several GiB
+    on its own) so a pass here means a training step fits, not just a
+    forward/backward. Frees everything in `finally`: the first real run
+    (2026-08-29, Modal T4) leaked the OOM'd model into the next rung, so all
+    four rungs reported the same ~14.3 GiB peak."""
+    import gc
+
     from peft import get_peft_model
     from transformers import AutoModelForCausalLM
 
+    gc.collect()
+    torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
+    model = None
+    optimizer = None
+    output = None
     try:
         model = AutoModelForCausalLM.from_pretrained(
             DEFAULT_MODEL_SPEC.base_model_id,
@@ -52,20 +64,24 @@ def probe_rank(rank: int) -> tuple[bool, float]:
             quantization_config=build_quantization_config(),
             device_map="auto",
         )
+        model.gradient_checkpointing_enable()
         model = get_peft_model(model, build_lora_config(rank=rank))
         model.train()
+        optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-4)
 
         batch = torch.randint(0, model.config.vocab_size, (1, 512), device=model.device)
         output = model(input_ids=batch, labels=batch)
         output.loss.backward()
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
 
-        peak_gib = torch.cuda.max_memory_allocated() / (1024**3)
-        del model, output
-        torch.cuda.empty_cache()
-        return True, peak_gib
+        return True, torch.cuda.max_memory_allocated() / (1024**3)
     except torch.cuda.OutOfMemoryError:
-        torch.cuda.empty_cache()
         return False, torch.cuda.max_memory_allocated() / (1024**3)
+    finally:
+        del output, optimizer, model
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 def main() -> None:

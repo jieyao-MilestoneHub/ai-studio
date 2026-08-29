@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import torch
 from peft import PeftModel
 from pydantic import BaseModel, ConfigDict, model_validator
 from trl import SFTConfig, SFTTrainer
@@ -157,6 +158,11 @@ def main(
         # `verify_assistant_masking` above is this same codebase's pre-flight check
         # that the chat-template resolution this flag depends on actually holds for
         # the pinned base model (train/loss_mask.py).
+        gradient_checkpointing=True,  # Memory-only (recompute activations), numerically
+        # identical training — hence not a TrainingConfig/config_hash field. Required for
+        # an 8B QLoRA step to fit a 16 GB T4 at all (rank probe, Modal, 2026-08-29).
+        gradient_checkpointing_kwargs={"use_reentrant": False},  # PEFT + checkpointing
+        # with the reentrant impl silently yields no grads for the adapter.
         learning_rate=config.learning_rate,
         per_device_train_batch_size=config.per_device_train_batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
@@ -189,6 +195,19 @@ def main(
             )
         ],
     )
+
+    if config.fp16:
+        # fp16 AMP keeps fp32 master weights and unscales fp32 grads; the LoRA
+        # params are otherwise created in the base checkpoint's dtype (Qwen3-8B:
+        # bf16), and the first real T4 run (Modal, 2026-08-29) died at step 0 with
+        # "_amp_foreach_non_finite_check_and_unscale_cuda not implemented for
+        # 'BFloat16'". Upcasting only the trainable params is the standard QLoRA
+        # fix (what peft.prepare_model_for_kbit_training does) — memory cost is a
+        # few hundred MiB at r=64, well inside the probe's headroom.
+        assert trainer.model is not None
+        for param in trainer.model.parameters():
+            if param.requires_grad and param.dtype != torch.float32:
+                param.data = param.data.float()
 
     trainer.train(resume_from_checkpoint=local_checkpoint)
 

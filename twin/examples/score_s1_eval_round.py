@@ -43,6 +43,7 @@ from datetime import UTC, datetime
 
 import fsspec
 
+from twin.config.settings import get_settings
 from twin.core.enums import GateLevel
 from twin.harness.aggregate import aggregate_s1
 from twin.harness.eval_io import read_judged_shard, write_report
@@ -58,8 +59,6 @@ from twin.harness.schema import JudgedItem, S1Answer
 
 EVAL_ROOT_URI = "file://./eval"
 RUNS_ROOT_URI = "file://./eval/runs"
-R1_ANSWERS_URI = "file://./eval/s1/answers/r1.jsonl"
-R2_ANSWERS_URI = "file://./eval/s1/answers/r2.jsonl"
 UNJUDGEABLE_VERDICT = "unjudgeable"
 
 
@@ -119,8 +118,9 @@ def main() -> None:
 
     judged_by_baseline = regroup_judged_items_by_baseline(judged, index)
 
-    r1 = _read_answers(R1_ANSWERS_URI)
-    r2 = _read_answers(R2_ANSWERS_URI)
+    s1_root = get_settings().s1_eval_root_uri
+    r1 = _read_answers(f"{s1_root}/answers/r1.jsonl")
+    r2 = _read_answers(f"{s1_root}/answers/r2.jsonl")
     self_consistency = compute_self_consistency(r1, r2)
 
     s1_metrics = aggregate_s1(judged_by_baseline=judged_by_baseline, self_consistency=self_consistency)

@@ -75,6 +75,17 @@ class Settings(BaseSettings):
         description="fsspec URI read by twin.train.data.load_training_examples "
         "(via twin.ingest.store). Same reasoning as fragment_store_uri.",
     )
+    s1_eval_root_uri: str = Field(
+        default="file://./eval/s1",
+        alias="TWIN_S1_EVAL_ROOT_URI",
+        description="fsspec URI of the directory holding the frozen S1 item "
+        "bank (`item_bank.jsonl` + `manifest.json`) and its wave answers "
+        "(`answers/r{1,2}.jsonl`, `answers/r{1,2}_manifest.json`). The "
+        "default is checkout-relative and gitignored, which is exactly how "
+        "a real frozen bank was lost once (2026-08-29, PLAN.md Phase 2) — "
+        "point this at an absolute path outside every checkout/worktree "
+        "for real runs. Same reasoning as fragment_store_uri.",
+    )
     checkpoint_store_uri: str | None = Field(
         default=None,
         alias="TWIN_CHECKPOINT_STORE_URI",

@@ -45,9 +45,6 @@ from twin.harness.shard import split_into_shards, strip_source_label
 from twin.ingest.store import read_fragments_jsonl
 from twin.train.model import DEFAULT_MODEL_SPEC
 
-BANK_URI = "file://./eval/s1/item_bank.jsonl"
-MANIFEST_URI = "file://./eval/s1/manifest.json"
-R2_ANSWERS_URI = "file://./eval/s1/answers/r2.jsonl"
 RUBRIC_URI = "file://./eval/rubric/s1.md"
 PERSONA_URI = "file://./data/persona.txt"
 EVAL_ROOT_URI = "file://./eval"
@@ -108,13 +105,17 @@ def _load_self_report_transcript(fragment_store_uri: str) -> str | None:
 
 def main() -> None:
     settings = get_settings()
-    items, _bank_manifest = read_and_verify_item_bank(bank_uri=BANK_URI, manifest_uri=MANIFEST_URI)
+    s1_root = get_settings().s1_eval_root_uri
+    items, _bank_manifest = read_and_verify_item_bank(
+        bank_uri=f"{s1_root}/item_bank.jsonl", manifest_uri=f"{s1_root}/manifest.json"
+    )
+    r2_answers_uri = f"{s1_root}/answers/r2.jsonl"
 
-    r2_answers = _read_r2_answers(R2_ANSWERS_URI)
+    r2_answers = _read_r2_answers(r2_answers_uri)
     missing_r2 = [item.item_id for item in items if item.item_id not in r2_answers]
     if missing_r2:
         sys.exit(
-            f"{len(missing_r2)}/{len(items)} items have no R2 (Wave 2) answer at {R2_ANSWERS_URI} — "
+            f"{len(missing_r2)}/{len(items)} items have no R2 (Wave 2) answer at {r2_answers_uri} — "
             f"run examples/collect_s1_answers.py --wave 2 to completion first (twin/PLAN.md Phase 6)."
         )
 

@@ -9,7 +9,7 @@ exactly one real Teacher call (D9: 少次、大批 — this burns 1 unit of the
 day's Gemini quota), prints the returned item-type breakdown for a human to
 eyeball against EVAL.md §3.2's 30/25/25/20 SHOULD ratio, then asks for
 explicit confirmation before writing the bank as a write-once, frozen
-artifact under twin/eval/s1/ (core.hashing.dataset_hash-backed — any
+artifact under `TWIN_S1_EVAL_ROOT_URI` (core.hashing.dataset_hash-backed — any
 post-freeze edit is detectable, see harness.item_bank.read_and_verify_item_bank).
 
     uv run python examples/build_s1_item_bank.py
@@ -33,18 +33,19 @@ from twin.config.settings import get_settings
 from twin.core.enums import Split
 from twin.core.hashing import dataset_hash
 from twin.harness.item_bank import S1BankManifest, bank_hash, write_item_bank_once
-from twin.harness.suites.s1 import build_item_bank
+from twin.harness.suites.s1 import build_item_bank, sample_held_out_windows
 from twin.ingest.store import read_fragments_jsonl
 from twin.teacher.gemini import GeminiTeacher
 
-BANK_URI = "file://./eval/s1/item_bank.jsonl"
-MANIFEST_URI = "file://./eval/s1/manifest.json"
+SAMPLE_SEED = 0  # deterministic: same store + seed -> same sampled subset -> same dataset hash
 
 _ITEM_TYPES = ("value_tradeoff", "preference", "reaction_tendency", "recall")
 
 
 def main() -> None:
     settings = get_settings()
+    bank_uri = f"{settings.s1_eval_root_uri}/item_bank.jsonl"
+    manifest_uri = f"{settings.s1_eval_root_uri}/manifest.json"
 
     fs, path = fsspec.core.url_to_fs(settings.fragment_store_uri)
     if not fs.exists(path):
@@ -53,17 +54,18 @@ def main() -> None:
             f"LINE-export ingest first (twin/PLAN.md)."
         )
 
-    held_out_ids = [
-        fragment.fragment_id
-        for fragment in read_fragments_jsonl(settings.fragment_store_uri)
-        if fragment.split == Split.HELDOUT
-    ]
-    if not held_out_ids:
+    held_out = [f for f in read_fragments_jsonl(settings.fragment_store_uri) if f.split == Split.HELDOUT]
+    if not held_out:
         sys.exit(
             f"0 held-out fragments found in {settings.fragment_store_uri} — run "
             f"Phase 1's real LINE-export ingest first (twin/PLAN.md)."
         )
-    print(f"{len(held_out_ids)} held-out fragments found — making one Teacher call...")
+    sampled = sample_held_out_windows(held_out, seed=SAMPLE_SEED)
+    held_out_ids = [f.fragment_id for f in sampled]
+    print(
+        f"{len(held_out)} held-out fragments found; {len(held_out_ids)} sampled in time-stratified "
+        f"windows (seed={SAMPLE_SEED}) — making one Teacher call..."
+    )
 
     teacher = GeminiTeacher.from_settings(settings)
     bank = build_item_bank(
@@ -90,8 +92,8 @@ def main() -> None:
         teacher_model=teacher.model,
         created_at=datetime.now(UTC),
     )
-    write_item_bank_once(bank, bank_uri=BANK_URI, manifest=manifest, manifest_uri=MANIFEST_URI)
-    print(f"\nWritten to {BANK_URI} and {MANIFEST_URI}.")
+    write_item_bank_once(bank, bank_uri=bank_uri, manifest=manifest, manifest_uri=manifest_uri)
+    print(f"\nWritten to {bank_uri} and {manifest_uri}.")
     print("Next: uv run python examples/collect_s1_answers.py --wave 1")
 
 
