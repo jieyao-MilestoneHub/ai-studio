@@ -25,6 +25,7 @@ from typing import Literal
 
 import fsspec
 
+from twin.config.settings import get_settings
 from twin.harness.item_bank import (
     S1WaveManifest,
     bank_hash,
@@ -33,16 +34,13 @@ from twin.harness.item_bank import (
 )
 from twin.harness.schema import S1Answer
 
-BANK_URI = "file://./eval/s1/item_bank.jsonl"
-MANIFEST_URI = "file://./eval/s1/manifest.json"
+
+def _answers_uri(root_uri: str, wave: Literal[1, 2]) -> str:
+    return f"{root_uri}/answers/r{wave}.jsonl"
 
 
-def _answers_uri(wave: Literal[1, 2]) -> str:
-    return f"file://./eval/s1/answers/r{wave}.jsonl"
-
-
-def _wave_manifest_uri(wave: Literal[1, 2]) -> str:
-    return f"file://./eval/s1/answers/r{wave}_manifest.json"
+def _wave_manifest_uri(root_uri: str, wave: Literal[1, 2]) -> str:
+    return f"{root_uri}/answers/r{wave}_manifest.json"
 
 
 def _read_existing_answers(uri: str) -> dict[str, S1Answer]:
@@ -65,9 +63,12 @@ def main() -> None:
     args = parser.parse_args()
     wave: Literal[1, 2] = 1 if args.wave == 1 else 2
 
-    items, _bank_manifest = read_and_verify_item_bank(bank_uri=BANK_URI, manifest_uri=MANIFEST_URI)
+    root_uri = get_settings().s1_eval_root_uri
+    items, _bank_manifest = read_and_verify_item_bank(
+        bank_uri=f"{root_uri}/item_bank.jsonl", manifest_uri=f"{root_uri}/manifest.json"
+    )
 
-    answers_uri = _answers_uri(wave)
+    answers_uri = _answers_uri(root_uri, wave)
     already_answered = _read_existing_answers(answers_uri)
     remaining = [item for item in items if item.item_id not in already_answered]
 
@@ -99,7 +100,7 @@ def main() -> None:
     if total_answered != len(items):
         return
 
-    manifest_uri = _wave_manifest_uri(wave)
+    manifest_uri = _wave_manifest_uri(root_uri, wave)
     fs, path = fsspec.core.url_to_fs(manifest_uri)
     if fs.exists(path):
         print(f"\nWave {wave} already had a completed manifest at {manifest_uri}.")

@@ -9,7 +9,7 @@ exactly one real Teacher call (D9: 少次、大批 — this burns 1 unit of the
 day's Gemini quota), prints the returned item-type breakdown for a human to
 eyeball against EVAL.md §3.2's 30/25/25/20 SHOULD ratio, then asks for
 explicit confirmation before writing the bank as a write-once, frozen
-artifact under twin/eval/s1/ (core.hashing.dataset_hash-backed — any
+artifact under `TWIN_S1_EVAL_ROOT_URI` (core.hashing.dataset_hash-backed — any
 post-freeze edit is detectable, see harness.item_bank.read_and_verify_item_bank).
 
     uv run python examples/build_s1_item_bank.py
@@ -37,14 +37,13 @@ from twin.harness.suites.s1 import build_item_bank
 from twin.ingest.store import read_fragments_jsonl
 from twin.teacher.gemini import GeminiTeacher
 
-BANK_URI = "file://./eval/s1/item_bank.jsonl"
-MANIFEST_URI = "file://./eval/s1/manifest.json"
-
 _ITEM_TYPES = ("value_tradeoff", "preference", "reaction_tendency", "recall")
 
 
 def main() -> None:
     settings = get_settings()
+    bank_uri = f"{settings.s1_eval_root_uri}/item_bank.jsonl"
+    manifest_uri = f"{settings.s1_eval_root_uri}/manifest.json"
 
     fs, path = fsspec.core.url_to_fs(settings.fragment_store_uri)
     if not fs.exists(path):
@@ -90,8 +89,8 @@ def main() -> None:
         teacher_model=teacher.model,
         created_at=datetime.now(UTC),
     )
-    write_item_bank_once(bank, bank_uri=BANK_URI, manifest=manifest, manifest_uri=MANIFEST_URI)
-    print(f"\nWritten to {BANK_URI} and {MANIFEST_URI}.")
+    write_item_bank_once(bank, bank_uri=bank_uri, manifest=manifest, manifest_uri=manifest_uri)
+    print(f"\nWritten to {bank_uri} and {manifest_uri}.")
     print("Next: uv run python examples/collect_s1_answers.py --wave 1")
 
 

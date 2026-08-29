@@ -83,7 +83,7 @@ Phase 0（護欄）
 **審查**：`spec-auditor`（初次 BLOCK → 修正 → 複審 PASS）、`data-hygiene`（PASS，時間洩漏/切分污染/frozen-model 防寫入三項未見違規；記錄兩項非阻塞觀察：`write_fragments_jsonl` 的全覆寫語意在未來多來源 ingest 前需先定使用慣例，`train/data.py` 的 split 過濾測試仍待 Phase 4 補上）。
 
 **仍待辦**：
-1. 使用者提供一份真實的 LINE 聊天記錄（或其他純文字）匯出檔案，對其實際執行 `fragments_from_line_export()` 並用 `write_fragments_jsonl()` 落地到 `twin/data/`（gitignored）。
+1. 使用者提供一份真實的 LINE 聊天記錄（或其他純文字）匯出檔案，對其實際執行 `fragments_from_line_export()` 並用 `write_fragments_jsonl()` 落地。**驅動腳本已落地（2026-08-29）**：`ingest/line_ingest.py::ingest_line_export()`（可測的邏輯層：`sealed_cutoff_for` → `fragments_from_line_export` → 拒絕覆寫既有 store、拒絕 0 筆 held-out、heldout 早於 train 即 `raise` → `write_fragments_jsonl`）＋ `examples/ingest_line_export.py`（argv 驅動：`--export`、`--principal-display-name`、`--known-sender`（重複）、`--train-cutoff`、`--now`、`--sealed-fraction`、`--overwrite`），測試 `tests/unit/test_ingest_line_ingest.py`（5 個，虛構資料）。**資料存放位置改為 checkout 之外**：2026-08-29 發現先前已生成的一份真實題庫（約 69 題）因為只存在 gitignored 的 checkout 相對路徑裡而遺失，故 `twin/.env` 現在把 `TWIN_FRAGMENT_STORE_URI`／`TWIN_TRAJECTORY_STORE_URI`／新增的 `TWIN_S1_EVAL_ROOT_URI`／`TWIN_TEACHER_LEDGER_PATH` 全指向 `~/twin-data/`（不在任何 repo/worktree 內；原始匯出檔放 `~/twin-data/raw/`）。真實匯出檔的再次 ingest 仍待使用者提供檔案（同一輪也沒有留下先前那份匯出檔）。
 2. ~~Phase 0 的 GCP 專案就緒後，對 `GeminiTeacher` 打第一次真實請求，確認 RPD ledger 與 D8 的「未啟用 billing」防線在真實流量下仍然成立。~~ **已完成 2026-08-28**：`GeminiTeacher.from_settings()` 對 `gemini-3.5-flash-lite` 打了一次真實請求（一次性驗證腳本，非落地測試），成功解析 `PingResponse`，ledger 從 0 累加到 1，確認記帳邏輯在真實流量下正確。`TWIN_GEMINI_MODEL` 依 AI Studio 的免費層儀表板選定，而非猜測值。
 
 ### Phase 2 — S1 題庫 + Wave 1 作答（**專案第 0 天**）
@@ -102,7 +102,7 @@ Phase 0（護欄）
 **類型**：程式（已完成）+ 人工（作答本身，仍待辦）——**全計畫最重要的一個驗收點**。
 
 **仍待辦（人工＋一次性操作）**：
-1. Phase 1 的真實 LINE 匯出 ingest（仍是本項目最上游的缺口——`twin/data/` 目前沒有任何 `fragments.jsonl`，兩支新腳本都會在這裡卡住並給出明確訊息）。
+1. Phase 1 的真實 LINE 匯出 ingest（仍是本項目最上游的缺口——`~/twin-data/data/` 目前沒有任何 `fragments.jsonl`，兩支腳本都會在這裡卡住並給出明確訊息）。**注意（2026-08-29）**：先前曾生成並凍結過一份約 69 題的真實題庫，但存在 checkout 相對的 gitignored 路徑下，未被保留，Wave 1 也未曾答完——視為從未發生，重來。為此 `build_s1_item_bank.py`／`collect_s1_answers.py`／`prepare_s1_eval_round.py`／`score_s1_eval_round.py` 不再硬編碼 `file://./eval/s1`，改讀 `Settings.s1_eval_root_uri`（`TWIN_S1_EVAL_ROOT_URI`，預設仍為 `file://./eval/s1`，真實跑時設為 `~/twin-data/eval/s1`）。
 2. 上述完成後，跑 `uv run python examples/build_s1_item_bank.py`（真的花 1 次 Gemini 配額）、`uv run python examples/collect_s1_answers.py --wave 1`——這一步完成的瞬間就是專案第 0 天，14 天倒數開始，之後才輪到 `--wave 2`（Phase 6）。
 
 ### Phase 3 — AI 訪談員、訪談本身、後處理（與 Phase 1/2 平行，須在 14 天內完成）

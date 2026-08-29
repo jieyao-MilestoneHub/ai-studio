@@ -14,9 +14,15 @@ get back an agent whose judgment, tool-use style, and proactivity — including
 the tendency *not* to act — resembles that person in situations they've never
 actually faced.
 
-**Status: Phases 0, 1, and 4 (accounts/guardrails, L1 ingest skeleton, LoRA
-training vertical slice) are code-complete and tested; Phases 2, 3, 5+ are
-still spec-only.** `twin/` has its own package skeleton — `twin/pyproject.toml`,
+**Status (2026-08-29): Phases 0, 1, 2, 3-A, 4 and 5 are code-complete and
+tested (guardrails/accounts, L1 ingest incl. the real-export driver
+`examples/ingest_line_export.py`, S1 item bank + wave collection, interview
+post-processing/ingest, LoRA training slice, baseline + judge harness).
+What has NOT happened yet is the data: no real fragment store, no frozen
+item bank, no Wave 1 answers — Phase 2's "project day 0" has not started.
+Phase 3-B (the live interviewer) and Phases 6+ are spec-only. All real data
+lives under `~/twin-data/` (outside every checkout — see `twin/.env`), never
+at the checkout-relative defaults.** `twin/` has its own package skeleton — `twin/pyproject.toml`,
 `src/twin/`, its own `uv.lock` and import-linter contracts, entirely
 independent of the root package's. See `twin/PLAN.md` for the authoritative
 phase-by-phase status — it is updated far more often than this file's prose
