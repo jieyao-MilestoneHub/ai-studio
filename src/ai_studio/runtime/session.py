@@ -364,8 +364,15 @@ def open_session(
                 )
             except PodError as exc:
                 # Only the cheapest rung is worth waiting on; the others give way
-                # immediately so the window is not spent queueing.
+                # immediately so the window is not spent queueing. Say so each
+                # time: a silent 45-minute retry loop is indistinguishable from
+                # a hung process to whoever is watching the terminal.
                 if tier.wait and time.time() < deadline:
+                    _log.warning(
+                        "pod create failed on %s; retrying in %.0fs", tier.label, WAIT_RETRY_INTERVAL_S,
+                        extra={"reason": str(exc)[:300], "datacenter": tier.datacenter,
+                               "seconds": round(deadline - time.time())},
+                    )
                     time.sleep(WAIT_RETRY_INTERVAL_S)
                     continue
                 failures.append(f"{tier.label} @ {tier.datacenter}: {exc}")
