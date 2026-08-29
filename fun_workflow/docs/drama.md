@@ -216,9 +216,25 @@ Job 105, 「最後一個飯糰」. What it measured, and what it changed:
 - **Wide keyframes came out on the character sheet's grey wall**, no store in
   sight: image-to-image at 0.70 keeps the source's backdrop. The sheet is
   now shot inside the world bible's location.
-- **FaceDetailer MISS** — Impact-Pack failed to import (`No module named
-  'skimage'`); `face_repair.sh` piped pip into grep and lost its exit code.
-  Fixed; unverified until the next pod.
+- **The OOM's real owner is the inference server.** On the second pod
+  (job 106) `nvidia-smi` showed it holding 12.7 GiB *after* `POST /unload`
+  had answered `ok` — gpt-oss-20b's exact footprint — so H3 had ~10 GiB and
+  clip 2 died on "VRAM grow failed". `_release_vram`'s gc + `empty_cache`
+  does not reach it; job 86 on 08-27 (moondream3 OOM after chat) was the
+  same leak. `/unload` now measures what is still allocated and re-execs
+  the server process when it is over 1 GiB — the one release that always
+  works. `[speculative]` until the next pod's `inference.log` shows the
+  restart and a clean `nvidia-smi` after it.
+- **FaceDetailer MISS, twice.** First `No module named 'skimage'` (pip's
+  exit code lost in a grep pipe), then `No module named 'piexif'`: the
+  `git+…sam2` line in Impact-Pack's requirements wants a torch this venv
+  does not have and pip refuses the whole file. The script now installs the
+  requirements minus `git+` lines and proves the imports. Unverified until
+  the next pod.
+- **The cliffhanger came back as a prop shot** ("the phone buzzes") both
+  times despite the prompt rule; `SubShot` now refuses an action without
+  "the lead" in it, so the screenwriter retries instead of the keyframe
+  being a phone.
 - The three screenwriter calls took 📏 107 s / 45 s / 49 s on gpt-oss-20b
   (the first includes the 72 s model load); no retry needed. Two clips would
   have been the wrong beat: shot 6 was written as the phone buzzing, not the

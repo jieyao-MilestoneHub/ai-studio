@@ -203,6 +203,12 @@ class SubShot(BaseModel):
     def _one_line(self) -> SubShot:
         if len(self.dialogue) > 1:
             raise ValueError("at most one line per sub-shot")
+        if "the lead" not in self.action.lower():
+            # 📏 2026-08-29, twice: the cliffhanger came back as "the phone
+            # buzzes with a new message" -- a prop shot, no lead, so the
+            # keyframe was a phone and the anchor wasted. The prompt says
+            # it; this makes it true.
+            raise ValueError(f"sub-shot {self.index}: the lead must be in the action ({self.action!r})")
         return self
 
 
