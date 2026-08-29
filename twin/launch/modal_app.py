@@ -62,7 +62,11 @@ train_secret = modal.Secret.from_name("twin-train")
 
 @app.function(
     image=image,
-    gpu="T4",
+    # Ordered fallback: the first real run was preempted at step 180 and then
+    # sat >7h "waiting to be scheduled on a GPU_T4 worker". Any of these fits
+    # r=64 QLoRA (probe: 9.2 GiB peak on T4); L4/A10G are 24 GB and only
+    # modestly pricier per hour, far cheaper than an idle day.
+    gpu=["T4", "L4", "A10G"],
     timeout=6 * 60 * 60,  # SPEC.md §7.3: Modal Starter is the primary loop; long runs go to Kaggle instead of a longer timeout here
     volumes={"/checkpoints": checkpoint_volume},
     secrets=[gemini_secret, train_secret],
