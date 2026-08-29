@@ -18,8 +18,9 @@ actually faced.
 tested (guardrails/accounts, L1 ingest incl. the real-export driver
 `examples/ingest_line_export.py`, S1 item bank + wave collection, interview
 post-processing/ingest, LoRA training slice, baseline + judge harness).
-What has NOT happened yet is the data: no real fragment store, no frozen
-item bank, no Wave 1 answers — Phase 2's "project day 0" has not started.
+Real data has landed: a 96,750-fragment store, a frozen 70-item S1 bank,
+and Wave 1 answers — **project day 0 is 2026-08-29T03:58Z; Wave 2 opens
+2026-09-12** (PLAN.md Phase 2/6). Phases 3-B/4/5 real runs are next.
 Phase 3-B (the live interviewer) and Phases 6+ are spec-only. All real data
 lives under `~/twin-data/` (outside every checkout — see `twin/.env`), never
 at the checkout-relative defaults.** `twin/` has its own package skeleton — `twin/pyproject.toml`,
