@@ -29,8 +29,12 @@ RETAIN_S = 2 * 86_400
 
 
 class PodOpenLedger:
-    def __init__(self, path: Path | str = DEFAULT_OPENS_FILE) -> None:
-        self.path = Path(path)
+    def __init__(self, path: Path | str | None = None) -> None:
+        # Resolved at construction, not at definition, so a test can point
+        # `DEFAULT_OPENS_FILE` elsewhere. On 2026-08-29 the suite had written
+        # 528 fake opens into the operator's real ledger and the worker's
+        # daily cap refused every real pod that day.
+        self.path = Path(path or DEFAULT_OPENS_FILE)
 
     def _read(self) -> list[dict[str, Any]]:
         if not self.path.is_file():

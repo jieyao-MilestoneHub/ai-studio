@@ -41,8 +41,8 @@ open can ever actually cost, even before anything is rendered."""
 class SpendLedger:
     """A durable, month-scoped record of what each window actually cost."""
 
-    def __init__(self, path: Path | str = DEFAULT_LEDGER_FILE) -> None:
-        self.path = Path(path)
+    def __init__(self, path: Path | str | None = None) -> None:
+        self.path = Path(path or DEFAULT_LEDGER_FILE)  # resolved late, so tests can redirect it
 
     def _month_key(self, when: datetime | None = None) -> str:
         when = (when or datetime.now(timezone.utc)).astimezone(LEDGER_TZ)
