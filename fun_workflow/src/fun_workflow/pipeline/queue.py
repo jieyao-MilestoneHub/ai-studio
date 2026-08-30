@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     error       TEXT,
     gpu_tier    TEXT,
     gpu_usd_per_hr REAL,
+    gpu_seconds REAL,
+    peak_vram_gb REAL,
     created_at  REAL    NOT NULL,
     parsed_at   REAL,
     started_at  REAL,
@@ -175,11 +177,10 @@ class Job:
     """The produced description, for an understanding job. `output_path`
     stays None for these -- there is no file, only text."""
     cost_usd: float | None
-    """What a completed job actually cost, in dollars. Only populated for a
-    chat job today (`pipeline.drain.render_chat` -> `record_chat_cost()`),
-    which is the only kind with a monthly sub-budget to check against -- see
-    `chat_spent_this_month_usd()`. None for every other kind, whose cost is
-    still tracked only at the session level (`runtime.budget.SpendLedger`)."""
+    """What a completed job actually cost, in dollars, as the provider
+    metered it (`record_usage()`, written by every renderer right after
+    `fetch()`; a drama's is its state file's `spent_usd`). None until the
+    job finishes. `chat_spent_this_month_usd()` sums the chat rows."""
     error: str | None
     gpu_tier: str | None
     gpu_usd_per_hr: float | None
@@ -188,8 +189,15 @@ class Job:
     Persisted rather than looked up live: the `Session` that served this job
     may have long since closed by the time someone opens `/q/{token}`, so a
     live read would silently go blank. Not accumulated spend -- see
-    `Job.cost_usd` for that, which stays populated only for chat jobs today.
+    `Job.cost_usd` for that.
     """
+    gpu_seconds: float | None
+    """Wall seconds from submit to fetched result on the pod -- the same
+    figure `benchmark.records` logs. For a drama, the summed GPU stages
+    (character, keyframes, clips) off its state file. None until finished."""
+    peak_vram_gb: float | None
+    """Peak VRAM the provider reported for this job. None when the
+    backend does not meter it (understanding, chat, a drama's many calls)."""
     created_at: float
     parsed_at: float | None
     started_at: float | None
@@ -249,6 +257,8 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         error=row["error"],
         gpu_tier=row["gpu_tier"],
         gpu_usd_per_hr=row["gpu_usd_per_hr"],
+        gpu_seconds=row["gpu_seconds"],
+        peak_vram_gb=row["peak_vram_gb"],
         created_at=row["created_at"],
         parsed_at=row["parsed_at"],
         started_at=row["started_at"],
@@ -301,6 +311,10 @@ class JobQueue:
             conn.execute("ALTER TABLE jobs ADD COLUMN reply_message_id TEXT")
         if "gpu_usd_per_hr" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN gpu_usd_per_hr REAL")
+        if "gpu_seconds" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN gpu_seconds REAL")
+        if "peak_vram_gb" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN peak_vram_gb REAL")
 
     def _connect(self) -> sqlite3.Connection:
         """One connection per thread, all pointing at the same file.
@@ -676,14 +690,24 @@ class JobQueue:
         ).fetchall()
         return [(r["role"], r["content"]) for r in reversed(rows)]
 
-    def record_chat_cost(self, job_id: int, cost_usd: float) -> None:
-        """Attach what a completed /himonkey turn actually cost, for
-        `chat_spent_this_month_usd()`. Called once, right after `fetch()` in
-        `pipeline.drain.render_chat` -- no other job kind persists a
-        per-job cost today (their spend is tracked only at the session level
-        by `runtime.budget.SpendLedger`), so this column stays chat-only
-        rather than something every kind must populate."""
-        self._conn.execute("UPDATE jobs SET cost_usd=? WHERE id=?", (cost_usd, job_id))
+    def record_usage(
+        self,
+        job_id: int,
+        *,
+        cost_usd: float | None,
+        gpu_seconds: float | None,
+        peak_vram_gb: float | None = None,
+    ) -> None:
+        """Attach what a finished job actually used: metered cost, wall
+        seconds on the pod, peak VRAM where the backend reports it. Called
+        once per job by its renderer, right after `fetch()` -- the numbers
+        `/q/{token}` shows under 成本 / 生成時間 / VRAM, and the chat rows
+        `chat_spent_this_month_usd()` sums. None leaves a column blank
+        rather than inventing a zero."""
+        self._conn.execute(
+            "UPDATE jobs SET cost_usd=?, gpu_seconds=?, peak_vram_gb=? WHERE id=?",
+            (cost_usd, gpu_seconds, peak_vram_gb, job_id),
+        )
 
     def chat_spent_this_month_usd(self, *, since: float | None = None) -> float:
         """This calendar month's total /himonkey spend, checked against

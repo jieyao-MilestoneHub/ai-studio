@@ -110,6 +110,29 @@ its own line/narration cue starts -- see `write_captions`."""
 OnActivity = Callable[[], None] | None
 
 
+GPU_STAGES = ("character", "keyframes", "clips")
+"""The stages that spend GPU time; `level` and `assemble` are host ffmpeg."""
+
+
+def gpu_seconds(state: DramaState) -> float | None:
+    """Summed wall seconds of the GPU stages, off their `StageTiming`s --
+    the figure `/q/{token}` shows as 生成時間 for a drama. A stage that
+    resumed across pod windows keeps its first `started_at`, so the gap is
+    counted too: that is honestly how long the request took to make. None
+    when no GPU stage has both timestamps yet."""
+    total = 0.0
+    seen = False
+    for name in GPU_STAGES:
+        timing = state.stages.get(name)
+        if timing is None or not timing.started_at or not timing.finished_at:
+            continue
+        total += (
+            datetime.fromisoformat(timing.finished_at) - datetime.fromisoformat(timing.started_at)
+        ).total_seconds()
+        seen = True
+    return round(total, 1) if seen else None
+
+
 async def render_drama(
     job: Job,
     providers: dict[MediaKind, Any],

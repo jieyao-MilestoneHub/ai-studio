@@ -583,20 +583,40 @@ def test_chat_spend_accumulates_within_the_month(q: JobQueue) -> None:
 
     assert q.chat_spent_this_month_usd() == 0.0
 
-    q.record_chat_cost(a.id, 0.02)
-    q.record_chat_cost(b.id, 0.03)
+    q.record_usage(a.id, cost_usd=0.02, gpu_seconds=3.0)
+    q.record_usage(b.id, cost_usd=0.03, gpu_seconds=4.0)
 
     assert q.chat_spent_this_month_usd() == 0.05
     assert q.by_id(a.id).cost_usd == 0.02
 
 
 def test_chat_spend_ignores_non_chat_jobs_even_with_a_cost_recorded(q: JobQueue) -> None:
-    """Only chat populates `cost_usd` today, but the query itself must stay
-    kind-scoped rather than trusting that invariant implicitly."""
+    """Every kind records its cost now, so the chat sub-budget query must
+    stay kind-scoped or a video would eat the chat allowance."""
     video, _ = q.enqueue("e-video", "Cgroup", "生成 一隻貓", media_kind=JobKind.VIDEO)
-    q.record_chat_cost(video.id, 99.0)
+    q.record_usage(video.id, cost_usd=99.0, gpu_seconds=180.0, peak_vram_gb=22.0)
 
     assert q.chat_spent_this_month_usd() == 0.0
+    saved = q.by_id(video.id)
+    assert (saved.cost_usd, saved.gpu_seconds, saved.peak_vram_gb) == (99.0, 180.0, 22.0)
+
+
+def test_usage_columns_are_added_to_a_database_from_before_them(tmp_path) -> None:
+    """A jobs table created before 2026-08-30 has no gpu_seconds/peak_vram_gb;
+    opening it must migrate, not raise on the first `record_usage`."""
+    import sqlite3
+
+    db = tmp_path / "old.sqlite3"
+    with JobQueue(db) as fresh:
+        fresh.enqueue("e-old", "Cgroup", "x", media_kind=JobKind.VIDEO)
+    with sqlite3.connect(db) as raw:
+        raw.execute("ALTER TABLE jobs DROP COLUMN gpu_seconds")
+        raw.execute("ALTER TABLE jobs DROP COLUMN peak_vram_gb")
+    with JobQueue(db) as reopened:
+        job = reopened.recent()[0]
+        assert job.gpu_seconds is None
+        reopened.record_usage(job.id, cost_usd=0.1, gpu_seconds=9.0, peak_vram_gb=1.5)
+        assert reopened.by_id(job.id).peak_vram_gb == 1.5
 
 
 def test_a_database_created_before_chat_shipped_migrates_cleanly(tmp_path: Path) -> None:

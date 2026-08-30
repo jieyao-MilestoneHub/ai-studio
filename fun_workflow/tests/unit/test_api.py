@@ -409,7 +409,7 @@ def test_the_page_names_the_open_model_with_a_link(client) -> None:
     """Asked 2026-08-27: every job page says which open model produced it and
     links to its repo. Generators come from a fixed table, understanding and
     chat from the provider's capabilities, so a model swap shows up here."""
-    from fun_workflow.api.main import model_for
+    from fun_workflow.api.main import models_for
     from fun_workflow.core.kinds import JobKind
 
     c, queue, _ = client
@@ -422,10 +422,74 @@ def test_the_page_names_the_open_model_with_a_link(client) -> None:
     assert 'href="https://github.com/jieyao-MilestoneHub/ai-studio"' in body
 
     for kind in JobKind:
-        name, url = model_for(kind)
-        assert name and url.startswith("https://huggingface.co/")
-    assert model_for(JobKind.CHAT)[1].endswith("/openai/gpt-oss-20b")
-    assert "Qwen2-Audio" in model_for(JobKind.AUDIO_UNDERSTAND)[0]
+        for name, url in models_for(kind):
+            assert name and url.startswith("https://huggingface.co/")
+            assert "+" not in url and " " not in url, f"{kind}: one URL per model, never a joined one"
+    assert models_for(JobKind.CHAT)[0][1].endswith("/openai/gpt-oss-20b")
+    assert "Qwen2-Audio" in models_for(JobKind.AUDIO_UNDERSTAND)[0][0]
+
+
+def test_a_job_on_several_models_links_each_one_joined_by_a_plus(client) -> None:
+    """/說影 runs Qwen2.5-VL and Qwen2-Audio; the drama runs three models.
+    The page used to print one anchor whose href was the two ids glued
+    together with ' + ' -- a dead link. Now: one anchor per model, the
+    anchors joined by ' + '."""
+    from fun_workflow.api.main import _models_html, models_for
+    from fun_workflow.core.kinds import JobKind
+
+    vl, audio = models_for(JobKind.VIDEO_UNDERSTAND)
+    assert vl[1] == "https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct"
+    assert audio[1] == "https://huggingface.co/Qwen/Qwen2-Audio-7B-Instruct"
+    html_out = _models_html(JobKind.VIDEO_UNDERSTAND)
+    assert html_out.count("<a ") == 2 and "</a> + <a " in html_out
+
+    assert [u for _, u in models_for(JobKind.DRAMA)] == [
+        "https://huggingface.co/Comfy-Org/MiniMax-H3",
+        "https://huggingface.co/black-forest-labs/FLUX.1-dev",
+        "https://huggingface.co/openai/gpt-oss-20b",
+    ]
+
+
+def test_a_finished_job_page_shows_what_it_actually_used(client) -> None:
+    """Asked 2026-08-30: every result page carries GPU, VRAM, 生成時間, 模型,
+    成本 and 實際結果 -- the metered figures `record_usage` persisted, not a
+    live lookup. A figure the backend never gave says 未量測 instead of
+    vanishing, and nothing is claimed for a job that has not run."""
+    c, queue, _ = client
+    _post(c, [_event("/影片 一隻貓")])
+    job = queue.recent()[0]
+    before = c.get(f"/q/{job.token}").text
+    assert "使用的 GPU" not in before and "成本" not in before
+
+    queue.set_parsed(job.id, {"_built_by": "test"})
+    claimed = queue.claim_next(gpu_tier="RTX 4090/COMMUNITY", usd_per_hr=0.74)
+    assert claimed is not None
+    queue.record_usage(claimed.id, cost_usd=0.0412, gpu_seconds=187.3, peak_vram_gb=21.6)
+    queue.complete(claimed.id, "/srv/files/abc.mp4")
+
+    body = c.get(f"/q/{job.token}").text
+    for label in ("使用的 GPU", "VRAM 峰值", "生成時間", "開源模型", "成本", "實際結果"):
+        assert label in body, label
+    assert "RTX 4090/COMMUNITY" in body and "$0.740/hr" in body
+    assert "21.6 GB" in body
+    assert "3 分 07 秒" in body
+    assert "$0.0412" in body
+    assert 'href="https://vg.example.com/files/abc.mp4"' in body or "/files/abc.mp4" in body
+
+
+def test_an_unmetered_figure_says_so_rather_than_disappearing(client) -> None:
+    c, queue, _ = client
+    _post(c, [_event("/himonkey 嗨")])
+    job = queue.recent()[0]
+    queue.set_parsed(job.id, {"_built_by": "chat"})
+    claimed = queue.claim_next(gpu_tier="RTX 4090/COMMUNITY", usd_per_hr=0.74)
+    queue.record_usage(claimed.id, cost_usd=0.0009, gpu_seconds=4.2)
+    queue.complete_text(claimed.id, "哈囉")
+
+    body = c.get(f"/q/{job.token}").text
+    assert "VRAM 峰值" in body and body.count("未量測") == 1
+    assert "4 秒" in body and "$0.0009" in body
+    assert "實際結果" in body and "哈囉" in body
 
 
 def test_the_running_wording_matches_the_kind_of_job(client) -> None:
@@ -440,7 +504,8 @@ def test_the_running_wording_matches_the_kind_of_job(client) -> None:
             state=JobState.RUNNING, media_kind=kind, first_frame_path=None, quote_token=None,
             message_id=None, reply_message_id=None, requested_seconds=None,
             input_media_path=None, prompt_json=None, output_path=None, result_text=None,
-            cost_usd=None, error=None, gpu_tier=None, gpu_usd_per_hr=None, created_at=0.0, parsed_at=None,
+            cost_usd=None, error=None, gpu_tier=None, gpu_usd_per_hr=None, gpu_seconds=None,
+            peak_vram_gb=None, created_at=0.0, parsed_at=None,
             started_at=0.0, finished_at=None, delivered_at=None, attempts=1,
         )
 
