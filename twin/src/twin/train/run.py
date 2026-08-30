@@ -60,6 +60,15 @@ class TrainingConfig(BaseModel):
     gradient_accumulation_steps: int  # Keep per_device_train_batch_size * this < ~32 (LoRA-specific ceiling).
     max_steps: int  # Not num_train_epochs: fixes an exact step count so the kill/resume
     # test can compare an interrupted run against an uninterrupted control run 1:1.
+    # How many times each self-report (interview) trajectory is repeated in the
+    # SFT set. 1 = no upsampling. The interview yields ~30 trajectories against
+    # ~15.7k LINE ones (0.2%): at 1 the adapter sees them as noise, yet D19
+    # names self-report the dominant persona-fidelity source. Repetition is the
+    # only lever that keeps every LINE sample (no downsampling of behaviour
+    # data) — its cost is verbatim memorisation of interview phrasing, which
+    # EVAL.md S4 would surface as "more articulate than the principal".
+    # Part of config_hash (it changes what the model is trained on).
+    self_report_upsample: int = 1
     seed: int = 42
 
     def config_hash_fields(self) -> dict[str, Any]:
@@ -95,7 +104,9 @@ def main(
     # passes a small value here so a toy CI run doesn't have to wait 10 minutes
     # for its first checkpoint.
 ) -> AdapterManifest:
-    dataset, trajectory_ids = build_sft_dataset(trajectories_uri, seed=config.seed)
+    dataset, trajectory_ids = build_sft_dataset(
+        trajectories_uri, seed=config.seed, self_report_upsample=config.self_report_upsample
+    )
     dataset_hash_value = dataset_hash(trajectory_ids)
     config_hash_value = config_hash(config.config_hash_fields())
     run_id = derive_run_id(seed=config.seed, dataset_hash=dataset_hash_value, config_hash=config_hash_value)

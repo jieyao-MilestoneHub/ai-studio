@@ -30,6 +30,7 @@ from twin.core.trajectory import (
     ToolCallStep,
     Trajectory,
 )
+from twin.ingest.interview_trajectories import INTERVIEW_SURFACE
 from twin.train.data import load_training_examples
 from twin.train.masking import mask_tool_names
 
@@ -123,7 +124,13 @@ def trajectory_to_messages(trajectory: Trajectory, *, seed: int) -> list[dict[st
     return messages
 
 
-def build_sft_dataset(trajectories_uri: str, *, seed: int) -> tuple[datasets.Dataset, list[str]]:
+def _is_self_report(trajectory: Trajectory) -> bool:
+    return any(isinstance(step, ActionStep) and step.surface == INTERVIEW_SURFACE for step in trajectory.steps)
+
+
+def build_sft_dataset(
+    trajectories_uri: str, *, seed: int, self_report_upsample: int = 1
+) -> tuple[datasets.Dataset, list[str]]:
     """Reads only `split == train` (via `train.data.load_training_examples`,
     the un-skippable §4.8 filter), formats each trajectory, and materializes
     a map-style `datasets.Dataset` via `Dataset.from_list` — never
@@ -138,16 +145,24 @@ def build_sft_dataset(trajectories_uri: str, *, seed: int) -> tuple[datasets.Dat
 
     Returns `(dataset, trajectory_ids_in_order)` so the caller can feed that
     id list straight into `core.hashing.dataset_hash()` without a second read
-    of `trajectories_uri`.
+    of `trajectories_uri`. Self-report trajectories (an `ActionStep` on the
+    `interview` surface, `ingest.interview_trajectories`) are repeated
+    `self_report_upsample` times — and their ids repeated with them, so the
+    dataset hash reflects the upsampling (see `TrainingConfig.self_report_
+    upsample`). Repeats are contiguous here; the Trainer's random sampler
+    spreads them across the epoch.
     """
+    if self_report_upsample < 1:
+        raise ValueError(f"self_report_upsample must be >= 1, got {self_report_upsample}")
     examples: list[dict[str, Any]] = []
     ids: list[str] = []
     for trajectory in load_training_examples(trajectories_uri):
-        examples.append(
-            {
-                "trajectory_id": trajectory.trajectory_id,
-                "messages": trajectory_to_messages(trajectory, seed=seed),
-            }
-        )
-        ids.append(trajectory.trajectory_id)
+        repeats = self_report_upsample if _is_self_report(trajectory) else 1
+        example = {
+            "trajectory_id": trajectory.trajectory_id,
+            "messages": trajectory_to_messages(trajectory, seed=seed),
+        }
+        for _ in range(repeats):
+            examples.append(example)
+            ids.append(trajectory.trajectory_id)
     return datasets.Dataset.from_list(examples), ids

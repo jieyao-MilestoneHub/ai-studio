@@ -158,3 +158,20 @@ def test_tool_call_arguments_keep_cjk_unescaped() -> None:
     arguments = next(m for m in messages if m["role"] == "assistant" and m.get("tool_calls"))["tool_calls"][0]["function"]["arguments"]
     assert "好啊，晚點聊" in arguments
     assert "\\u" not in arguments
+
+
+def test_self_report_trajectories_are_upsampled_and_ids_repeat(tmp_path) -> None:
+    """D19: ~30 interview trajectories vs ~15.7k LINE ones would otherwise be
+    noise. Repeats carry their ids so dataset_hash changes with the factor."""
+    from twin.ingest.store import write_trajectories_jsonl
+    from twin.train.formatting import build_sft_dataset
+
+    line = _trajectory(steps=[ActionStep(surface="line", content="好")])
+    interview = _trajectory(steps=[ActionStep(surface="interview", content="我在台北長大")])
+    uri = f"file://{tmp_path}/t.jsonl"
+    write_trajectories_jsonl([line, interview], uri)
+
+    dataset, ids = build_sft_dataset(uri, seed=0, self_report_upsample=5)
+    assert len(dataset) == 6 and ids.count(interview.trajectory_id) == 5 and ids.count(line.trajectory_id) == 1
+    base, base_ids = build_sft_dataset(uri, seed=0)
+    assert len(base) == 2 and base_ids != ids
