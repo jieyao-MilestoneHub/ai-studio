@@ -287,6 +287,13 @@ class Screenplay(BaseModel):
     style: str = Field(default="Live-action, cinematic")
     anchor: CharacterAnchor
     world: WorldBible
+    beats: dict[Beat, str] = Field(default_factory=dict)
+    """The outline's six one-sentence causal beats (state_before/event/state_after
+    per beat), keyed by `Beat`. Not fed to H3 -- the video model keeps its clean
+    "physical action only" contract -- but no longer thrown away either: this is
+    the one place in the whole pipeline the drama's actual causality survives
+    past the outline call. `[speculative]` whether anything downstream reads it
+    yet beyond the status page; see docs/drama.md."""
     shots: tuple[DramaShot, ...]
     overall_soundscape: str = Field(min_length=1)
     non_diegetic_music: str = "N/A"
@@ -296,6 +303,12 @@ class Screenplay(BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> Screenplay:
+        if self.beats:
+            missing = set(Beat) - set(self.beats)
+            if missing:
+                raise ValueError(f"beats must cover all six: missing {sorted(b.value for b in missing)}")
+            if any(not text.strip() for text in self.beats.values()):
+                raise ValueError("beat text must be non-empty")
         if len(self.shots) != SHOT_COUNT:
             raise ValueError(f"a drama has exactly {SHOT_COUNT} shots, got {len(self.shots)}")
         indices = [s.index for s in self.shots]

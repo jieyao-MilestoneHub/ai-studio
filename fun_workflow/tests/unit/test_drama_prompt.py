@@ -109,6 +109,8 @@ async def test_three_calls_make_a_six_shot_screenplay() -> None:
     assert screenplay.shots[2].dialogue[0].identity == "阿玲, soft, low, slightly hoarse"
     assert screenplay.shots[3].cut_reason.value == "time_passing"
     assert len(screenplay.sub_shots()) == 10
+    assert set(screenplay.beats) == set(Beat)
+    assert screenplay.beats[Beat.TURN] == "turn beat"
 
 
 async def test_the_anchor_and_the_world_are_in_every_keyframe_prompt_verbatim() -> None:
@@ -296,3 +298,29 @@ def test_a_sub_shot_without_the_lead_is_a_screenplay_error() -> None:
     bad["shots"][2]["sub_shots"][0]["action"] = "the phone buzzes with a new message, screen off"
     with pytest.raises(drama.ScreenplayError, match="the lead must be in the action"):
         drama.build_shots(bad, expected=[4, 5, 6], anchor=anchor, world=world)
+
+
+def test_beats_must_cover_all_six_or_be_left_empty() -> None:
+    good = _screenplay()
+    with pytest.raises(ValidationError, match="missing"):
+        Screenplay(
+            title="t", logline="l", anchor=good.anchor, world=good.world, shots=good.shots,
+            overall_soundscape="q", beats={Beat.HOOK: "only one"},
+        )
+    with pytest.raises(ValidationError, match="non-empty"):
+        Screenplay(
+            title="t", logline="l", anchor=good.anchor, world=good.world, shots=good.shots,
+            overall_soundscape="q", beats={b: "" if b is Beat.HOOK else "x" for b in Beat},
+        )
+    # An empty dict (the pre-this-change shape) still constructs -- backward compatible.
+    ok = Screenplay(
+        title="t", logline="l", anchor=good.anchor, world=good.world, shots=good.shots, overall_soundscape="q",
+    )
+    assert ok.beats == {}
+
+
+async def test_screenplay_payload_carries_the_beats_forward() -> None:
+    screenplay, how = await drama.write_screenplay("x", _good_client())
+    payload = drama.screenplay_payload(screenplay, how)
+    assert payload["screenplay"]["beats"]["turn"] == "turn beat"
+    assert Screenplay.model_validate(payload["screenplay"]).beats == screenplay.beats
