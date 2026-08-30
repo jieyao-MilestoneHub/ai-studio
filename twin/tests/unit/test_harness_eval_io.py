@@ -112,3 +112,13 @@ def test_write_report_renders_to_disk(tmp_path: Path) -> None:
     with fsspec.open(uri, "r", encoding="utf-8") as f:
         content = f.read()
     assert "run_id: run-1" in content
+
+
+def test_rubric_uri_points_at_a_versioned_file_and_hashes() -> None:
+    from twin.harness.eval_io import compute_rubric_hash, rubric_uri
+
+    uri = rubric_uri("s1")
+    assert uri.startswith("file://") and uri.endswith("/twin/harness/rubric/s1.md")
+    assert len(compute_rubric_hash(uri, shard_size=20)) == 64
+    with pytest.raises(HarnessError):
+        rubric_uri("s9")

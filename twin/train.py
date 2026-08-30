@@ -39,6 +39,11 @@ def main() -> None:
         default=600.0,
         help="SPEC.md §7.4 SHOULD 10-15 min (600-900s). Tests use a small value.",
     )
+    parser.add_argument(
+        "--allow-no-self-report",
+        action="store_true",
+        help="skip train/preflight.py's D19 gate (self-report >= 1%% of samples). For LINE-only experiments and the toy CI run.",
+    )
     args = parser.parse_args()
 
     config = TrainingConfig.model_validate_json(args.config.read_text(encoding="utf-8"))
@@ -59,6 +64,7 @@ def main() -> None:
 
     manifest = run_training(
         config,
+        require_self_report=not args.allow_no_self_report,
         principal_id=settings.principal_id,
         trajectories_uri=settings.trajectory_store_uri,
         checkpoint_store_uri=settings.checkpoint_store_uri,

@@ -4,9 +4,11 @@ train() -> AdapterManifest. SPEC.md §5.3, §7.4-§7.6.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 
+import fsspec
 import torch
 from peft import PeftModel
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -14,7 +16,7 @@ from trl import SFTConfig, SFTTrainer
 
 from twin.core.adapter import AdapterManifest, ModelSpec, write_adapter_manifest
 from twin.core.hashing import config_hash, dataset_hash
-from twin.train import checkpoint
+from twin.train import checkpoint, preflight
 from twin.train import model as train_model
 from twin.train.formatting import build_sft_dataset
 from twin.train.loss_mask import verify_assistant_masking
@@ -58,6 +60,15 @@ class TrainingConfig(BaseModel):
     gradient_accumulation_steps: int  # Keep per_device_train_batch_size * this < ~32 (LoRA-specific ceiling).
     max_steps: int  # Not num_train_epochs: fixes an exact step count so the kill/resume
     # test can compare an interrupted run against an uninterrupted control run 1:1.
+    # How many times each self-report (interview) trajectory is repeated in the
+    # SFT set. 1 = no upsampling. The interview yields ~30 trajectories against
+    # ~15.7k LINE ones (0.2%): at 1 the adapter sees them as noise, yet D19
+    # names self-report the dominant persona-fidelity source. Repetition is the
+    # only lever that keeps every LINE sample (no downsampling of behaviour
+    # data) — its cost is verbatim memorisation of interview phrasing, which
+    # EVAL.md S4 would surface as "more articulate than the principal".
+    # Part of config_hash (it changes what the model is trained on).
+    self_report_upsample: int = 1
     seed: int = 42
 
     def config_hash_fields(self) -> dict[str, Any]:
@@ -85,6 +96,7 @@ def main(
     checkpoint_store_uri: str,
     encryption_key: bytes,  # SPEC.md §8: adapter weights MUST be stored encrypted — see core.encryption.
     resume: bool = True,
+    require_self_report: bool = True,  # train/preflight.py: D19 gate; False only for LINE-only experiments / the toy CI run
     checkpoint_interval_seconds: float = 600.0,  # SPEC.md §7.4 SHOULD 10-15 min (600-900s).
     # Deliberately NOT a TrainingConfig field: cadence is operational (how often
     # we checkpoint), not a training-semantics change (what the model converges
@@ -93,7 +105,11 @@ def main(
     # passes a small value here so a toy CI run doesn't have to wait 10 minutes
     # for its first checkpoint.
 ) -> AdapterManifest:
-    dataset, trajectory_ids = build_sft_dataset(trajectories_uri, seed=config.seed)
+    dataset, trajectory_ids = build_sft_dataset(
+        trajectories_uri, seed=config.seed, self_report_upsample=config.self_report_upsample
+    )
+    # Before any GPU-second: the defects T v1 taught us (train/preflight.py).
+    print(preflight.assert_dataset_trainable(dataset, require_self_report=require_self_report).render())
     dataset_hash_value = dataset_hash(trajectory_ids)
     config_hash_value = config_hash(config.config_hash_fields())
     run_id = derive_run_id(seed=config.seed, dataset_hash=dataset_hash_value, config_hash=config_hash_value)
@@ -219,6 +235,16 @@ def main(
     # Save locally first, then upload+encrypt via the same mechanism
     # checkpoints use (SPEC.md §8).
     local_final_adapter_dir = "./.twin_train_scratch/final"
+    # Weights only, fp16: `save_pretrained` on a PeftModel writes just the
+    # adapter tensors + adapter_config.json (no optimizer/scheduler/RNG — those
+    # live in the resume checkpoints, which are pruned separately). Halving to
+    # fp16 is lossless for inference on the fp16 T4 target and keeps the
+    # artifact ~0.35 GB at r=64 instead of ~0.7 GB (R2 free tier, 2026-08-29).
+    # Done AFTER training and after the last checkpoint, so nothing that
+    # resumes ever sees the downcast.
+    for param in trainer.model.parameters():
+        if param.requires_grad:
+            param.data = param.data.to(torch.float16)
     trainer.model.save_pretrained(local_final_adapter_dir)
     checkpoint.upload_adapter(local_final_adapter_dir, final_adapter_uri, encryption_key=encryption_key)
 
@@ -234,4 +260,10 @@ def main(
         created_at=datetime.now(UTC),
     )
     write_adapter_manifest(manifest, f"{run_root_uri}/manifest.json")
+    # The loss curve is the only evidence a run converged; the first real run's
+    # (run_e6a366ee73958e69) survived nowhere but Modal's app log. Plain JSON,
+    # not encrypted: per-step loss/lr/grad_norm reveal nothing about the
+    # principal (same reasoning as the unencrypted AdapterManifest).
+    with fsspec.open(f"{run_root_uri}/log_history.json", "w", encoding="utf-8") as f:
+        json.dump(trainer.state.log_history, f, ensure_ascii=False)
     return manifest

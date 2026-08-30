@@ -11,9 +11,9 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from twin.core.enums import Modality, Precision, SourceClass
+from twin.core.enums import Modality, Precision
 from twin.core.fragment import Fragment
-from twin.ingest.fragment import fragment_from_text_record
+from twin.ingest.fragment import self_report_fragment
 
 
 class QuestionnaireItem(BaseModel):
@@ -37,17 +37,15 @@ def fragments_from_questionnaire(
     items: dict[str, QuestionnaireItem],
     *,
     principal_id: str,
-    train_cutoff: datetime,
-    sealed_cutoff: datetime,
 ) -> Iterator[Fragment]:
     """One `SourceClass.SELF_REPORT`, `Precision.MINUTE` fragment per
-    response — reuses `ingest.fragment.fragment_from_text_record`, never a
-    separate constructor. Big-Five/GSS-style items become ordinary fragments
+    response — via `ingest.fragment.self_report_fragment` (split is always
+    TRAIN for self-report, `ingest.split.decide_self_report_split`, decided
+    2026-08-30 — hence no cutoffs here), never a dict literal. Big-Five/GSS-style items become ordinary fragments
     this way, also usable as a future B1 persona-paragraph source.
 
     Does NOT call `ingest.entities.extract_third_party_spans` — every
-    fragment gets `third_party_spans=[]` (the `fragment_from_text_record`
-    default). INTERVIEW.md §7 Q8's tagging requirement is scoped to
+    fragment gets `third_party_spans=[]`, passed explicitly. INTERVIEW.md §7 Q8's tagging requirement is scoped to
     "逐字稿" (the interview transcript), not the questionnaire, and this
     function enforces (not just assumes) that a response is verbatim one of
     its item's own `scale_labels` — there is no free text here for a third
@@ -69,14 +67,12 @@ def fragments_from_questionnaire(
                 f"as harness.schema.S1Answer.answer)"
             )
         content = f"{item.prompt}: {response.answer}"
-        yield fragment_from_text_record(
+        yield self_report_fragment(
             principal_id=principal_id,
             content=content,
             event_time=response.answered_at,
             precision=Precision.MINUTE,
             confidence=1.0,
-            source_class=SourceClass.SELF_REPORT,
             modality=Modality.TEXT,
-            train_cutoff=train_cutoff,
-            sealed_cutoff=sealed_cutoff,
+            third_party_spans=[],
         )

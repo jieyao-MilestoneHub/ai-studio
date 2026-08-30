@@ -7,10 +7,10 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
-from twin.core.enums import Modality, Precision, SourceClass
+from twin.core.enums import Modality, Precision
 from twin.core.fragment import Fragment
 from twin.ingest.entities import extract_third_party_spans
-from twin.ingest.fragment import fragment_from_text_record
+from twin.ingest.fragment import self_report_fragment
 
 # INTERVIEW.md §4: block order and each block's stated duration in minutes.
 BLOCK_ORDER: tuple[str, ...] = ("A", "B", "C", "D")
@@ -30,8 +30,6 @@ def fragments_from_interview_transcript(
     principal_id: str,
     session_started_at: datetime,
     known_parties: list[str],
-    train_cutoff: datetime,
-    sealed_cutoff: datetime,
     ingest_time: datetime | None = None,
 ) -> Iterator[Fragment]:
     """One Fragment per interview block (INTERVIEW.md §4's A/B/C/D) — the
@@ -51,7 +49,9 @@ def fragments_from_interview_transcript(
     minutes — never a date the principal recalls *within* their own
     narrative; those stay untouched, verbatim, inside `content` (mirrors how
     `fragments_from_line_export` uses `message.sent_at`, never a date parsed
-    out of message text).
+    out of message text). `split` is NOT derived from that clock: self-report
+    is always TRAIN (`ingest.split.decide_self_report_split`, decided
+    2026-08-30), which is why this function takes no cutoffs.
 
     `extract_third_party_spans` runs unconditionally, for every block
     present, with no skip path — this is how INTERVIEW.md §7's Q8 hard
@@ -94,17 +94,14 @@ def fragments_from_interview_transcript(
             continue
         content = blocks[label]
         spans = extract_third_party_spans(content, known_parties=known_parties)
-        yield fragment_from_text_record(
+        yield self_report_fragment(
             principal_id=principal_id,
             content=content,
             event_time=session_started_at + elapsed,
             precision=Precision.MINUTE,
             confidence=_BLOCK_EVENT_TIME_CONFIDENCE,
-            source_class=SourceClass.SELF_REPORT,
             modality=Modality.TEXT,
-            train_cutoff=train_cutoff,
-            sealed_cutoff=sealed_cutoff,
-            ingest_time=resolved_ingest_time,
             third_party_spans=spans,
+            ingest_time=resolved_ingest_time,
         )
         elapsed += duration

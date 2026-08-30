@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""A real `harness.baseline.InferenceBackend` binding — bare, un-fine-tuned
-`twin.train.model.DEFAULT_MODEL_SPEC` weights, no LoRA adapter. Same
-deferred-hardware status as `examples/probe_lora_rank.py`: written now, not
-run against real hardware in this pass. B0/B1/B2 (EVAL.md §3.4) all run the
-same unmodified base model — only the prompt differs, which is
-`harness.baseline`'s job, not this file's.
+"""The real `harness.baseline.InferenceBackend` binding: Qwen3-8B loaded the
+same way training loaded it (4-bit, `twin.train.model.build_quantization_
+config`) so B0/B1/B2 and T differ only in prompt/adapter, never in numerics
+— and so it fits a 16 GB T4, which the fp16 weights (~16.4 GB) do not.
 
-Usage (on a real GPU, once real S1 item-bank/persona/transcript data exist —
-see examples/prepare_s1_eval_round.py):
+Prompts go through the chat template with thinking disabled: Qwen3-8B is a
+post-trained chat model, and T was SFT'd through that same template
+(`train.formatting`); feeding raw text would measure template confusion, not
+persona. "空白 prompt" (EVAL.md §3.4 B0) means no persona/context is added,
+not that the model's own I/O format is bypassed.
 
-    uv run python examples/run_baseline_inference.py
+`adapter_dir` (optional) is an already-decrypted local PEFT adapter — see
+examples/generate_s1_candidates.py for the R2 download + decrypt step. GPU
+only; `examples/generate_s1_candidates.py` is the driver.
 """
 
 from __future__ import annotations
@@ -18,43 +21,50 @@ import sys
 
 import torch
 
-from twin.train.model import DEFAULT_MODEL_SPEC, load_tokenizer
+from twin.train.model import DEFAULT_MODEL_SPEC, build_quantization_config, load_tokenizer
 
 
 class HFBaselineBackend:
-    """Loads the bare base model once, reuses it for every `complete()`
-    call. No quantization/LoRA config here — unlike `probe_lora_rank.py` and
-    `train.model.build_quantization_config`, which exist specifically for
-    QLoRA fine-tuning, a baseline-inference-only load doesn't need bnb at
-    all: it's the plain weights, full precision the hardware supports."""
-
-    def __init__(self) -> None:
+    def __init__(self, *, adapter_dir: str | None = None, max_new_tokens: int = 256) -> None:
         from transformers import AutoModelForCausalLM
 
         self._tokenizer = load_tokenizer(DEFAULT_MODEL_SPEC)
-        self._model = AutoModelForCausalLM.from_pretrained(
+        model = AutoModelForCausalLM.from_pretrained(
             DEFAULT_MODEL_SPEC.base_model_id,
             revision=DEFAULT_MODEL_SPEC.base_model_revision,
+            quantization_config=build_quantization_config(),
             device_map="auto",
         )
-        self._model.eval()
+        if adapter_dir is not None:
+            from peft import PeftModel
+
+            model = PeftModel.from_pretrained(model, adapter_dir)
+        model.eval()
+        self._model = model
+        self._max_new_tokens = max_new_tokens
+        self.model_label = f"{DEFAULT_MODEL_SPEC.base_model_id}@{DEFAULT_MODEL_SPEC.base_model_revision}"
 
     def complete(self, prompt: str) -> str:
-        inputs = self._tokenizer(prompt, return_tensors="pt").to(self._model.device)
+        return self.complete_messages([{"role": "user", "content": prompt}])
+
+    def complete_messages(self, messages: list[dict[str, str]]) -> str:
+        """Same generation path, caller-shaped turns — T's S1 answers need the
+        training-time shape (system tool list + stimulus, `train.formatting`)."""
+        text = self._tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+        )
+        inputs = self._tokenizer(text, return_tensors="pt").to(self._model.device)
         with torch.no_grad():
-            output_ids = self._model.generate(**inputs, max_new_tokens=512, do_sample=False)
+            output_ids = self._model.generate(**inputs, max_new_tokens=self._max_new_tokens, do_sample=False)
         new_tokens = output_ids[0, inputs["input_ids"].shape[1] :]
         return str(self._tokenizer.decode(new_tokens, skip_special_tokens=True)).strip()
 
 
 def main() -> None:
     if not torch.cuda.is_available():
-        sys.exit("This needs a real GPU (T4 or better) — nothing to run baseline inference on CPU.")
-
+        sys.exit("This needs a real GPU — nothing to run baseline inference on CPU.")
     backend = HFBaselineBackend()
-    print(f"Loaded {DEFAULT_MODEL_SPEC.base_model_id}@{DEFAULT_MODEL_SPEC.base_model_revision}.")
-    print("Use examples/prepare_s1_eval_round.py to drive it against a real S1 item bank.")
-    _ = backend  # constructed to prove the load path works; wiring into a real round is prepare_s1_eval_round.py's job
+    print(f"Loaded {backend.model_label} (4-bit). Reply: {backend.complete('請用一句話介紹你自己。')!r}")
 
 
 if __name__ == "__main__":

@@ -113,3 +113,43 @@ class TestGeminiTeacherFromSettings:
         settings = get_settings(refresh=True)
         with pytest.raises(TeacherError, match="TWIN_GEMINI_MODEL"):
             GeminiTeacher.from_settings(settings)
+
+
+class TestRateLimitRetry:
+    def test_429_is_waited_out_then_retried_and_counted_once(self, tmp_path: Path) -> None:
+        from google.genai import errors as genai_errors
+
+        from twin.teacher.gemini import _retry_delay_seconds
+
+        expected = _Recipe(name="x")
+        teacher, client = _teacher(tmp_path, parsed=expected)
+        slept: list[float] = []
+        teacher._sleep = slept.append  # type: ignore[method-assign]
+        real = client.models.generate_content
+        state = {"n": 0}
+
+        def flaky(**kwargs):  # type: ignore[no-untyped-def]
+            state["n"] += 1
+            if state["n"] == 1:
+                raise genai_errors.ClientError(
+                    429, {"error": {"code": 429, "message": "RESOURCE_EXHAUSTED ... Please retry in 3.2s.", "status": "RESOURCE_EXHAUSTED"}}
+                )
+            return real(**kwargs)
+
+        client.models.generate_content = flaky  # type: ignore[method-assign]
+        assert teacher.generate("p", response_schema=_Recipe) == expected
+        assert slept == [pytest.approx(4.2)]
+        assert teacher.ledger.calls_today() == 1  # the refused attempt is not a quota-consuming call
+        assert _retry_delay_seconds("no hint") == 20.0 and _retry_delay_seconds("retry in 500s") == 75.0
+
+    def test_non_429_client_errors_propagate(self, tmp_path: Path) -> None:
+        from google.genai import errors as genai_errors
+
+        teacher, client = _teacher(tmp_path, parsed=_Recipe(name="x"))
+
+        def boom(**kwargs):  # type: ignore[no-untyped-def]
+            raise genai_errors.ClientError(400, {"error": {"code": 400, "message": "bad", "status": "INVALID_ARGUMENT"}})
+
+        client.models.generate_content = boom  # type: ignore[method-assign]
+        with pytest.raises(genai_errors.ClientError):
+            teacher.generate("p", response_schema=_Recipe)

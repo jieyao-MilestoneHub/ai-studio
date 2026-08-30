@@ -108,3 +108,13 @@ def test_counterpart_double_text_within_window_is_one_stimulus() -> None:
 def test_counterpart_bursts_beyond_window_stay_separate() -> None:
     trajs = _build([_m(0, "Bob", "hi"), _m(300, "Bob", "hello?"), _m(305, P, "sorry")])
     assert [type(t.steps[0]) for t in trajs] == [NoActionStep, ActionStep]
+
+
+def test_media_placeholders_are_bracketed_in_observation_and_reply() -> None:
+    """LINE exports a sticker as the bare word 貼圖; T v1 learned to *say* it.
+    Both the observation and the principal's reply carry the bracketed marker."""
+    from twin.ingest.trajectories import MEDIA_PLACEHOLDERS, _media_marked
+
+    assert _media_marked("貼圖") == "[貼圖]" and _media_marked(" 圖片 ") == "[圖片]"
+    assert _media_marked("這張圖片很好看") == "這張圖片很好看"  # only a whole-message placeholder is marked
+    assert set(MEDIA_PLACEHOLDERS) == {"貼圖", "圖片", "影片"}

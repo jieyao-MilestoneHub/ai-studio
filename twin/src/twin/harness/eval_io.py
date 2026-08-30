@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 import fsspec
 from pydantic import BaseModel, ConfigDict
@@ -28,6 +29,19 @@ def _ensure_parent(uri: str) -> None:
     parent = path.rsplit("/", 1)[0] if "/" in path else ""
     if parent:
         fs.makedirs(parent, exist_ok=True)
+
+
+def rubric_uri(suite: str) -> str:
+    """The version-controlled rubric file for `suite`, shipped inside the
+    package (`twin/harness/rubric/<suite>.md`). The `eval-harness` skill's
+    tree puts rubrics under `eval/rubric/`, but SPEC.md §8 guardrail 2
+    gitignores all of `eval/` — the first S1 rubric written there was lost
+    with a checkout (2026-08-30). A rubric is not personal data; it MUST be
+    versioned (EVAL.md §6.4 hashes it), so it lives here instead."""
+    path = Path(__file__).resolve().parent / "rubric" / f"{suite}.md"
+    if not path.exists():
+        raise HarnessError(f"no rubric for suite {suite!r} at {path}")
+    return path.as_uri()
 
 
 def write_shards(shards: list[list[StrippedSample]], *, run_id: str, root_uri: str) -> list[str]:

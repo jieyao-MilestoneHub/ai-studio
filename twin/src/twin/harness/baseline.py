@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from typing import Literal, Protocol
 
+from twin.core.enums import SourceClass, Split
 from twin.harness.schema import HarnessError, RawEvalSample, S1Item
 from twin.harness.shard import sample_id
+from twin.ingest.store import read_fragments_jsonl
 
 BaselineId = Literal["B0", "B1", "B2"]
 
@@ -101,3 +103,30 @@ def generate_baseline_samples(
         content = backend.complete(prompt)
         samples.append(RawEvalSample(sample_id=sample_id(content), source_label="twin", content=content, suite="s1"))
     return samples
+
+
+def load_self_report_transcript(fragment_store_uri: str) -> str | None:
+    """B2's context: every `SELF_REPORT` fragment's content, verbatim (SPEC.md
+    D26), in `event_time` order. Self-report is always `Split.TRAIN`
+    (`ingest.split.decide_self_report_split`, 2026-08-30) — T trains on
+    exactly this text, B2 reads exactly this text; EVAL.md §3.4's kill
+    switch compares the two with the same information. Filtering on TRAIN
+    (not "anything non-sealed") also means a future self-report fragment
+    that somehow landed in SEALED can never leak in here. Returns None when
+    the store has no self-report yet (Phase 3 not run)."""
+    fragments = [
+        f
+        for f in read_fragments_jsonl(fragment_store_uri)
+        if f.source_class == SourceClass.SELF_REPORT and f.split == Split.TRAIN
+    ]
+    if not fragments:
+        return None
+    fragments.sort(key=lambda f: f.event_time.value)
+    return "\n\n".join(f.content for f in fragments)
+
+
+def default_persona_uri(fragment_store_uri: str) -> str:
+    """B1's persona paragraph lives beside the fragment store (e.g.
+    `~/twin-data/data/persona.txt`), never at a checkout-relative default —
+    a frozen S1 bank was lost once to exactly that (twin/CLAUDE.md)."""
+    return fragment_store_uri.rsplit("/", 1)[0] + "/persona.txt"

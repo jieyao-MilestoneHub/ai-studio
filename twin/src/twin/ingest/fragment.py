@@ -1,8 +1,11 @@
 """Assemble raw source records into `Fragment`s. SPEC.md §4.4, §4.8/D21.
 
-The one place `ingest.split.decide_split` is actually called for text sources —
-every source module (ingest.sources.*) hands its raw records here rather than
-deciding split itself, so there is exactly one call site to audit.
+The one place `ingest.split.decide_split` / `decide_self_report_split` are
+actually called for text sources — every source module (ingest.sources.*)
+hands its raw records here rather than deciding split itself, so the call
+sites to audit are all in this file: `fragment_from_text_record` (time-based,
+historical data) and `self_report_fragment` (always TRAIN, SPEC.md §2.2's
+"not historical data").
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ from datetime import UTC, datetime
 from twin.core.enums import Modality, Precision, SourceClass
 from twin.core.fragment import EventTime, Fragment, ThirdPartySpan
 from twin.ingest.sources.line import LineMessage, parse_line_export
-from twin.ingest.split import decide_split
+from twin.ingest.split import decide_self_report_split, decide_split
 
 
 def _format_event_time_value(event_time: datetime, precision: Precision) -> str:
@@ -60,6 +63,38 @@ def fragment_from_text_record(
         ingest_time=ingest_time or datetime.now(UTC),
         split=split,
         third_party_spans=third_party_spans or [],
+    )
+
+
+def self_report_fragment(
+    *,
+    principal_id: str,
+    content: str,
+    event_time: datetime,
+    precision: Precision,
+    confidence: float,
+    modality: Modality,
+    third_party_spans: list[ThirdPartySpan],
+    ingest_time: datetime | None = None,
+) -> Fragment:
+    """`SourceClass.SELF_REPORT` fragments: split comes from
+    `decide_self_report_split` (always TRAIN — see its docstring for the
+    2026-08-30 decision), never from the session clock. `third_party_spans`
+    is required, not optional: INTERVIEW.md §7 Q8 is a hard blocker and the
+    caller must have run extraction to have anything to pass."""
+    return Fragment(
+        principal_id=principal_id,
+        source_class=SourceClass.SELF_REPORT,
+        modality=modality,
+        content=content,
+        event_time=EventTime(
+            value=_format_event_time_value(event_time, precision),
+            precision=precision,
+            confidence=confidence,
+        ),
+        ingest_time=ingest_time or datetime.now(UTC),
+        split=decide_self_report_split(),
+        third_party_spans=third_party_spans,
     )
 
 

@@ -13,9 +13,6 @@ from twin.ingest.sources.questionnaire import (
     fragments_from_questionnaire,
 )
 
-TRAIN_CUTOFF = datetime(2020, 1, 1)
-SEALED_CUTOFF = datetime(2030, 1, 1)
-
 
 def _item(item_id: str) -> QuestionnaireItem:
     return QuestionnaireItem(item_id=item_id, prompt=f"prompt-{item_id}", scale_labels=["低", "中", "高"])
@@ -30,7 +27,7 @@ def test_fragments_from_questionnaire_one_fragment_per_response() -> None:
     items = {"q1": _item("q1"), "q2": _item("q2")}
 
     fragments = list(
-        fragments_from_questionnaire(responses, items, principal_id="p1", train_cutoff=TRAIN_CUTOFF, sealed_cutoff=SEALED_CUTOFF)
+        fragments_from_questionnaire(responses, items, principal_id="p1")
     )
 
     assert len(fragments) == 2
@@ -43,7 +40,7 @@ def test_fragments_are_self_report_precision_minute() -> None:
     items = {"q1": _item("q1")}
 
     fragments = list(
-        fragments_from_questionnaire(responses, items, principal_id="p1", train_cutoff=TRAIN_CUTOFF, sealed_cutoff=SEALED_CUTOFF)
+        fragments_from_questionnaire(responses, items, principal_id="p1")
     )
 
     assert fragments[0].source_class == SourceClass.SELF_REPORT
@@ -56,7 +53,7 @@ def test_fragments_from_questionnaire_rejects_a_response_with_no_matching_item()
     with pytest.raises(ValueError, match="item_id"):
         list(
             fragments_from_questionnaire(
-                responses, {}, principal_id="p1", train_cutoff=TRAIN_CUTOFF, sealed_cutoff=SEALED_CUTOFF
+                responses, {}, principal_id="p1"
             )
         )
 
@@ -68,6 +65,6 @@ def test_fragments_from_questionnaire_rejects_an_answer_outside_the_scale_labels
     with pytest.raises(ValueError, match="scale_labels"):
         list(
             fragments_from_questionnaire(
-                responses, items, principal_id="p1", train_cutoff=TRAIN_CUTOFF, sealed_cutoff=SEALED_CUTOFF
+                responses, items, principal_id="p1"
             )
         )

@@ -23,7 +23,12 @@ correct against the installed `google-genai==2.20.0` SDK's actual signatures
 
 from __future__ import annotations
 
+import re
+import time
+from collections.abc import Callable
+
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
 from twin.config.settings import Settings
@@ -41,11 +46,15 @@ class GeminiTeacher:
         client: genai.Client,
         ledger: TeacherCallLedger,
         rpd: int = 1500,
+        sleep: Callable[[float], None] = time.sleep,
+        max_rate_limit_retries: int = 3,
     ) -> None:
         self.model = model
         self._client = client
         self.ledger = ledger
         self.rpd = rpd
+        self._sleep = sleep
+        self._max_rate_limit_retries = max_rate_limit_retries
 
     @classmethod
     def from_settings(cls, settings: Settings) -> GeminiTeacher:
@@ -68,14 +77,21 @@ class GeminiTeacher:
 
     def generate(self, prompt: str, *, response_schema: type[T]) -> T:
         self._refuse_if_exhausted()
-        response = self._client.models.generate_content(
-            model=self.model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=response_schema,
-            ),
-        )
+        config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=response_schema)
+        attempt = 0
+        while True:
+            try:
+                response = self._client.models.generate_content(model=self.model, contents=prompt, config=config)
+                break
+            except genai_errors.ClientError as exc:
+                # The free tier is 15 RPM as well as 1,500 RPD (SPEC.md §5.2). A
+                # burst of per-item calls (2026-08-30: 30 interview paraphrase
+                # calls) trips the per-minute limit first; that is a pause, not
+                # D9's "quota exhausted" — the RPD ledger is what guards that.
+                if exc.code != 429 or attempt >= self._max_rate_limit_retries:
+                    raise
+                attempt += 1
+                self._sleep(_retry_delay_seconds(str(exc)))
         self.ledger.record_call()
         parsed = response.parsed
         if not isinstance(parsed, response_schema):
@@ -95,3 +111,12 @@ class GeminiTeacher:
                 f"have billing enabled). Wait for the daily quota to reset, or batch "
                 f"more per call (D9: 少次、大批)."
             )
+
+
+_RETRY_IN = re.compile(r"retry in ([0-9.]+)s", re.IGNORECASE)
+
+
+def _retry_delay_seconds(message: str, *, default: float = 20.0, cap: float = 75.0) -> float:
+    match = _RETRY_IN.search(message)
+    delay = float(match.group(1)) + 1.0 if match else default
+    return min(delay, cap)

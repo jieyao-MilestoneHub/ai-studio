@@ -49,6 +49,7 @@ dependencies = [
     "s3fs>=2026.6.0",
     "kaggle>=2.2.4",
     "python-dotenv>=1.2.3",
+    "zhconv>=1.4.3",
 ]
 
 [project.scripts]
@@ -96,6 +97,11 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = "fsspec.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# zhconv is a small pure-Python Traditional/Simplified converter with no stubs.
+module = "zhconv"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
