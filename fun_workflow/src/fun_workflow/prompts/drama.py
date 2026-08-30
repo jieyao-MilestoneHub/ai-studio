@@ -395,6 +395,7 @@ async def write_screenplay(
             style=outline["style"],
             anchor=anchor,
             world=world,
+            beats={slot.beat: text for slot, text in zip(BEAT_TEMPLATE, outline["beats"], strict=True)},
             shots=tuple(shots),
             overall_soundscape=outline["overall_soundscape"],
             non_diegetic_music=outline["non_diegetic_music"],

@@ -261,6 +261,56 @@ Job 105, 「最後一個飯糰」. What it measured, and what it changed:
 - LINE's monthly push quota was already exhausted, so the group heard
   nothing either way;「讓我看看」is the pull path.
 
+## Content causality (2026-08-30)
+
+job 109 rendered cleanly — stable face, stable world, alternating framing —
+but the finished video did not read as a coherent story: the reversal shot
+("the lead notices the woman holding a phone and recognizes her as the
+regular customer's girlfriend") is a mental inference no video model can
+render, and the drama had zero dialogue, so nothing on screen ever stated
+why any of it mattered. Root cause, found by tracing what survives past the
+screenwriter: the outline's six one-sentence causal beats
+(`state_before`/`event`/`state_after`, one per `Beat`) were generated,
+used once as a hint inside the shots-writing call, and then thrown away —
+never reaching `Screenplay`, the H3 prompt, or a caption. Deep-probing
+`Hao0321/video-autopilot-kit`'s own `drama_pipeline` confirmed the same
+fate for its richer `state_before/event/state_after/continuation_capsule`
+fields: only `state_before` reaches its video prompt, as a continuity
+*lock*, never as narrative text; the kit's own semantic/narrative-coherence
+checking does not exist anywhere in its code — it substitutes a documented
+human review step (`review_loop.py`) instead. Five decisions followed:
+
+1. **The six beat sentences now persist** on `Screenplay.beats: dict[Beat, str]`
+   (`core.drama_spec.py`) instead of being discarded after the shots call.
+   Deliberately **not** fed into the H3 prompt — the video model keeps its
+   clean "physical action only" contract, which section 6 above and
+   `docs/model-h3.md` measured working. `beats` exists so the causality
+   is at least recoverable (status page, future gates), not so it can be
+   promoted to a fix on its own.
+2. **A narration caption track.** Every sub-shot now carries exactly one of
+   a spoken line or a short (≤15 char) narration caption — never both,
+   never neither — closing the case (job 109) where a whole drama shipped
+   with nothing burned in but the title card.
+3. **A supporting character gets her own visual anchor and reference
+   still**, mirroring the upstream kit's `characters[]` pattern — with one
+   constraint upstream never needed: our H3 usage is single-image I2V (one
+   locked first frame), not multi-reference conditioning, so a sub-shot's
+   description may only restate *one* person's fixed appearance, never
+   two at once. A shot with two sub-shots can give one to the lead and one
+   to the supporting character; a one-sub-shot beat picks exactly one.
+   This is the same "restate the subject verbatim at every cut" mechanism
+   already trusted for the lead's own continuity across an internal cut —
+   applied to a second person, not a new mechanism.
+4. **A fixed-template caption on a `time_passing` cut** (not model-authored)
+   — the dissolve itself is a weak signal on its own.
+5. **Cross-shot semantic contradiction (job 109's "screen remains off" while
+   "watches it buzz with a new message") is not automatically detected.**
+   Confirmed there is no known public solution to this in the reference
+   material this project draws on; upstream's own answer is a human
+   reviewing rendered output before publish, which this pipeline's
+   zero-operator LINE-bot design does not have room for. Accepted as a
+   known risk, not a gap to silently work around.
+
 ## What to measure on the next real run
 
 Record these in this file, then say 「可以測試了」:
@@ -286,3 +336,7 @@ Record these in this file, then say 「可以測試了」:
    nobody knows *when* inside the clip H3 places the words. Note how far
    off the spoken line is from the caption's window; if it is consistently
    late, the window can start later.
+10. `screenplay.beats` in `state.json`/the status page: read the six
+    sentences back after a real run and confirm they still describe what
+    actually got written into the shots (the outline and the shots call
+    are two separate LLM turns; nothing currently checks they agree).
