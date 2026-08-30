@@ -134,7 +134,8 @@ the time a configured-but-unpassed guard cost real money.
   a second way.
 - `AI_STUDIO_MAX_JOBS_PER_USER_PER_DAY`, `..._CHAT_MESSAGES_PER_USER_PER_DAY`,
   `..._MAX_DRAMAS_PER_DAY` (group-wide; a drama is ~15–30 GPU-minutes) are
-  checked **before** enqueue. `AI_STUDIO_MAX_CHAT_MONTH_USD` is a sub-ceiling
+  checked **before** enqueue. `AI_STUDIO_DRAMA_ENABLED` (default **false**
+  since 2026-08-30) switches `/短劇` off entirely, ahead of those caps. `AI_STUDIO_MAX_CHAT_MONTH_USD` is a sub-ceiling
   checked in `pipeline.drain.render_chat` before submit.
 - LINE push messages have a monthly quota; a 429 degrades to one text message
   and the pull path, never to a retry loop.

@@ -62,6 +62,14 @@ class FunSettings(BaseSettings):
 
     # ---------------------------------------------------------- /短劇
 
+    drama_enabled: bool = Field(
+        default=False,
+        alias="AI_STUDIO_DRAMA_ENABLED",
+        description="Whether the group may request a /短劇 at all. Off by "
+        "default since 2026-08-30: the trigger answers that the feature is "
+        "closed, and the help text stops advertising it. The cap and knobs "
+        "below only matter once this is true.",
+    )
     max_dramas_per_day: int = Field(
         default=3,
         ge=0,
