@@ -53,7 +53,7 @@ from typing import Any
 from ai_studio import media
 from ai_studio.config.settings import get_settings
 from ai_studio.core import ids
-from ai_studio.core.enums import GenMode, MediaKind, TransitionReason
+from ai_studio.core.enums import CaptionKind, GenMode, MediaKind, TransitionReason
 from ai_studio.core.errors import AIStudioError, CostCeilingExceeded, DramaResume, ProviderError
 from ai_studio.core.image_provider_spec import ImageRequest
 from ai_studio.core.models import CaptionCue, Segment
@@ -375,17 +375,28 @@ class DramaPlan:
             shot_id = ids.shot_id(scene, shot.index)
             frames = shot.segment_frames() if subshots else (shot.frames,)
             subs = shot.sub_shots if subshots else (shot.sub_shots[0],)
-            for sub_index, (sub, n) in enumerate(zip(subs, frames, strict=True)):
+            for sub_index, (_sub, n) in enumerate(zip(subs, frames, strict=True)):
                 seg_id = ids.segment_id(shot_id, sub_index)
                 self.segments.append(Segment(
                     segment_id=seg_id, shot_id=shot_id, scene_id=scene,
                     subcut_index=sub_index, intended_duration_s=n / FPS,
                 ))
                 self.clip_of[seg_id] = str(shot.index)
-                lines = sub.dialogue if subshots else shot.dialogue
-                for k, line in enumerate(lines):
-                    self.cues.append({"cue_id": ids.cue_id(seg_id, k), "segment_id": seg_id,
-                                      "text": line.text, "color_key": "w"})
+            # Captions walk every sub-shot's own text regardless of `subshots`
+            # (each one carries exactly one of a line or a narration cue --
+            # core.drama_spec.SubShot._exactly_one_caption guarantees it, so
+            # this never emits zero cues for a shot the way dialogue-only
+            # ever could). Folded (subshots=False) shots have one segment;
+            # a sub-shot's own text still lands there.
+            for i, sub in enumerate(shot.sub_shots):
+                target_seg_id = ids.segment_id(shot_id, i if subshots else 0)
+                if sub.dialogue:
+                    text, kind = sub.dialogue[0].text, "main"
+                else:
+                    assert sub.narration  # SubShot._exactly_one_caption guarantees one of the two
+                    text, kind = sub.narration, "sub"
+                self.cues.append({"cue_id": ids.cue_id(target_seg_id, i), "segment_id": target_seg_id,
+                                  "text": text, "color_key": "w", "kind": kind})
             if shot.index > 1:
                 reasons.append(shot.cut_reason)
         self.reasons = reasons
@@ -419,8 +430,11 @@ def write_captions(
     font: str, play_res: tuple[int, int],
 ) -> Path:
     """`runs/drama/<token>/captions.ass`: the title card over the hook, then
-    every spoken line windowed to the segment it belongs to."""
-    cues = [CaptionCue(cue_id=c["cue_id"], segment_id=c["segment_id"], text=c["text"]) for c in plan.cues]
+    every sub-shot's line or narration windowed to the segment it belongs to."""
+    cues = [
+        CaptionCue(cue_id=c["cue_id"], segment_id=c["segment_id"], text=c["text"], kind=CaptionKind(c["kind"]))
+        for c in plan.cues
+    ]
     events = [captions_ass.title_card(screenplay.title), *captions_ass.cue_events(cues, timeline)]
     doc = captions_ass.AssDocument(
         play_res=play_res, styles=captions_ass.default_styles(font, play_res), events=tuple(events),

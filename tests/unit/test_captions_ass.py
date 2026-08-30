@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ai_studio.core.enums import TransitionReason
+from ai_studio.core.enums import CaptionKind, TransitionReason
 from ai_studio.core.errors import UnknownKeyError
 from ai_studio.core.models import CaptionCue, Segment
 from ai_studio.editing import transitions as tr
@@ -46,6 +46,18 @@ def test_an_unknown_colour_key_or_a_missing_segment_raises() -> None:
         ass.cue_events([CaptionCue(cue_id="c", segment_id="sg0", text="x", color_key="gold")], t)
     with pytest.raises(KeyError):
         ass.cue_events([CaptionCue(cue_id="c", segment_id="nope", text="x")], t)
+    with pytest.raises(UnknownKeyError, match="caption kind for ASS style"):
+        ass.cue_events([CaptionCue(cue_id="c", segment_id="sg1", text="x", kind=CaptionKind.HOOK)], t)
+
+
+def test_narration_cues_use_the_sub_style_dialogue_uses_main() -> None:
+    t = _timeline()
+    cues = [
+        CaptionCue(cue_id="c1", segment_id="sg1", text="好。", kind=CaptionKind.MAIN),
+        CaptionCue(cue_id="c2", segment_id="sg2", text="稍後。", kind=CaptionKind.SUB),
+    ]
+    main, sub = ass.cue_events(cues, t)
+    assert main.style == "Main" and sub.style == "Sub"
 
 
 def test_long_lines_break_and_braces_are_escaped() -> None:
@@ -62,6 +74,7 @@ def test_render_is_a_valid_ass_document(tmp_path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     assert text.startswith("[Script Info]\nScriptType: v4.00+\nPlayResX: 864\nPlayResY: 480")
     assert "Style: Main,Noto Sans CJK TC,31,&H00FFFFFF" in text
+    assert "Style: Sub,Noto Sans CJK TC,26,&H00FFFFFF" in text and ",8,20,20," in text  # top-aligned
     assert "Style: Title,Noto Sans CJK TC,48,&H00FFFFFF" in text and ",3,6,0,5," in text  # boxed, centred
     assert text.count("Dialogue:") == 2
     assert ass._time(3661.239) == "1:01:01.24"
