@@ -518,3 +518,30 @@ def test_the_running_wording_matches_the_kind_of_job(client) -> None:
     assert "算圖" not in state_text(running(JobKind.CHAT))[1]
     assert "算圖" not in state_text(running(JobKind.IMAGE_UNDERSTAND))[1]
     assert "算影片" in state_text(running(JobKind.VIDEO))[1]
+
+
+# ---------------------------------------------------------------- drama progress
+
+def test_a_running_drama_lists_every_stage_with_the_next_ones_and_full_shot_text(client) -> None:
+    """The page used to end on 鏡頭 6 with nothing after it, and cut each
+    shot's line at 220 chars. A viewer waiting half an hour needs to see
+    what is done, what is running, what is still to come -- and the whole
+    beat, not a sentence that stops mid-word."""
+    from fun_workflow.core.kinds import JobKind
+
+    c, queue, _ = client
+    job, _ = queue.enqueue("evt-d", GROUP, "/短劇 一個人的雨夜", "U" + "1" * 32, media_kind=JobKind.DRAMA)
+    long_line = "在雨夜的便利商店門口，" * 30  # well past the old 220-char cut
+    queue.set_parsed(job.id, {
+        "screenplay": {"title": "雨夜", "logline": "一個人等一通不會來的電話", "anchor": {"name": "阿明", "appearance": "黑外套"}},
+        "shots": [{"index": i, "description": f"[{i}] {long_line}"} for i in range(1, 7)],
+    })
+    queue.claim_next(gpu_tier="L40S/COMMUNITY")
+
+    body = c.get(f"/q/{job.token}").text
+    assert '<details class="flow" open>' in body, "a drama's progress panel starts open"
+    for label in ("寫劇本", "角色定裝", "每鏡首幀", "每鏡影片", "音量整平", "剪接、字幕、合成"):
+        assert label in body
+    assert "影片會直接推回群組" in body, "the page must say what happens after the list"
+    assert body.count(long_line) == 6, "shot lines are shown whole"
+    assert body.index("<h2>進度</h2>") < body.index("<h2>分鏡</h2>")
