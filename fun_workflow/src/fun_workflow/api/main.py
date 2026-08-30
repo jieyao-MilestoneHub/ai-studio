@@ -318,6 +318,12 @@ def _drama_block(job: Job, plan: dict[str, Any]) -> str:
             f"<p><b>主角</b> {html.escape(str(anchor.get('name', '')))} — "
             f"{html.escape(str(anchor.get('appearance', '')))}</p>"
         )
+        supporting = screenplay.get("supporting_character")
+        if supporting:
+            parts.append(
+                f"<p><b>配角</b> {html.escape(str(supporting.get('name', '')))} — "
+                f"{html.escape(str(supporting.get('appearance', '')))}</p>"
+            )
     run_dir = get_settings().runs_dir / "drama" / job.token
     if (run_dir / "state.json").is_file() and job.state is not JobState.FAILED:
         try:

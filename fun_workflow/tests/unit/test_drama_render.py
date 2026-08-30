@@ -627,3 +627,57 @@ async def test_an_oom_releases_comfyui_before_the_attempt_is_handed_back(parsed_
     with pytest.raises(ProviderError, match="boom"):
         await _render(job, {MediaKind.IMAGE: FakeImageProvider(ledger), MediaKind.VIDEO: FakeClipProvider(ledger, fail_on={f"job{job.id}_shot2"})}, tmp_path)
     assert "evict:video" not in ledger.events
+
+
+# --------------------------------------------------------------- supporting character
+
+
+SUPPORTING = {"name": "阿凱", "appearance": "30-year-old man, square jaw, short buzzed hair, a thin scar on the chin",
+              "wardrobe": "a navy delivery uniform", "voice": "flat, quick"}
+
+
+def _shots_with_supporting(indices: list[int]) -> dict:
+    """Shot 3 (one sub-shot, no internal cut) focuses on the supporting
+    character instead of the lead -- a different beat from the night-market
+    letter story's own use of shot 3, to keep the mechanism's test data from
+    looking tied to one scenario."""
+    plain = _shots(indices)
+    for shot in plain["shots"]:
+        if shot["index"] == 3:
+            shot["sub_shots"][0]["action"] = "the second person waits by the counter"
+            shot["sub_shots"][0]["focus"] = "supporting"
+            del shot["sub_shots"][0]["line"]
+            shot["sub_shots"][0]["narration"] = "熟悉的臉"
+    return plain
+
+
+async def test_a_supporting_character_gets_her_own_reference_still_and_keyframe(
+    parsed_job, tmp_path: Path, fake_ffmpeg
+) -> None:
+    from fun_workflow.prompts.drama import write_screenplay
+
+    q, job = parsed_job
+    client = ScriptedLlmClient(*(
+        json.dumps(r, ensure_ascii=False)
+        for r in (dict(OUTLINE, supporting_character=SUPPORTING), _shots_with_supporting([1, 2, 3]), _shots([4, 5, 6]))
+    ))
+    screenplay, how = await write_screenplay(job.text, client)
+    assert screenplay.supporting_character is not None and screenplay.supporting_character.name == "阿凱"
+    q.set_parsed(job.id, screenplay_payload(screenplay, how))
+    job = q.by_token(job.token)
+
+    ledger = Ledger()
+    image = FakeImageProvider(ledger)
+    await _render(job, {MediaKind.IMAGE: image, MediaKind.VIDEO: FakeClipProvider(ledger)}, tmp_path)
+
+    state = drama.load_state(tmp_path / "runs" / "drama" / job.token)
+    assert "supporting_front" in state.character
+    # Shot 3's keyframe (i2i source) is the supporting character's still, not the lead's.
+    kf3 = next(r for r in image.requests if r.shot_id == f"job{job.id}_kf3")
+    assert kf3.source_image_path.endswith("character/supporting_front.png")
+    assert SUPPORTING["appearance"] in kf3.prompt
+    # Every other keyframe still comes from the lead's own sheet.
+    kf1 = next(r for r in image.requests if r.shot_id == f"job{job.id}_kf1")
+    assert kf1.source_image_path.endswith("character/front.png")
+    # One extra Flux still over the plain two-view sheet: 2 + 1 + 6 keyframes.
+    assert sum(1 for e in ledger.events if e.startswith("image:") and "_char_" in e) == 3

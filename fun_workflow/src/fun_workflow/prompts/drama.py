@@ -45,6 +45,7 @@ from fun_workflow.core.drama_spec import (
     CharacterAnchor,
     DramaLine,
     DramaShot,
+    Focus,
     Framing,
     Screenplay,
     SubShot,
@@ -102,6 +103,14 @@ lights from above left'>",
     "signature_prop": "<English. One object visible in every shot, e.g. 'a \
 folded paper letter'>"
   },
+  "supporting_character": {
+    "name": "<optional, only when the premise needs a second named character -- \
+any relationship, any story. Omit entirely for a single-character drama.>",
+    "appearance": "<English. Same rules as the lead's: 12-30 words, concrete and \
+stable, no mood words. A different person, not a variation on the lead.>",
+    "wardrobe": "<English. What they wear for the whole drama.>",
+    "voice": "<English. How they sound, or empty if they never speak.>"
+  },
   "beats": {
     "hook": "<a concrete, visible oddity the viewer sees in the first 2 seconds>",
     "setup": "<who the lead is and what they want, shown not told>",
@@ -118,13 +127,15 @@ dynamics, or exactly N/A>"
 
 Rules:
 - Every beat is one English sentence that changes something: a state before,
-  an event, a state after. One lead character throughout; other people may
-  appear but stay unnamed and in the background.
+  an event, a state after. One lead character throughout; a second character
+  may appear only if the premise genuinely needs one to be named and shown --
+  otherwise leave "supporting_character" out and keep them unnamed and in the
+  background, same as any other extra.
 - One location for the whole drama. The premise is the spec: keep every
   concrete thing the user named (places, objects, names, moods) and invent
   only what is needed to fill six beats.
-- appearance/wardrobe/voice are English and concrete. Never describe the face
-  anywhere else than in "appearance".
+- appearance/wardrobe/voice are English and concrete. Never describe a face
+  anywhere except in "appearance" (the lead's) or "supporting_character.appearance".
 """
 
 SHOTS_SYSTEM = f"""\
@@ -146,8 +157,9 @@ INTO this shot means>",
       "sub_shots": [
         {{
           "framing": "<one of: {_FRAMINGS}>",
-          "action": "<English. The ONE visible thing the lead does, ending in a \
-pose that can hold still. Say 'the lead', never a face word.>",
+          "action": "<English. The ONE visible thing this sub-shot's focused \
+person does, ending in a pose that can hold still. Say 'the lead' or 'the \
+second person' -- whichever this sub-shot focuses on -- never a face word.>",
           "camera": {{
             "motion": "<one of: {_CAMERA_MOTIONS}>",
             "amplitude": "<small|medium|large>",
@@ -159,7 +171,10 @@ at most {MAX_LINE_CHARS} characters>",
           "narration": "<required when there is no line: a short caption in the \
 premise's language, at most {MAX_LINE_CHARS} characters, stating what the \
 picture can't guarantee -- a reason, a relationship, a time skip. Not a \
-description of the visible action; the picture already shows that.>"
+description of the visible action; the picture already shows that.>",
+          "focus": "<lead|supporting: whose fixed appearance this sub-shot \
+restates. Only usable when told a supporting character exists this drama; \
+otherwise always 'lead'.>"
         }}
       ]
     }}
@@ -179,8 +194,12 @@ Rules:
   sub-shot, at most {MAX_LINE_CHARS} characters. Otherwise write "narration":
   the one sentence a viewer needs to follow the story that the picture alone
   cannot guarantee, not a restatement of "action".
-- The lead is on screen in every sub-shot, doing the action. A prop alone
-  (a phone buzzing, a door opening) is not a shot: the lead reacts to it.
+- Each sub-shot focuses on exactly one person, never both at once. A
+  sub-shot with "focus": "supporting" is about the second person: say "the
+  second person", never the lead, and never a face word for them either --
+  their appearance is supplied separately, same rule as the lead's.
+- The person this sub-shot focuses on is on screen, doing the action. A prop
+  alone (a phone buzzing, a door opening) is not a shot: they react to it.
 - Never mention the lead's face, hair, age or ethnicity: the appearance is
   supplied separately and pasted in verbatim. Refer to "the lead".
 - Everything is English except "line"/"narration", which stay in the
@@ -212,6 +231,13 @@ def build_outline(payload: dict[str, Any]) -> dict[str, Any]:
         world = WorldBible.model_validate(payload.get("world") or {})
     except ValidationError as exc:
         raise ScreenplayError(f"invalid anchor or world: {exc}") from exc
+    supporting_raw = payload.get("supporting_character")
+    supporting: CharacterAnchor | None = None
+    if isinstance(supporting_raw, dict) and str(supporting_raw.get("name") or "").strip():
+        try:
+            supporting = CharacterAnchor.model_validate(supporting_raw)
+        except ValidationError as exc:
+            raise ScreenplayError(f"invalid supporting_character: {exc}") from exc
     title = str(payload.get("title") or "").strip()
     logline = str(payload.get("logline") or "").strip()
     if not title or not logline:
@@ -221,6 +247,7 @@ def build_outline(payload: dict[str, Any]) -> dict[str, Any]:
         "logline": logline,
         "style": str(payload.get("style") or "Live-action, cinematic").strip(),
         "anchor": anchor,
+        "supporting_character": supporting,
         "world": world,
         "beats": ordered,
         "overall_soundscape": str(payload.get("overall_soundscape") or "").strip()
@@ -238,7 +265,12 @@ def _line(spec: Any, anchor: CharacterAnchor) -> tuple[DramaLine, ...]:
     return (DramaLine(speaker_id="S1", identity=identity, text=text.strip()),)
 
 
-def _sub_shot(index: int, spec: Any, *, shot: int, anchor: CharacterAnchor) -> SubShot:
+_FOCUS_VALUES: frozenset[Focus] = frozenset({"lead", "supporting"})
+
+
+def _sub_shot(
+    index: int, spec: Any, *, shot: int, anchor: CharacterAnchor, supporting: CharacterAnchor | None
+) -> SubShot:
     if not isinstance(spec, dict):
         raise ScreenplayError(f"shot {shot} sub-shot {index} was not an object")
     framing_text = str(spec.get("framing") or "").strip().lower()
@@ -248,6 +280,15 @@ def _sub_shot(index: int, spec: Any, *, shot: int, anchor: CharacterAnchor) -> S
     action = str(spec.get("action") or "").strip()
     if not action:
         raise ScreenplayError(f"shot {shot} sub-shot {index} needs an action")
+    focus_text = str(spec.get("focus") or "lead").strip().lower()
+    if focus_text not in _FOCUS_VALUES:
+        raise ScreenplayError(f"shot {shot} sub-shot {index}: unknown focus {focus_text!r} (valid: lead, supporting)")
+    focus: Focus = "supporting" if focus_text == "supporting" else "lead"
+    if focus == "supporting" and supporting is None:
+        raise ScreenplayError(f"shot {shot} sub-shot {index}: focuses on a supporting character, "
+                              "but this drama declared none")
+    speaker = supporting if focus == "supporting" else anchor
+    assert speaker is not None  # guaranteed by the check above when focus == "supporting"
     line = spec.get("line")
     if line is None and spec.get("dialogue"):  # the older per-shot shape
         first = spec["dialogue"][0] if isinstance(spec["dialogue"], list) and spec["dialogue"] else None
@@ -257,15 +298,16 @@ def _sub_shot(index: int, spec: Any, *, shot: int, anchor: CharacterAnchor) -> S
     try:
         return SubShot(
             index=index, framing=framing, action=action,
-            camera=camera_from_spec(spec.get("camera")), dialogue=_line(line, anchor),
-            narration=narration,
+            camera=camera_from_spec(spec.get("camera")), dialogue=_line(line, speaker),
+            narration=narration, focus=focus,
         )
     except ValidationError as exc:
         raise ScreenplayError(f"shot {shot} sub-shot {index} failed validation: {exc}") from exc
 
 
 def build_shots(
-    payload: dict[str, Any], *, expected: list[int], anchor: CharacterAnchor, world: WorldBible
+    payload: dict[str, Any], *, expected: list[int], anchor: CharacterAnchor, world: WorldBible,
+    supporting: CharacterAnchor | None = None,
 ) -> list[DramaShot]:
     """Validate one shots reply for the given shot indices. Raises `ScreenplayError`."""
     raw = payload.get("shots")
@@ -285,7 +327,16 @@ def build_shots(
         if not isinstance(subs_raw, list) or len(subs_raw) != slot.sub_shots:
             got = len(subs_raw) if isinstance(subs_raw, list) else subs_raw
             raise ScreenplayError(f"shot {index} ({slot.beat.value}) needs {slot.sub_shots} sub-shot(s), got {got!r}")
-        subs = tuple(_sub_shot(i, s, shot=index, anchor=anchor) for i, s in enumerate(subs_raw, start=1))
+        subs = tuple(
+            _sub_shot(i, s, shot=index, anchor=anchor, supporting=supporting)
+            for i, s in enumerate(subs_raw, start=1)
+        )
+        # The keyframe (the shot's only image, "Picture 1") is anchored by
+        # whichever person the FIRST sub-shot focuses on -- a second sub-shot,
+        # if any, is text-only regardless, same as the lead's own continuity
+        # across an internal cut.
+        opening = supporting if subs[0].focus == "supporting" else anchor
+        assert opening is not None  # _sub_shot already refused an undeclared supporting focus
         try:
             shots.append(
                 DramaShot(
@@ -294,7 +345,7 @@ def build_shots(
                     frames=slot.frames,
                     scene=scene,
                     sub_shots=subs,
-                    keyframe_prompt=keyframe_prompt(anchor, world, framing=subs[0].framing, scene=scene),
+                    keyframe_prompt=keyframe_prompt(opening, world, framing=subs[0].framing, scene=scene),
                     cut_reason=_CUT_REASONS.get(str(spec.get("cut_reason") or "default"), TransitionReason.DEFAULT),
                 )
             )
@@ -370,6 +421,13 @@ async def write_screenplay(
     retried |= was_retry
     anchor: CharacterAnchor = outline["anchor"]
     world: WorldBible = outline["world"]
+    supporting: CharacterAnchor | None = outline["supporting_character"]
+    supporting_line = (
+        f"A supporting character exists: {supporting.name} (appearance supplied separately -- "
+        "do not describe it). Use \"focus\": \"supporting\" only for the sub-shots that need them.\n"
+        if supporting is not None
+        else "No supporting character in this drama: every sub-shot focuses on the lead.\n"
+    )
 
     shots: list[DramaShot] = []
     half = SHOT_COUNT // 2
@@ -386,6 +444,7 @@ async def write_screenplay(
             f"Title: {outline['title']}\nLogline: {outline['logline']}\n"
             f"Style: {outline['style']}\n"
             f"The lead is {anchor.name} (appearance is supplied separately -- do not describe it).\n"
+            f"{supporting_line}"
             f"Location and light are supplied separately -- do not repeat them.\n"
             f"{seam}"
             f"Shots to write:\n{beats}\n"
@@ -393,7 +452,9 @@ async def write_screenplay(
         )
         built, was_retry = await _ask(
             client, SHOTS_SYSTEM, user, SHOTS_MAX_TOKENS,
-            lambda payload, exp=expected: build_shots(payload, expected=exp, anchor=anchor, world=world),
+            lambda payload, exp=expected: build_shots(
+                payload, expected=exp, anchor=anchor, world=world, supporting=supporting
+            ),
             attempts,
         )
         retried |= was_retry
@@ -405,6 +466,7 @@ async def write_screenplay(
             logline=outline["logline"],
             style=outline["style"],
             anchor=anchor,
+            supporting_character=supporting,
             world=world,
             beats={slot.beat: text for slot, text in zip(BEAT_TEMPLATE, outline["beats"], strict=True)},
             shots=tuple(shots),
@@ -451,14 +513,26 @@ def h3_prompt(shot: DramaShot, screenplay: Screenplay, *, subshots: bool = True)
 
     Same shape `/圖影` produces: the keyframe is Picture 1 and the opening
     frame, so the first sub-shot states that role and then the action -- with
-    the world bible and the anchor pasted in once more, verbatim, because
-    restating the subject at every cut is the guide's own rule against face
-    drift. A second sub-shot becomes a second `PromptShot` cutting at the
-    template's time; `subshots=False` folds it into one held shot (the
-    hedge for a model that ignores `cut_at_s` under image-to-video).
+    the world bible and whoever this sub-shot focuses on pasted in once more,
+    verbatim, because restating the subject at every cut is the guide's own
+    rule against face drift. A second sub-shot becomes a second `PromptShot`
+    cutting at the template's time -- the mechanism a supporting character
+    rides in on, since only sub-shot 1 ever gets an image: each `PromptShot`
+    restates exactly one person's fixed appearance, so two people never share
+    a description, only a shot. `subshots=False` folds it into one held shot
+    (the hedge for a model that ignores `cut_at_s` under image-to-video).
     """
-    anchor, world = screenplay.anchor, screenplay.world
-    subject = f"{anchor.appearance}, wearing {anchor.wardrobe}"
+    world = screenplay.world
+
+    def person(sub: SubShot) -> CharacterAnchor:
+        if sub.focus == "supporting":
+            assert screenplay.supporting_character is not None  # Screenplay._check already guarantees this
+            return screenplay.supporting_character
+        return screenplay.anchor
+
+    def subject(sub: SubShot) -> str:
+        who = person(sub)
+        return f"{who.appearance}, wearing {who.wardrobe}"
 
     def dialogue(sub: SubShot) -> tuple[Dialogue, ...]:
         return tuple(
@@ -469,7 +543,7 @@ def h3_prompt(shot: DramaShot, screenplay: Screenplay, *, subshots: bool = True)
     first = shot.sub_shots[0]
     description = (
         "Picture 1 is the opening frame; keep the same person, clothing, setting and "
-        f"framing. {world.prefix()}. {subject}, in a {first.framing.value} shot: {first.action.rstrip('.')}"
+        f"framing. {world.prefix()}. {subject(first)}, in a {first.framing.value} shot: {first.action.rstrip('.')}"
     )
     if not first.dialogue:
         description += SILENT
@@ -479,7 +553,7 @@ def h3_prompt(shot: DramaShot, screenplay: Screenplay, *, subshots: bool = True)
     rest = shot.sub_shots[1:]
     if rest and subshots and shot.internal_cut_s is not None:
         second = rest[0]
-        text = f"{subject}, same setting, in a {second.framing.value} shot: {second.action.rstrip('.')}"
+        text = f"{subject(second)}, same setting, in a {second.framing.value} shot: {second.action.rstrip('.')}"
         if not second.dialogue:
             text += SILENT
         prompt_shots.append(
@@ -487,9 +561,15 @@ def h3_prompt(shot: DramaShot, screenplay: Screenplay, *, subshots: bool = True)
         )
     elif rest:
         # One held shot: the second action continues the first, and any line
-        # it carried is still spoken.
+        # it carried is still spoken. Same focus (by far the common case):
+        # the subject is only stated once. Different focus (a supporting
+        # character folded into a single held shot): restate who the second
+        # action belongs to, same as two separate PromptShots would.
         second = rest[0]
-        merged = description.removesuffix(SILENT) + f"; then {second.action.rstrip('.')}"
+        if second.focus == first.focus:
+            merged = description.removesuffix(SILENT) + f"; then {second.action.rstrip('.')}"
+        else:
+            merged = description.removesuffix(SILENT) + f"; then {subject(second)}: {second.action.rstrip('.')}"
         lines = dialogue(first) + dialogue(second)
         if not lines:
             merged += SILENT
