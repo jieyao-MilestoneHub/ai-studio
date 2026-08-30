@@ -30,6 +30,7 @@ import html
 import logging
 import mimetypes
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -335,6 +336,67 @@ def _usage_rows(job: Job) -> list[tuple[str, str]]:
     ]
 
 
+_DRAMA_STAGES_ZH: tuple[tuple[str, str], ...] = (
+    ("screenplay", "寫劇本(gpt-oss-20b)"),
+    ("character", "角色定裝(Flux,2 張)"),
+    ("keyframes", "每鏡首幀(Flux)"),
+    ("clips", "每鏡影片(MiniMax H3,每支約 2 到 5 分鐘)"),
+    ("level", "音量整平(ffmpeg)"),
+    ("assemble", "剪接、字幕、合成(ffmpeg)"),
+)
+"""The drama's stages in the order `pipeline.drama.render_drama` runs them,
+worded for the person waiting. `screenplay` is not a `DramaState` stage --
+it is done the moment `plan.json`'s screenplay exists."""
+
+
+def _drama_stages_html(job: Job, state: Any, shot_count: int) -> str:
+    """The step list a waiting viewer reads top-down: what is finished (with
+    how long it took), what is running now (with its count), and what is
+    still to come -- so the page never ends on 鏡頭 6 with no hint of what
+    happens next. `state` is a `DramaState` or None (not started)."""
+    has_screenplay = bool((job.prompt or {}).get("screenplay"))
+    counts: dict[str, tuple[int, int]] = {}
+    if state is not None:
+        counts = {
+            "character": (len(state.character), 2),
+            "keyframes": (len(state.keyframes), shot_count),
+            "clips": (len(state.clips), shot_count),
+            "level": (len(state.leveled), shot_count),
+        }
+    finished_all = state is not None and state.output is not None
+    seen_running = False
+    items: list[str] = []
+    for key, label in _DRAMA_STAGES_ZH:
+        if key == "screenplay":
+            done = has_screenplay
+            timing = None
+        else:
+            timing = state.stages.get(key) if state is not None else None
+            done = bool(timing and timing.finished_at) or finished_all
+        count = counts.get(key)
+        detail = ""
+        if done:
+            mark, cls = "✓", "done"
+            if timing and timing.started_at and timing.finished_at:
+                secs = (
+                    datetime.fromisoformat(timing.finished_at) - datetime.fromisoformat(timing.started_at)
+                ).total_seconds()
+                detail = f" · {_seconds_zh(secs)}"
+        elif not seen_running and job.state is JobState.RUNNING and (timing is None or not timing.finished_at):
+            mark, cls = "▶", "now"
+            seen_running = True
+            if count:
+                detail = f" · {count[0]}/{count[1]}"
+            detail += " · 進行中"
+        else:
+            mark, cls = "○", "todo"
+            if count and count[0]:
+                detail = f" · {count[0]}/{count[1]}"
+        items.append(f'<li class="{cls}"><span class="mark">{mark}</span> {html.escape(label)}{html.escape(detail)}</li>')
+    tail = "<p><b>完成</b> 影片會直接推回群組,這一頁也會出現下載連結。</p>" if not finished_all else ""
+    return f'<h2>進度</h2><ol class="stages">{"".join(items)}</ol>{tail}'
+
+
 def _drama_block(job: Job, plan: dict[str, Any]) -> str:
     """The screenplay and, while it renders, per-stage progress.
 
@@ -363,24 +425,25 @@ def _drama_block(job: Job, plan: dict[str, Any]) -> str:
                 f"{html.escape(str(supporting.get('appearance', '')))}</p>"
             )
     run_dir = get_settings().runs_dir / "drama" / job.token
+    state = None
     if (run_dir / "state.json").is_file() and job.state is not JobState.FAILED:
         try:
             state = load_state(run_dir)
         except Exception:  # a half-written state file must not 500 the page
             state = None
-        if state is not None:
-            done = "完成" if state.output else "進行中"
-            parts.append(
-                f"<p><b>進度</b> 角色 {len(state.character)}/2 · 首幀 {len(state.keyframes)}/{SHOT_COUNT}"
-                f" · 影片 {len(state.clips)}/{SHOT_COUNT} · {done}"
-                f"<br><b>剪接檢查</b> {html.escape(state.plan_gate)}"
-                f" · <b>臉部修復</b> {html.escape(state.face_repair)}"
-                f" · <b>GPU 花費</b> ${state.spent_usd:.2f}</p>"
-            )
+    parts.append(_drama_stages_html(job, state, SHOT_COUNT))
+    if state is not None:
+        parts.append(
+            f"<p class=\"note\"><b>剪接檢查</b> {html.escape(state.plan_gate)}"
+            f" · <b>臉部修復</b> {html.escape(state.face_repair)}"
+            f" · <b>GPU 花費</b> ${state.spent_usd:.2f}</p>"
+        )
     shots = plan.get("shots") or []
     if shots:
+        # Full text on purpose: a drama's shot line is the whole beat
+        # (framing, action, scene) and a cut-off sentence reads as a bug.
         items = "".join(
-            f"<li><b>鏡頭 {s.get('index', i + 1)}</b> {html.escape(str(s.get('description', ''))[:220])}</li>"
+            f"<li><b>鏡頭 {s.get('index', i + 1)}</b> {html.escape(str(s.get('description', '')))}</li>"
             for i, s in enumerate(shots)
         )
         parts.append(f"<h2>分鏡</h2><ol>{items}</ol>")
@@ -445,7 +508,10 @@ def _render(job: Job, position: int | None, base_url: str) -> str:
         )
         breakdown = f"<h2>解析出的分鏡</h2><ol>{items}</ol>"
     if breakdown:
-        breakdown = f'<details class="flow"><summary>流程</summary><div>{breakdown}</div></details>'
+        # A drama takes half an hour; the viewer came for the progress, so
+        # its panel starts open. A plain video's breakdown stays folded.
+        opened = " open" if job.media_kind is JobKind.DRAMA else ""
+        breakdown = f'<details class="flow"{opened}><summary>流程</summary><div>{breakdown}</div></details>'
 
     return f"""<!doctype html>
 <html lang="zh-Hant"><head>
@@ -499,6 +565,12 @@ td details summary::-webkit-details-marker{{display:none}}
 td details summary::after{{content:' \\25b8';opacity:.6}}
 td details[open] summary::after{{content:' \\25be'}}
 td details>div{{margin-top:.4rem}}
+ol.stages{{list-style:none;padding-left:0}}
+ol.stages li{{padding:.2rem 0}}
+ol.stages li.done{{color:var(--text-dim)}}
+ol.stages li.now{{font-weight:600;color:var(--accent)}}
+ol.stages li.todo{{color:var(--text-dim);opacity:.75}}
+ol.stages .mark{{display:inline-block;width:1.3em}}
 details.flow{{width:100%;margin-top:1.25rem;border:1px solid var(--border);
              border-radius:.75rem;overflow:hidden}}
 details.flow>summary{{cursor:pointer;list-style:none;padding:.8rem 1.1rem;font-weight:600;
