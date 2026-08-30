@@ -16,7 +16,7 @@ from trl import SFTConfig, SFTTrainer
 
 from twin.core.adapter import AdapterManifest, ModelSpec, write_adapter_manifest
 from twin.core.hashing import config_hash, dataset_hash
-from twin.train import checkpoint
+from twin.train import checkpoint, preflight
 from twin.train import model as train_model
 from twin.train.formatting import build_sft_dataset
 from twin.train.loss_mask import verify_assistant_masking
@@ -96,6 +96,7 @@ def main(
     checkpoint_store_uri: str,
     encryption_key: bytes,  # SPEC.md §8: adapter weights MUST be stored encrypted — see core.encryption.
     resume: bool = True,
+    require_self_report: bool = True,  # train/preflight.py: D19 gate; False only for LINE-only experiments / the toy CI run
     checkpoint_interval_seconds: float = 600.0,  # SPEC.md §7.4 SHOULD 10-15 min (600-900s).
     # Deliberately NOT a TrainingConfig field: cadence is operational (how often
     # we checkpoint), not a training-semantics change (what the model converges
@@ -107,6 +108,8 @@ def main(
     dataset, trajectory_ids = build_sft_dataset(
         trajectories_uri, seed=config.seed, self_report_upsample=config.self_report_upsample
     )
+    # Before any GPU-second: the defects T v1 taught us (train/preflight.py).
+    print(preflight.assert_dataset_trainable(dataset, require_self_report=require_self_report).render())
     dataset_hash_value = dataset_hash(trajectory_ids)
     config_hash_value = config_hash(config.config_hash_fields())
     run_id = derive_run_id(seed=config.seed, dataset_hash=dataset_hash_value, config_hash=config_hash_value)

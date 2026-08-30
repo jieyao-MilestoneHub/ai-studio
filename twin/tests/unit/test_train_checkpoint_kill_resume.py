@@ -180,6 +180,7 @@ def _run_train_subprocess(
     cmd = [
         sys.executable,
         str(TRAIN_ENTRYPOINT),
+        "--allow-no-self-report",  # toy LINE-only set; train/preflight.py's D19 gate is tested on its own
         "--resume",
         "auto",
         "--config",
@@ -225,6 +226,7 @@ def test_kill_and_resume_preserves_step_continuity_and_loss_curve(tmp_path: Path
     cmd = [
         sys.executable,
         str(TRAIN_ENTRYPOINT),
+        "--allow-no-self-report",  # toy LINE-only set; train/preflight.py's D19 gate is tested on its own
         "--resume",
         "auto",
         "--config",
