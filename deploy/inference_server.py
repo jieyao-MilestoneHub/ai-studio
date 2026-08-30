@@ -465,6 +465,7 @@ class GptOssChatBackend:
             gen_kwargs["do_sample"] = False  # a schema wants the argmax, not a sample
         output_ids = self._model.generate(**inputs, **gen_kwargs)
         prompt_len = inputs["input_ids"].shape[-1]
+        gen_tokens = output_ids[0].shape[-1] - prompt_len
         # Keep the special tokens: harmony's channel markers ARE special
         # tokens, and with skip_special_tokens=True the decode came back as
         # "analysis<thinking>assistantfinal<reply>" -- the leak _final_channel
@@ -473,7 +474,13 @@ class GptOssChatBackend:
         # The raw harmony transcript, for the log: the one place channel
         # routing problems show up (📏 2026-08-27: a JSON rewrite came back as
         # "想太久了" -- the fallback -- without the analysis budget being hit).
-        _log.info("gpt-oss raw decode (%d chars): %s", len(decoded), decoded[:400].replace("\n", "\\n"))
+        # gen_tokens against max_new is what tells a screenplay call apart
+        # from one that hit its ceiling mid-thought (📏 2026-08-27: exactly
+        # that, at the default reasoning effort).
+        _log.info(
+            "gpt-oss raw decode (%d chars, %d/%d tokens): %s",
+            len(decoded), gen_tokens, max_new, decoded[:400].replace("\n", "\\n"),
+        )
         text = _final_channel(decoded)
         return _outer_json(text) if opts.json_only else text
 
