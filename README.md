@@ -27,7 +27,7 @@ twin of themselves on free-tier compute alone?
 | package | what it does |
 |---|---|
 | **`ai-studio`** (root) | The GPU side. Opens a RunPod pod on demand, provisions ComfyUI and a small inference server over SSH, serves the six models behind one `submit / poll / fetch / cancel` protocol, guards spend before a pod exists, records every render. Knows nothing about who asked. |
-| [**`fun_workflow/`**](fun_workflow/README.md) | The request side, built on it: a LINE group's webhook, queue and worker; `/短劇` one-minute dramas; `/himonkey` chat; a status page per result showing which GPU rendered it and what it rents for. |
+| [**`fun_workflow/`**](fun_workflow/README.md) | The request side, built on it: a LINE group's webhook, queue and worker; `/himonkey` chat; a status page per result showing which GPU rendered it and what it rents for. |
 | [**`twin/`**](twin/README.md) | The side quest: a personal digital-twin agent framework — one person's history and interviews in, an agent with their judgment and restraint out. Spec-first, with hard guardrails around the personal data it ingests. |
 
 Three independent Python packages in one repository, each with its own
@@ -45,7 +45,6 @@ uv run ai-studio generate "a baker opening the shutters" --provider stub
 uv run ai-studio understand photo.jpg --kind image
 
 cd fun_workflow && uv sync --group dev
-uv run funapp drama-dryrun                                # the whole drama pipeline, stub models, real ffmpeg
 ```
 
 With a RunPod key in `.env` (`.env.example` lists every name):

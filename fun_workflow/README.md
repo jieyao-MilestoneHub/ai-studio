@@ -25,7 +25,6 @@ from `..`, and nothing in ai-studio imports back.
 | video, then `/說影 [問題]` | a video | 【畫面】 from Qwen2.5-VL and 【聲音】 from Qwen2-Audio |
 | video, then `/影音` | a video | its audio track as an M4A — ffmpeg on the host, no pod |
 | `/himonkey <話>` | text | a gpt-oss-20b reply that remembers the last few turns |
-| `/短劇 <前提>` | text | a ~60 s six-shot drama with one stable lead: gpt-oss-20b writes the screenplay, Flux paints the keyframes, H3 animates them, ffmpeg levels and joins ([docs/drama.md](docs/drama.md)) |
 | quote-reply an earlier request with 「讓我看看」 | — | that result again, as a free reply, when the month's push quota is gone |
 
 One spelling per trigger, no aliases. Every request is rewritten on the pod
@@ -42,7 +41,6 @@ cd fun_workflow
 uv sync --group dev                      # installs ai-studio from .. editable
 
 uv run pytest tests -q                   # 350+ tests, no GPU, no network
-uv run funapp drama-dryrun               # the whole /短劇 machine offline: stub Flux/H3, real ffmpeg
 AI_STUDIO_RUNS_DIR=/tmp/x uv run funapp worker --max-ticks 1   # one idle tick of the loop
 
 uv run funapp line capture-group         # discover your group's id (LINE exposes no API for it)
@@ -88,12 +86,12 @@ survive the pod closing), and every real render logs a benchmark line that
 src/fun_workflow/
   api/        POST /callback, GET /q/{token} (the status page), /files, /healthz
   bots/line/  signature check, Reply/Push/Content clients, trigger parsing, caps, media pairing, LINE limits
-  pipeline/   the SQLite queue, the worker loop, drain, prompt conversion, /短劇, idle grace
+  pipeline/   the SQLite queue, the worker loop, drain, prompt conversion, the drama pipeline (switched off), idle grace
   prompts/    the questions the understanding models are asked, the /himonkey persona, the screenwriter
   core/       JobKind (what a request is; ai-studio's MediaKind is what a model serves), the drama spec
   storage/    the delivery index, gc
   cli/        funapp — the composition root, the only module that touches the pod runtime
-deploy/       jetson_setup.sh, vps_setup.sh, pod_setup.d/face_repair.sh (shipped to the pod for /短劇)
+deploy/       jetson_setup.sh, vps_setup.sh, pod_setup.d/face_repair.sh (shipped to the pod for drama keyframes)
 workflows/    flux_dev_i2i_face.json (the keyframe graph with FaceDetailer)
 docs/         line-bot.md, drama.md
 ```

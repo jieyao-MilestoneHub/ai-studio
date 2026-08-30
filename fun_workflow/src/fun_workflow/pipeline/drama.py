@@ -1,4 +1,4 @@
-"""Render a `/短劇`: one screenplay -> plan and timeline -> character sheet ->
+"""Render a drama: one screenplay -> plan and timeline -> character sheet ->
 six keyframes -> six clips -> one levelled, spliced minute.
 
 Why this is its own module rather than a loop around `render_clip`: a drama is

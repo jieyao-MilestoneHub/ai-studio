@@ -853,7 +853,7 @@ def drama_dryrun(
         None, help="A JSON file with {outline, shots} to use instead of the built-in one."
     ),
 ) -> None:
-    """Run the whole /短劇 stage machine offline: scripted screenwriter, stub
+    """Run the whole drama stage machine offline: scripted screenwriter, stub
     Flux and H3 (ffmpeg testsrc2), real loudnorm + assembly. Proves the state
     file, the resume rule, the timeline and the splice with no pod and no
     money. Run it twice: the second run must render nothing paid for (the

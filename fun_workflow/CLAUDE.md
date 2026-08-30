@@ -15,7 +15,7 @@ trigger any model ai-studio serves — `/影片` for video, `/圖片` for image,
 photo then `/圖影` / `/圖圖` for image-to-video / image-to-image, photo/audio/
 video then `/說圖` / `/說音` / `/說影` to describe it, `/himonkey` for plain-text
 chat via gpt-oss-20b, video then `/影音` to get its audio track as an M4A
-(ffmpeg on the host, no pod), `/短劇` for a one-minute six-beat drama with a
+(ffmpeg on the host, no pod), the drama pipeline (switched off, `AI_STUDIO_DRAMA_ENABLED`) for a one-minute six-beat drama with a
 stable lead (gpt-oss-20b screenplay into a fixed beat template → Flux
 keyframes → H3 image-to-video with in-clip cuts → timeline → ffmpeg splice;
 `docs/drama.md`), and「讓我看看」— quote-reply an earlier request to
@@ -58,7 +58,7 @@ uv run lint-imports
 uv run mypy
 
 uv run funapp preflight --skip-suite      # signature+dedupe, queue->rewrite, hold, push (opt-in), /files range
-uv run funapp drama-dryrun                # the whole /短劇 machine offline: stub Flux/H3, real ffmpeg
+uv run funapp drama-dryrun                # the (switched-off) drama machine offline: stub Flux/H3, real ffmpeg
 AI_STUDIO_RUNS_DIR=/tmp/x uv run funapp worker --max-ticks 1   # one idle tick, no pod
 
 uv run funapp line serve                  # the always-on service (needs LINE_CHANNEL_SECRET)

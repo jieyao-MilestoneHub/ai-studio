@@ -1,5 +1,9 @@
 # `/短劇` — a one-minute, six-shot drama with a stable lead
 
+> **Switched off.** `AI_STUDIO_DRAMA_ENABLED` defaults to false since 2026-08-30;
+> the trigger is not offered in the group. This document describes the pipeline
+> that is kept for reopening it.
+
 `/短劇 <一句故事前提>` turns a one-line premise into a ~56 s story with one
 recurring character: gpt-oss-20b writes the screenplay into a fixed six-beat
 template (hook / setup / conflict / turn / payoff / cliffhanger), Flux.1-dev

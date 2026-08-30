@@ -314,7 +314,7 @@ def check_files_range() -> CheckResult:
 
 
 def check_caption_font() -> CheckResult:
-    """7. The /短劇 caption font resolves to a CJK face on this host.
+    """7. The drama caption font resolves to a CJK face on this host.
 
     libass never fails on a missing font: it substitutes, and Mandarin
     captions come out as boxes in a file that has already been pushed. The

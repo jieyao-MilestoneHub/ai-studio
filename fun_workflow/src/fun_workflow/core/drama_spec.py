@@ -1,4 +1,4 @@
-"""The `/短劇` data model: a screenplay in, a resumable render state on disk.
+"""The drama data model: a screenplay in, a resumable render state on disk.
 
 Three disciplines carry over from the rest of `core`:
 
