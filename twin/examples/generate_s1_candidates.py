@@ -11,9 +11,14 @@ can run before Wave 2 exists (EVAL.md §3.2 step 5 does not depend on R2).
 
 Labels: B0/B1/B2 per EVAL.md §3.4 (B1 needs --persona-file, B2 needs
 --transcript-file); T = base + LoRA adapter (downloaded from R2 and
-decrypted into a temp dir — TWIN_ADAPTER_ENCRYPTION_KEY required), **no
-memory store / recall() yet** (Phase 7 wiring) — recorded in `model` as
-"<adapter_uri> (no recall)" so nobody reads a T score as the full twin's.
+decrypted into a temp dir — TWIN_ADAPTER_ENCRYPTION_KEY required), asked in
+the L4 shape it was trained in (`system: available tools: ...` + the item as
+the stimulus; the answer is the `content` of the reply tool call,
+`twin.agent.decode.reply_content`) — the 2026-08-30 smoke test showed a bare
+user prompt just yields raw `<tool_call>` JSON. **No memory store / recall()
+yet** (Phase 7 wiring) — recorded in `model` as "<adapter_uri> (no recall)"
+so `prepare_s1_eval_round.py` refuses it as T. `T.raw.jsonl` keeps the
+undecoded completions for inspection (how many were no_action / non-reply).
 
 --consistency-probe N: SPEC.md §5.1 "選型 MUST 驗證繁簡一致性" — the first N
 items are also asked in Simplified Chinese (zhconv) and both answers, plus
@@ -24,6 +29,7 @@ consistency-<label>.jsonl for a human to read. Not an EVAL suite score.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -33,11 +39,13 @@ from pathlib import Path
 import zhconv
 from run_baseline_inference import HFBaselineBackend
 
+from twin.agent.decode import reply_content
 from twin.core.hashing import adapter_hash
 from twin.harness.baseline import BaselineId, generate_baseline_samples, render_b0_prompt
 from twin.harness.item_bank import read_and_verify_item_bank
 from twin.harness.s1_run import BaselineKey, S1Candidate, write_candidates
 from twin.harness.schema import S1Item
+from twin.ingest.trajectories import V1_TOOLS
 
 BASELINES: tuple[BaselineId, ...] = ("B0", "B1", "B2")
 
@@ -63,8 +71,6 @@ def _is_traditional(text: str) -> bool:
 def _consistency_probe(
     backend: HFBaselineBackend, items: list[S1Item], *, label: str, n: int, out_dir: Path
 ) -> None:
-    import json
-
     rows = []
     for item in items[:n]:
         trad_prompt = render_b0_prompt(item)
@@ -149,19 +155,25 @@ def main() -> None:
             twin = HFBaselineBackend(adapter_dir=adapter_dir, max_new_tokens=args.max_new_tokens)
             model_label = f"{args.adapter_uri} (no recall)"
             digest = adapter_hash((Path(adapter_dir) / "adapter_model.safetensors").as_uri())
-            candidates = [
-                S1Candidate(
-                    item_id=item.item_id,
-                    label="T",
-                    content=twin.complete(render_b0_prompt(item)),
-                    model=model_label,
-                    adapter_hash=digest,
-                    generated_at=now,
+            system = {"role": "system", "content": f"available tools: {', '.join(V1_TOOLS)}"}  # C2: real names injected at inference
+            candidates: list[S1Candidate] = []
+            raw_rows: list[str] = []
+            no_reply = 0
+            for item in items:
+                raw = twin.complete_messages([system, {"role": "user", "content": render_b0_prompt(item)}])
+                content = reply_content(raw)
+                if content is None:
+                    no_reply += 1
+                    content = ""  # no_action / non-reply tool: judge sees an empty answer -> unjudgeable
+                candidates.append(
+                    S1Candidate(
+                        item_id=item.item_id, label="T", content=content, model=model_label, adapter_hash=digest, generated_at=now
+                    )
                 )
-                for item in items
-            ]
+                raw_rows.append(json.dumps({"item_id": item.item_id, "raw": raw}, ensure_ascii=False))
             write_candidates(candidates, (args.out_dir / "T.jsonl").as_uri())
-            print(f"[T] {len(candidates)} candidates written")
+            (args.out_dir / "T.raw.jsonl").write_text("\n".join(raw_rows) + "\n", encoding="utf-8")
+            print(f"[T] {len(candidates)} candidates written; {no_reply} had no reply tool call (no_action or other tool)")
             if args.consistency_probe:
                 _consistency_probe(twin, items, label="T", n=args.consistency_probe, out_dir=args.out_dir)
 

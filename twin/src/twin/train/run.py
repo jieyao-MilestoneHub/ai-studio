@@ -4,9 +4,11 @@ train() -> AdapterManifest. SPEC.md §5.3, §7.4-§7.6.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 
+import fsspec
 import torch
 from peft import PeftModel
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -244,4 +246,10 @@ def main(
         created_at=datetime.now(UTC),
     )
     write_adapter_manifest(manifest, f"{run_root_uri}/manifest.json")
+    # The loss curve is the only evidence a run converged; the first real run's
+    # (run_e6a366ee73958e69) survived nowhere but Modal's app log. Plain JSON,
+    # not encrypted: per-step loss/lr/grad_norm reveal nothing about the
+    # principal (same reasoning as the unencrypted AdapterManifest).
+    with fsspec.open(f"{run_root_uri}/log_history.json", "w", encoding="utf-8") as f:
+        json.dump(trainer.state.log_history, f, ensure_ascii=False)
     return manifest

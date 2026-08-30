@@ -45,8 +45,13 @@ class HFBaselineBackend:
         self.model_label = f"{DEFAULT_MODEL_SPEC.base_model_id}@{DEFAULT_MODEL_SPEC.base_model_revision}"
 
     def complete(self, prompt: str) -> str:
+        return self.complete_messages([{"role": "user", "content": prompt}])
+
+    def complete_messages(self, messages: list[dict[str, str]]) -> str:
+        """Same generation path, caller-shaped turns — T's S1 answers need the
+        training-time shape (system tool list + stimulus, `train.formatting`)."""
         text = self._tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}], tokenize=False, add_generation_prompt=True, enable_thinking=False
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
         )
         inputs = self._tokenizer(text, return_tensors="pt").to(self._model.device)
         with torch.no_grad():
