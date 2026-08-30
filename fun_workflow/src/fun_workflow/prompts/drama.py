@@ -1,4 +1,4 @@
-"""The `/短劇` screenwriter: one story premise -> a validated `Screenplay`.
+"""The drama screenwriter: one story premise -> a validated `Screenplay`.
 
 Pure, like `prompts.convert`: takes an `LlmClient`, does no I/O of its own,
 and everything the model returns goes through pydantic before it can spend a

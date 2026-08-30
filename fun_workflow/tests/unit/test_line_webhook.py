@@ -998,6 +998,43 @@ async def test_every_link_sits_on_its_own_line(wired, tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_switched_off_drama_answers_closed_and_enqueues_nothing(tmp_path: Path) -> None:
+    """`AI_STUDIO_DRAMA_ENABLED=false` (the default): the trigger gets a one-line
+    refusal before caps or allowlists, the queue never sees it, and the help
+    text stops advertising it. Every other trigger is untouched."""
+    queue = JobQueue(tmp_path / "q.sqlite3")
+    replier = NullReplyClient()
+    handler = WebhookHandler(
+        queue, replier, channel_secret=SECRET, allowed_group_id=GROUP,
+        base_url="https://vg.example.com/", clock=lambda: OPEN_INSTANT, drama_enabled=False,
+    )
+    try:
+        body = _body([_text_event("/短劇 一個夜市老闆娘發現攤位下藏著一封信")])
+        (outcome,) = await handler.handle(body, sign(body, SECRET))
+        assert outcome.action == "disabled" and outcome.detail == "drama"
+        assert outcome.job is None
+        assert queue.pending() == []
+        assert "短劇功能目前關閉" in replier.sent[-1][1][0]
+
+        body = _body([_text_event("進度", event_id="evt-status")])
+        await handler.handle(body, sign(body, SECRET))
+        assert "/短劇" not in replier.sent[-1][1][0]
+
+        body = _body([_text_event("/影片 一隻貓", event_id="evt-video")])
+        (outcome,) = await handler.handle(body, sign(body, SECRET))
+        assert outcome.action == "accepted" and outcome.job.media_kind is JobKind.VIDEO
+    finally:
+        queue.close()
+
+
+@pytest.mark.asyncio
+async def test_the_settings_default_leaves_drama_off() -> None:
+    from fun_workflow.config.settings import FunSettings
+
+    assert FunSettings(_env_file=None).drama_enabled is False
+
+
+@pytest.mark.asyncio
 async def test_the_drama_trigger_enqueues_a_drama_job(wired) -> None:
     handler, _queue, replier = wired
     body = _body([_text_event("/短劇 一個夜市老闆娘發現攤位下藏著一封信")])

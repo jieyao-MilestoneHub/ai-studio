@@ -149,7 +149,7 @@ class Outcome:
     """What the handler did with one event, for logging and for tests."""
 
     action: str  # accepted | duplicate | status | ignored | standby | capture
-    #             | wrong_group | wrong_user | rate_limited
+    #             | wrong_group | wrong_user | rate_limited | disabled
     #             | memberJoined | memberLeft
     job: Job | None = None
     detail: str = ""
@@ -182,6 +182,7 @@ class WebhookHandler:
         max_jobs_per_user_per_day: int = 0,
         max_chat_messages_per_user_per_day: int = 0,
         max_dramas_per_day: int = 0,
+        drama_enabled: bool = True,
         clock: Callable[[], datetime] | None = None,
         content: ContentClient | None = None,
         incoming_dir: Path | str = Path("incoming"),
@@ -210,6 +211,7 @@ class WebhookHandler:
         self.max_jobs_per_user_per_day = max_jobs_per_user_per_day
         self.max_chat_messages_per_user_per_day = max_chat_messages_per_user_per_day
         self.max_dramas_per_day = max_dramas_per_day
+        self.drama_enabled = drama_enabled
         # Injected so a test can stand at 03:00 without the machine having to.
         # `bots` is L6 and `runtime` is L5, so reaching down for the business
         # calendar is allowed; reaching back up never is.
@@ -311,6 +313,16 @@ class WebhookHandler:
         if stripped is None:
             return Outcome("ignored", detail="no trigger word")
         prompt, media_kind, wants_media, requested_seconds = stripped
+
+        # A switched-off feature answers before usage, caps or allowlists:
+        # nothing about the request matters if the machine behind it is closed.
+        if media_kind is JobKind.DRAMA and not self.drama_enabled:
+            await self._safe_reply(
+                reply_token,
+                f"短劇功能目前關閉。其他功能({self.trigger}、{self.image_trigger}…)照常。",
+            )
+            _log.info("refused: drama disabled", extra={"kind": media_kind.value, "reason": "drama disabled"})
+            return Outcome("disabled", detail="drama")
 
         # The describe triggers take *optional* text since 2026-08-27: bare,
         # the model gets its engineered default question; with text, that
@@ -698,8 +710,12 @@ class WebhookHandler:
                 f"「{self.describe_video_trigger}」聽聽 AI 怎麼形容(後面可以加想問的話)。"
                 f"想聊天就用「{self.chat_trigger} …」。"
                 f"傳影片再說「{self.extract_audio_trigger}」可以把聲音抽成音檔。"
-                f"想看一分鐘有劇情的短劇,說「{self.drama_trigger} <一句故事前提>」(約半小時)。"
-                f"做好但還沒送到的成品,說「{self.show_trigger}」領取。",
+                + (
+                    f"想看一分鐘有劇情的短劇,說「{self.drama_trigger} <一句故事前提>」(約半小時)。"
+                    if self.drama_enabled
+                    else ""
+                )
+                + f"做好但還沒送到的成品,說「{self.show_trigger}」領取。",
             )
             return Outcome("status")
 

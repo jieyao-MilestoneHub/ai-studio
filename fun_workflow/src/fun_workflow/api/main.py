@@ -98,6 +98,7 @@ def create_app(
             max_jobs_per_user_per_day=settings.max_jobs_per_user_per_day,
             max_chat_messages_per_user_per_day=settings.max_chat_messages_per_user_per_day,
             max_dramas_per_day=settings.max_dramas_per_day,
+            drama_enabled=settings.drama_enabled,
             max_audio_understand_s=settings.studio.max_audio_understand_s,
             max_video_understand_s=settings.studio.max_video_understand_s,
             content=content,

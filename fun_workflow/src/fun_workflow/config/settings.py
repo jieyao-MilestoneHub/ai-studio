@@ -1,5 +1,5 @@
 """Settings for the request-taking side: LINE credentials, per-user caps,
-delivery directories, the public origin, `/短劇` knobs.
+delivery directories, the public origin, the drama pipeline's knobs.
 
 Separate from `Settings` (GPU, money, logs) so the generation stack can be
 configured with no notion of a chat group at all. Composed, not inherited:
@@ -60,13 +60,21 @@ class FunSettings(BaseSettings):
         "running. A starting guess, meant to be retuned from real usage.",
     )
 
-    # ---------------------------------------------------------- /短劇
+    # ---------------------------------------------------------- drama (switched off)
 
+    drama_enabled: bool = Field(
+        default=False,
+        alias="AI_STUDIO_DRAMA_ENABLED",
+        description="Whether the group may request a drama at all. Off by "
+        "default since 2026-08-30: the trigger answers that the feature is "
+        "closed, and the help text stops advertising it. The cap and knobs "
+        "below only matter once this is true.",
+    )
     max_dramas_per_day: int = Field(
         default=3,
         ge=0,
         alias="AI_STUDIO_MAX_DRAMAS_PER_DAY",
-        description="How many /短劇 requests the group may have accepted in an "
+        description="How many drama requests the group may have accepted in an "
         "Asia/Taipei day, all users together. A drama is ~15-30 GPU-minutes "
         "(six H3 clips plus eight Flux stills), so the per-user job cap alone "
         "would let one afternoon spend the month. 0 disables the cap.",
@@ -74,7 +82,7 @@ class FunSettings(BaseSettings):
     drama_face_repair: bool = Field(
         default=True,
         alias="AI_STUDIO_DRAMA_FACE_REPAIR",
-        description="Run the Impact-Pack FaceDetailer pass on /短劇 keyframe "
+        description="Run the Impact-Pack FaceDetailer pass on drama keyframe "
         "stills when the pod has the nodes. Never on video. Off: plain "
         "image-to-image keyframes.",
     )
@@ -83,7 +91,7 @@ class FunSettings(BaseSettings):
         gt=0,
         le=1.0,
         alias="AI_STUDIO_DRAMA_KEYFRAME_DENOISE",
-        description="How much of the character sheet a /短劇 keyframe may "
+        description="How much of the character sheet a drama keyframe may "
         "repaint: lower keeps the face, higher lets the scene change. "
         "[speculative] 0.55 -- retune from the first real drama's keyframes.",
     )
@@ -100,7 +108,7 @@ class FunSettings(BaseSettings):
     drama_subshots: bool = Field(
         default=True,
         alias="AI_STUDIO_DRAMA_SUBSHOTS",
-        description="Ask H3 to cut to a second framing inside the longer /短劇 "
+        description="Ask H3 to cut to a second framing inside the longer drama "
         "clips (its multi-shot prompt). Off: every shot is one held framing "
         "and the timeline has six segments. The hedge for a model that "
         "ignores the cut time under image-to-video, which is unmeasured.",
@@ -108,7 +116,7 @@ class FunSettings(BaseSettings):
     drama_font_name: str = Field(
         default="Noto Sans CJK TC",
         alias="AI_STUDIO_DRAMA_FONT_NAME",
-        description="The font family libass renders /短劇 captions in. Resolved "
+        description="The font family libass renders drama captions in. Resolved "
         "through fontconfig on the host; the Jetson has Noto Sans CJK TC. "
         "`funapp preflight` checks it resolves to a CJK face.",
     )

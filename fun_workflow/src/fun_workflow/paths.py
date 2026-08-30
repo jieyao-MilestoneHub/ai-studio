@@ -24,5 +24,5 @@ def workflow(name: str) -> Path:
 def pod_setup_extras() -> list[Path]:
     """This package's `deploy/pod_setup.d/*.sh`: what it wants installed on
     the pod beyond what ai-studio's own setup does (the FaceDetailer nodes
-    for /短劇 keyframes). Shipped by the worker at provision time."""
+    for drama keyframes). Shipped by the worker at provision time."""
     return sorted((package_root() / "deploy" / "pod_setup.d").glob("*.sh"))

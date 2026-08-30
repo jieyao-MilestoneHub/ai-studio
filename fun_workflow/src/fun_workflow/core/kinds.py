@@ -31,7 +31,7 @@ class JobKind(str, Enum):
     nothing. It shares the inference server's GPU slot, but that is the
     provider's `residency_group`, not a property of the request."""
     DRAMA = "drama"
-    """/短劇: a ~60 s six-shot story with one recurring character. Not a
+    """A ~60 s six-shot story with one recurring character. Not a
     single provider call: `pipeline.drama.render_drama` drives the IMAGE
     provider (character sheet, keyframes) and then the VIDEO provider (six
     image-to-video clips) and concatenates."""

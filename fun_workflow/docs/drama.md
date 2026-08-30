@@ -1,5 +1,9 @@
 # `/短劇` — a one-minute, six-shot drama with a stable lead
 
+> **Switched off.** `AI_STUDIO_DRAMA_ENABLED` defaults to false since 2026-08-30;
+> the trigger is not offered in the group. This document describes the pipeline
+> that is kept for reopening it.
+
 `/短劇 <一句故事前提>` turns a one-line premise into a ~56 s story with one
 recurring character: gpt-oss-20b writes the screenplay into a fixed six-beat
 template (hook / setup / conflict / turn / payoff / cliffhanger), Flux.1-dev
@@ -175,6 +179,7 @@ still or clip, so the grace only ever measures a real gap.
 
 | variable | default | meaning |
 |---|---|---|
+| `AI_STUDIO_DRAMA_ENABLED` | **false** | the master switch. Off since 2026-08-30: `/短劇` answers「短劇功能目前關閉」before any cap or allowlist, enqueues nothing, and the status help text stops mentioning it. Set `true` to reopen |
 | `AI_STUDIO_MAX_DRAMAS_PER_DAY` | 3 | group-wide daily cap; 0 off |
 | `AI_STUDIO_DRAMA_FACE_REPAIR` | true | FaceDetailer on keyframe stills when the pod has it |
 | `AI_STUDIO_DRAMA_KEYFRAME_DENOISE` | 0.55 | i2i denoise for keyframes: lower keeps the face, higher frees the scene `[speculative]` |
