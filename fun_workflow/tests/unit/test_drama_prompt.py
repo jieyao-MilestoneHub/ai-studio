@@ -154,7 +154,7 @@ async def test_a_retry_is_told_the_exact_violation_it_made() -> None:
     assert how == "llm-retry"
     _, retried_user = client.calls[-1]
     assert "Your previous reply was invalid: shot 6 sub-shot 1" in retried_user
-    assert "the lead must be in the action" in retried_user
+    assert "must be in the action" in retried_user
 
 
 def test_h3_prompt_cuts_inside_the_clip_at_the_template_time() -> None:
@@ -255,7 +255,7 @@ def test_a_screenplay_whose_keyframe_lost_the_anchor_does_not_validate() -> None
     good = _screenplay()
     drifted = good.shots[3].model_copy(update={"keyframe_prompt": "a woman with short hair, wide shot"})
     shots = (*good.shots[:3], drifted, *good.shots[4:])
-    with pytest.raises(ValidationError, match="does not contain the anchor"):
+    with pytest.raises(ValidationError, match="does not contain the focused character"):
         Screenplay(title="t", logline="l", anchor=good.anchor, world=good.world, shots=shots, overall_soundscape="q")
 
 
@@ -297,7 +297,7 @@ def test_a_sub_shot_without_the_lead_is_a_screenplay_error() -> None:
     world = WorldBible.model_validate(OUTLINE["world"])
     bad = _shots([4, 5, 6])
     bad["shots"][2]["sub_shots"][0]["action"] = "the phone buzzes with a new message, screen off"
-    with pytest.raises(drama.ScreenplayError, match="the lead must be in the action"):
+    with pytest.raises(drama.ScreenplayError, match="must be in the action"):
         drama.build_shots(bad, expected=[4, 5, 6], anchor=anchor, world=world)
 
 
@@ -346,3 +346,103 @@ def test_narration_is_parsed_from_the_shots_reply() -> None:
     world = WorldBible.model_validate(OUTLINE["world"])
     [shot1] = drama.build_shots({"shots": _shots([1])["shots"]}, expected=[1], anchor=anchor, world=world)
     assert shot1.sub_shots[0].narration == "旁白1.1" and shot1.sub_shots[0].dialogue == ()
+
+
+# --------------------------------------------------------------- supporting character
+# A different premise from the fixtures above (a delivery coworker, not the
+# night-market letter) on purpose: the mechanism must not be tied to any one
+# story -- any relationship, any second character.
+
+SUPPORTING = {
+    "name": "阿凱", "appearance": "30-year-old man, square jaw, short buzzed hair, a thin scar on the chin",
+    "wardrobe": "a navy delivery uniform", "voice": "flat, quick",
+}
+
+
+def _shot_with_focus(index: int, *, focus: str, action_prefix: str) -> dict:
+    slot = BEAT_TEMPLATE[index - 1]
+    subs = []
+    for k in range(slot.sub_shots):
+        subs.append({
+            "framing": FRAMINGS[index][k], "focus": focus,
+            "action": f"{action_prefix} does thing {index}.{k + 1}",
+            "camera": {"motion": "static_shot"}, "narration": f"旁白{index}.{k + 1}",
+        })
+    return {"index": index, "scene": f"the stall, beat {index}", "sub_shots": subs, "cut_reason": "default"}
+
+
+def test_outline_parses_an_optional_supporting_character() -> None:
+    outline = dict(OUTLINE, supporting_character=SUPPORTING)
+    built = drama.build_outline(outline)
+    assert built["supporting_character"].name == "阿凱"
+
+    without = drama.build_outline(OUTLINE)
+    assert without["supporting_character"] is None
+
+
+def test_a_shot_focused_on_the_supporting_character_needs_its_own_referent() -> None:
+    anchor = CharacterAnchor.model_validate(OUTLINE["anchor"])
+    world = WorldBible.model_validate(OUTLINE["world"])
+    supporting = CharacterAnchor.model_validate(SUPPORTING)
+
+    [shot3] = drama.build_shots(
+        {"shots": [_shot_with_focus(3, focus="supporting", action_prefix="the second person")]},
+        expected=[3], anchor=anchor, world=world, supporting=supporting,
+    )
+    assert shot3.sub_shots[0].focus == "supporting"
+    assert supporting.appearance in shot3.keyframe_prompt
+    assert anchor.appearance not in shot3.keyframe_prompt
+
+    bad = {"shots": [_shot_with_focus(3, focus="supporting", action_prefix="the lead")]}
+    with pytest.raises(drama.ScreenplayError, match="must be in the action"):
+        drama.build_shots(bad, expected=[3], anchor=anchor, world=world, supporting=supporting)
+
+
+def test_focus_supporting_without_a_declared_character_is_a_screenplay_error() -> None:
+    anchor = CharacterAnchor.model_validate(OUTLINE["anchor"])
+    world = WorldBible.model_validate(OUTLINE["world"])
+    bad = {"shots": [_shot_with_focus(3, focus="supporting", action_prefix="the second person")]}
+    with pytest.raises(drama.ScreenplayError, match="declared none"):
+        drama.build_shots(bad, expected=[3], anchor=anchor, world=world)  # supporting=None (default)
+
+
+def test_an_unknown_focus_value_is_a_screenplay_error() -> None:
+    anchor = CharacterAnchor.model_validate(OUTLINE["anchor"])
+    world = WorldBible.model_validate(OUTLINE["world"])
+    bad = _shots([1])
+    bad["shots"][0]["sub_shots"][0]["focus"] = "villain"
+    with pytest.raises(drama.ScreenplayError, match="unknown focus 'villain'"):
+        drama.build_shots(bad, expected=[1], anchor=anchor, world=world)
+
+
+def test_h3_prompt_restates_only_the_focused_persons_appearance() -> None:
+    anchor = CharacterAnchor.model_validate(OUTLINE["anchor"])
+    world = WorldBible.model_validate(OUTLINE["world"])
+    supporting = CharacterAnchor.model_validate(SUPPORTING)
+    [shot3] = drama.build_shots(
+        {"shots": [_shot_with_focus(3, focus="supporting", action_prefix="the second person")]},
+        expected=[3], anchor=anchor, world=world, supporting=supporting,
+    )
+    good = _screenplay()
+    screenplay = Screenplay(
+        title="t", logline="l", anchor=anchor, supporting_character=supporting, world=world,
+        shots=(*good.shots[:2], shot3, *good.shots[3:]), overall_soundscape="quiet",
+    )
+    rendered = drama.h3_prompt(screenplay.shots[2], screenplay).render()
+    assert supporting.appearance in rendered and anchor.appearance not in rendered
+
+
+def test_screenplay_refuses_a_supporting_focus_with_no_declared_character() -> None:
+    """Schema-level backstop: even if build_shots were bypassed, Screenplay
+    itself refuses a 'supporting' focus with nobody declared."""
+    good = _screenplay()
+    anchor = good.anchor
+    world = good.world
+    supporting = CharacterAnchor.model_validate(SUPPORTING)
+    [shot3] = drama.build_shots(
+        {"shots": [_shot_with_focus(3, focus="supporting", action_prefix="the second person")]},
+        expected=[3], anchor=anchor, world=world, supporting=supporting,
+    )
+    shots = (good.shots[0], good.shots[1], shot3, *good.shots[3:])
+    with pytest.raises(ValidationError, match="declared none"):
+        Screenplay(title="t", logline="l", anchor=anchor, world=world, shots=shots, overall_soundscape="q")

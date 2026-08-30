@@ -33,6 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from itertools import pairwise
+from typing import Literal
 
 from ai_studio.core.enums import TransitionReason
 from ai_studio.editing.rhythm import PacingPolicy
@@ -187,6 +188,16 @@ class DramaLine(BaseModel):
     text: str = Field(min_length=1)
 
 
+Focus = Literal["lead", "supporting"]
+
+SUPPORTING_REFERENT = "the second person"
+"""The fixed, generic way a sub-shot's action refers to the supporting
+character -- deliberately ungendered and role-free (never "the woman", "the
+rival", any premise-specific noun), the same convention "the lead" already
+is. Whatever the story needs a second character *for* is the screenwriter's
+business; this schema only needs a stable string to check for."""
+
+
 class SubShot(BaseModel):
     """One framing inside a generated clip. Two of them and H3 cuts between
     them itself, at the template's `internal_cut_frames`."""
@@ -203,6 +214,12 @@ class SubShot(BaseModel):
         description="A short caption stating what the picture can't guarantee -- "
         "a reason, a relationship, a time skip -- when this sub-shot has no line.",
     )
+    focus: Focus = Field(
+        default="lead",
+        description="Whose fixed appearance this sub-shot's H3 description restates "
+        "verbatim -- never both people at once, since H3 only binds one reference "
+        "image per clip. 'supporting' is only legal when the drama declared one.",
+    )
 
     @model_validator(mode="after")
     def _exactly_one_caption(self) -> SubShot:
@@ -218,12 +235,14 @@ class SubShot(BaseModel):
             # neither.
             what = "both a line and narration" if has_line else "neither a line nor narration"
             raise ValueError(f"sub-shot {self.index}: needs exactly one of line/narration, has {what}")
-        if "the lead" not in self.action.lower():
+        referent = "the lead" if self.focus == "lead" else SUPPORTING_REFERENT
+        if referent not in self.action.lower():
             # 📏 2026-08-29, twice: the cliffhanger came back as "the phone
             # buzzes with a new message" -- a prop shot, no lead, so the
             # keyframe was a phone and the anchor wasted. The prompt says
-            # it; this makes it true.
-            raise ValueError(f"sub-shot {self.index}: the lead must be in the action ({self.action!r})")
+            # it; this makes it true. Same rule, whichever person this
+            # sub-shot is focused on.
+            raise ValueError(f"sub-shot {self.index}: {referent!r} must be in the action ({self.action!r})")
         return self
 
 
@@ -301,6 +320,13 @@ class Screenplay(BaseModel):
     logline: str = Field(min_length=1)
     style: str = Field(default="Live-action, cinematic")
     anchor: CharacterAnchor
+    supporting_character: CharacterAnchor | None = Field(
+        default=None,
+        description="A second named character, only when the premise needs one -- "
+        "any relationship, any story. Gets their own visual anchor, the same way "
+        "the lead does; a sub-shot may focus on them instead of the lead, never "
+        "both at once.",
+    )
     world: WorldBible
     beats: dict[Beat, str] = Field(default_factory=dict)
     """The outline's six one-sentence causal beats (state_before/event/state_after
@@ -330,13 +356,27 @@ class Screenplay(BaseModel):
         if indices != list(range(1, SHOT_COUNT + 1)):
             raise ValueError(f"shot indices must be 1..{SHOT_COUNT} in order: {indices}")
         for shot in self.shots:
-            if self.anchor.appearance not in shot.keyframe_prompt:
+            # The keyframe is anchored by whichever person the shot's FIRST
+            # sub-shot focuses on -- that is the only sub-shot an image ever
+            # binds (the second, if any, is text-only, same as the lead's own
+            # continuity across an internal cut).
+            opening = self.anchor if shot.sub_shots[0].focus == "lead" else self.supporting_character
+            if opening is None:
                 raise ValueError(
-                    f"shot {shot.index}: keyframe prompt does not contain the anchor "
-                    f"verbatim ({self.anchor.appearance!r}) -- the face would drift"
+                    f"shot {shot.index}: sub-shot 1 focuses on a supporting character, "
+                    "but this drama declared none"
+                )
+            if opening.appearance not in shot.keyframe_prompt:
+                raise ValueError(
+                    f"shot {shot.index}: keyframe prompt does not contain the focused "
+                    f"character's appearance verbatim ({opening.appearance!r}) -- the face would drift"
                 )
             if self.world.prefix() not in shot.keyframe_prompt:
                 raise ValueError(f"shot {shot.index}: keyframe prompt does not contain the world bible verbatim")
+        for shot, sub in self.sub_shots():
+            if sub.focus == "supporting" and self.supporting_character is None:
+                raise ValueError(f"shot {shot.index} sub-shot {sub.index} focuses on a supporting "
+                                 "character, but this drama declared none")
         flat = self.sub_shots()
         for (a_shot, a), (b_shot, b) in pairwise(flat):
             if a.framing is b.framing:

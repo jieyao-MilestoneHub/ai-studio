@@ -92,6 +92,11 @@ on purpose -- stopping early costs a resume, running late costs a clip."""
 CHARACTER_VIEWS = ("front", "three_quarter")
 """The sheet is two stills; `front` is what every keyframe repaints from."""
 
+SUPPORTING_VIEW = "supporting_front"
+"""A supporting character gets one still, not the lead's two-view sheet --
+they appear far less, and one front reference is enough for the i2i keyframe
+mechanism that already works for the lead."""
+
 OnActivity = Callable[[], None] | None
 
 
@@ -153,7 +158,7 @@ async def render_drama(
     write_offsets(run_dir, timeline)
 
     # -- cost gate: what is still to be spent, against the per-run ceiling
-    still_to_render = _count_missing(state, len(screenplay.shots))
+    still_to_render = _count_missing(state, len(screenplay.shots), screenplay.supporting_character is not None)
     if any(still_to_render.values()) and (state.character or state.keyframes or state.clips):
         _log.info("resuming drama", extra={"stage": "drama", "reason": str(still_to_render),
                                            "cost_usd": state.spent_usd})
@@ -177,7 +182,13 @@ async def render_drama(
         await make_room_for(image, providers)
         state.stage_start("character", utc_now_iso())
 
-    for view, prompt in character_sheet_prompts(screenplay.anchor, screenplay.world).items():
+    sheet_prompts = dict(character_sheet_prompts(screenplay.anchor, screenplay.world))
+    if screenplay.supporting_character is not None:
+        # One still, not the lead's two-view sheet -- see SUPPORTING_VIEW.
+        sheet_prompts[SUPPORTING_VIEW] = character_sheet_prompts(
+            screenplay.supporting_character, screenplay.world
+        )["front"]
+    for view, prompt in sheet_prompts.items():
         if _fresh(state.character.get(view)):
             continue
         _require_time(deadline, "image")
@@ -200,7 +211,6 @@ async def render_drama(
         save_state(run_dir, state)
         touch()
 
-    reference = Path(state.character["front"].path)
     state.stage_finish("character", utc_now_iso())
     state.stage_start("keyframes", utc_now_iso())
     for shot in screenplay.shots:
@@ -217,6 +227,11 @@ async def render_drama(
         # would otherwise pay the failed attempt again on every keyframe.
         if fun.drama_face_repair and not state.face_repair.startswith("failed"):
             extra["face_repair"] = True
+        # The keyframe is anchored by whoever the shot's FIRST sub-shot
+        # focuses on -- the lead's own front sheet, or the supporting
+        # character's single reference still.
+        view = SUPPORTING_VIEW if shot.sub_shots[0].focus == "supporting" else "front"
+        reference = Path(state.character[view].path)
         request = ImageRequest(
             shot_id=f"job{job.id}_kf{key}",
             mode=GenMode.I2I,
@@ -520,8 +535,9 @@ def _require_time(deadline: datetime, kind: str) -> None:
         )
 
 
-def _count_missing(state: DramaState, shots: int) -> dict[str, int]:
-    images = sum(1 for v in CHARACTER_VIEWS if not _fresh(state.character.get(v)))
+def _count_missing(state: DramaState, shots: int, has_supporting: bool) -> dict[str, int]:
+    views = (*CHARACTER_VIEWS, SUPPORTING_VIEW) if has_supporting else CHARACTER_VIEWS
+    images = sum(1 for v in views if not _fresh(state.character.get(v)))
     images += sum(1 for i in range(1, shots + 1) if not _fresh(state.keyframes.get(str(i))))
     clips = sum(1 for i in range(1, shots + 1) if not _fresh(state.clips.get(str(i))))
     return {"images": images, "clips": clips}

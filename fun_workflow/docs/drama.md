@@ -44,9 +44,10 @@ real drama shows whether the keyframe chain alone holds the face.
       │
       ▼  worker.prepare()  —  gpt-oss-20b resident, json_only, 3 calls
    Screenplay  { title, logline, style, anchor{name, appearance, wardrobe, voice},
-                 world{location, light, signature_prop}, beats{hook..cliffhanger},
+                 supporting_character{..}?, world{location, light, signature_prop},
+                 beats{hook..cliffhanger},
                  6 × shot{beat, frames, scene, cut_reason,
-                          1-2 × sub_shot{framing, action, camera, line|narration}} }
+                          1-2 × sub_shot{framing, action, camera, line|narration, focus}} }
       │        stored in jobs.prompt_json; ScreenplayError ⇒ job FAILED + LINE reply
       ▼  render_drama()   —  runs/drama/<token>/state.json after every artifact
    0  plan       plan.json (segments, cut reasons, cues, pacing band) →
@@ -127,7 +128,8 @@ gates/plan_gate.json  the PRE gate's report; its one-line verdict is state.json'
 offsets.json          the timeline: every segment's start/end, every boundary, clip offsets, total
 captions.ass          the title card and one caption per sub-shot (a spoken
                       line or a narration), times copied from offsets.json
-character/{front,three_quarter}.png
+character/{front,three_quarter}.png   the lead's sheet
+character/supporting_front.png        only when the drama declared a supporting character
 keyframes/shot_{1..6}.png
 clips/shot_{1..6}.mp4
 leveled/shot_{1..6}.mp4
@@ -293,16 +295,18 @@ human review step (`review_loop.py`) instead. Five decisions followed:
    a spoken line or a short (≤15 char) narration caption — never both,
    never neither — closing the case (job 109) where a whole drama shipped
    with nothing burned in but the title card.
-3. **A supporting character gets her own visual anchor and reference
-   still**, mirroring the upstream kit's `characters[]` pattern — with one
-   constraint upstream never needed: our H3 usage is single-image I2V (one
-   locked first frame), not multi-reference conditioning, so a sub-shot's
-   description may only restate *one* person's fixed appearance, never
-   two at once. A shot with two sub-shots can give one to the lead and one
-   to the supporting character; a one-sub-shot beat picks exactly one.
-   This is the same "restate the subject verbatim at every cut" mechanism
-   already trusted for the lead's own continuity across an internal cut —
-   applied to a second person, not a new mechanism.
+3. **A supporting character gets their own visual anchor and reference
+   still** (implemented -- see below), mirroring the upstream kit's
+   `characters[]` pattern — with one constraint upstream never needed: our
+   H3 usage is single-image I2V (one locked first frame), not multi-reference
+   conditioning, so a sub-shot's description may only restate *one* person's
+   fixed appearance, never two at once. A shot with two sub-shots can give
+   one to the lead and one to the supporting character; a one-sub-shot beat
+   picks exactly one. This is the same "restate the subject verbatim at
+   every cut" mechanism already trusted for the lead's own continuity
+   across an internal cut — applied to a second person, not a new mechanism.
+   Any relationship, any story: the mechanism carries no assumption about
+   who the second character is or why they appear.
 4. **A fixed-template caption on a `time_passing` cut** (not model-authored)
    — the dissolve itself is a weak signal on its own.
 5. **Cross-shot semantic contradiction (job 109's "screen remains off" while
@@ -312,6 +316,31 @@ human review step (`review_loop.py`) instead. Five decisions followed:
    reviewing rendered output before publish, which this pipeline's
    zero-operator LINE-bot design does not have room for. Accepted as a
    known risk, not a gap to silently work around.
+
+### The supporting-character mechanism (decision 3, implemented)
+
+`Screenplay.supporting_character: CharacterAnchor | None` — the outline call
+declares one only when the premise genuinely needs a second named character
+(any relationship, any story; omitted for a single-character drama, which
+stays exactly as before). Every `SubShot.focus: "lead" | "supporting"`
+(default `"lead"`) says whose fixed appearance that sub-shot's H3
+description restates verbatim, and whose reference photo anchors the
+keyframe *if* it is the shot's first sub-shot — a shot's keyframe is always
+the first sub-shot's focus, the same as it was the lead's alone before.
+`SUPPORTING_REFERENT = "the second person"` is the fixed, ungendered,
+role-free way the action text refers to them, mirroring "the lead". The
+supporting character gets one reference still (front only, not the lead's
+front+three-quarter sheet — one Flux call, ≈$0.006), stored as
+`state.character["supporting_front"]`.
+
+Constraint the mechanism exists *because of*: our H3 usage is single-image
+I2V, so a shot can bind exactly one photo as its opening frame. There is no
+attempt to put two people in the same keyframe. A shot whose two sub-shots
+focus on different people (lead in sub-shot 1, supporting in sub-shot 2, or
+the reverse) works the same way the lead's own continuity into an internal
+cut already does — text-only restatement, no second image — because that
+mechanism was already trusted for one person and this reuses it for a
+second, not a new one.
 
 ## What to measure on the next real run
 
@@ -351,3 +380,10 @@ Record these in this file, then say 「可以測試了」:
     real dissolve for whether the two captions actually collide on screen
     or read fine in sequence; if it collides, the fix belongs in
     `render.timeline`/`cue_events`, not in the screenwriter.
+12. **The first real drama with a supporting character.** Does their single
+    front-view still hold up as a keyframe source the way the lead's
+    two-view sheet does? Does a shot that cuts from the lead to them
+    (or the reverse) inside one clip actually read as two different,
+    consistent people, or does the model blend them? This is the part of
+    decision 3 with the least precedent -- our own or upstream's -- so it
+    is the first thing to watch, not an afterthought.
