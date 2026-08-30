@@ -36,7 +36,7 @@ from twin.ingest.store import read_trajectories_jsonl, write_trajectories_jsonl
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--transcript", required=True)
+    parser.add_argument("--transcript", default=None, help="required unless --upload-only")
     parser.add_argument("--upload-to", default=None, help="fsspec URI to copy the merged store + manifest to")
     parser.add_argument("--upload-only", action="store_true", help="skip the merge (already done); just copy to --upload-to")
     args = parser.parse_args()
@@ -50,6 +50,8 @@ def main() -> None:
             sys.exit("--upload-only needs --upload-to")
         _upload(uri, manifest_uri, args.upload_to)
         return
+    if not args.transcript:
+        sys.exit("--transcript is required")
     with fsspec.open(args.transcript, "r", encoding="utf-8") as f:
         transcript = InterviewTranscript.model_validate_json(f.read())
     new = list(trajectories_from_interview(transcript))
