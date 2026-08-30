@@ -34,6 +34,24 @@ def decide_split(event_time: datetime, *, train_cutoff: datetime, sealed_cutoff:
     return Split.SEALED
 
 
+def decide_self_report_split() -> Split:
+    """Self-report (interview transcript, questionnaire) is always TRAIN.
+
+    Decided 2026-08-30 (twin/PLAN.md Phase 3). SPEC.md §2.2 defines self-report
+    as *not* historical data — "本人在當下對過去的重述" — so the time-based
+    `decide_split` rule above has nothing meaningful to say about it: its
+    `event_time` is the session clock, which for any interview held after the
+    LINE ingest's `sealed_cutoff` would mechanically land it in SEALED, where
+    EVAL.md §3.4's B2 (transcript-in-context) is forbidden to read it and the
+    LoRA can never train on it — even though D19 names self-report the
+    dominant source of persona fidelity. TRAIN gives B2 and T the same
+    information, which is exactly the comparison EVAL.md §3.4's kill switch
+    needs. Still decided here, at ingest, once (SPEC.md §4.8/D21) — this is a
+    second ingest-time rule, not a train-time override.
+    """
+    return Split.TRAIN
+
+
 def sealed_cutoff_for(
     *, train_cutoff: datetime, now: datetime, sealed_fraction: float = 0.2
 ) -> datetime:

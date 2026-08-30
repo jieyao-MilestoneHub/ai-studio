@@ -57,8 +57,6 @@ from twin.harness.s1_run import (
 )
 from twin.harness.schema import JudgedItem, S1Answer
 
-EVAL_ROOT_URI = "file://./eval"
-RUNS_ROOT_URI = "file://./eval/runs"
 UNJUDGEABLE_VERDICT = "unjudgeable"
 
 
@@ -67,8 +65,8 @@ def _read_answers(uri: str) -> list[S1Answer]:
         return [S1Answer.model_validate_json(line) for line in f if line.strip()]
 
 
-def _read_manifest(run_id: str) -> RunManifest:
-    with fsspec.open(f"{RUNS_ROOT_URI}/{run_id}.json", "r", encoding="utf-8") as f:
+def _read_manifest(runs_root: str, run_id: str) -> RunManifest:
+    with fsspec.open(f"{runs_root}/{run_id}.json", "r", encoding="utf-8") as f:
         return RunManifest.model_validate_json(f.read())
 
 
@@ -86,8 +84,11 @@ def main() -> None:
     args = parser.parse_args()
     run_id: str = args.run_id
 
-    manifest = _read_manifest(run_id)
-    index = read_sample_index(f"{RUNS_ROOT_URI}/{run_id}_index.jsonl")
+    s1_root = get_settings().s1_eval_root_uri.rstrip("/")
+    eval_root = s1_root.rsplit("/", 1)[0]  # same derivation as prepare_s1_eval_round.py
+    runs_root = f"{eval_root}/runs"
+    manifest = _read_manifest(runs_root, run_id)
+    index = read_sample_index(f"{runs_root}/{run_id}_index.jsonl")
 
     judged: list[JudgedItem] = []
     unjudgeable_total = 0
@@ -118,7 +119,6 @@ def main() -> None:
 
     judged_by_baseline = regroup_judged_items_by_baseline(judged, index)
 
-    s1_root = get_settings().s1_eval_root_uri
     r1 = _read_answers(f"{s1_root}/answers/r1.jsonl")
     r2 = _read_answers(f"{s1_root}/answers/r2.jsonl")
     self_consistency = compute_self_consistency(r1, r2)
@@ -143,7 +143,7 @@ def main() -> None:
     # this is the actual gate, not a comment promising one.
     check_judge_agreement_floor(report)
 
-    out_uri = f"{EVAL_ROOT_URI}/report/{run_id}.md"
+    out_uri = f"{eval_root}/report/{run_id}.md"
     write_report(report, out_uri)
     print(f"\nWritten to {out_uri}.")
 

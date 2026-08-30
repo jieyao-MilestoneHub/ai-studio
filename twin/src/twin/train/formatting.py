@@ -98,7 +98,11 @@ def trajectory_to_messages(trajectory: Trajectory, *, seed: int) -> list[dict[st
                     "tool_calls": [
                         {
                             "type": "function",
-                            "function": {"name": step.tool, "arguments": json.dumps(step.args)},
+                            # ensure_ascii=False: with the default, every CJK character in the
+                            # principal's replies became a 6-char `\uXXXX` escape in the training
+                            # target, and the first real adapter (run_e6a366ee73958e69) learned to
+                            # emit exactly that — found in the 2026-08-30 S1 smoke test.
+                            "function": {"name": step.tool, "arguments": json.dumps(step.args, ensure_ascii=False)},
                         }
                     ],
                 }

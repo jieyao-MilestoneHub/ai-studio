@@ -147,3 +147,14 @@ def test_build_sft_dataset_excludes_non_train_split(tmp_path: Path) -> None:
     _dataset, trajectory_ids = build_sft_dataset(uri, seed=1)
 
     assert trajectory_ids == [train.trajectory_id]
+
+
+def test_tool_call_arguments_keep_cjk_unescaped() -> None:
+    """The training target must contain the principal's actual characters,
+    not `\\uXXXX` escapes — the first real adapter learned to emit escapes
+    because the default `json.dumps` produced them (2026-08-30 smoke test)."""
+    trajectory = _trajectory(steps=[ActionStep(surface="line", content="好啊，晚點聊")])
+    messages = trajectory_to_messages(trajectory, seed=0)
+    arguments = next(m for m in messages if m["role"] == "assistant" and m.get("tool_calls"))["tool_calls"][0]["function"]["arguments"]
+    assert "好啊，晚點聊" in arguments
+    assert "\\u" not in arguments

@@ -5,6 +5,7 @@ EVAL.md §3.2-§3.4, §6.1.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 import fsspec
@@ -14,6 +15,44 @@ from twin.harness.schema import HarnessError, JudgedItem, RawEvalSample, S1Answe
 from twin.harness.shard import sample_id
 
 BaselineKey = Literal["T", "B0", "B1", "B2"]
+
+
+class S1Candidate(BaseModel):
+    """One system's free-text answer to one frozen item — the GPU step's
+    output, persisted so it can be produced before Wave 2 exists (EVAL.md
+    §3.2 step 5 is independent of R2) and paired with R2 later, on a CPU.
+    `model` records what produced it (base model revision, or the adapter
+    URI for T) so a round's manifest can name its `adapter_hash`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    item_id: str
+    label: BaselineKey
+    content: str
+    model: str
+    adapter_hash: str  # core.hashing.adapter_hash of the decrypted adapter for T; "none" for B0/B1/B2
+    generated_at: datetime
+
+
+def write_candidates(candidates: list[S1Candidate], uri: str) -> None:
+    fs, path = fsspec.core.url_to_fs(uri)
+    parent = path.rsplit("/", 1)[0]
+    if parent:
+        fs.makedirs(parent, exist_ok=True)
+    with fsspec.open(uri, "w", encoding="utf-8") as f:
+        for candidate in candidates:
+            f.write(candidate.model_dump_json())
+            f.write("\n")
+
+
+def read_candidates(uri: str) -> list[S1Candidate]:
+    out: list[S1Candidate] = []
+    with fsspec.open(uri, "r", encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped:
+                out.append(S1Candidate.model_validate_json(stripped))
+    return out
 
 
 def compute_self_consistency(r1: list[S1Answer], r2: list[S1Answer]) -> float:

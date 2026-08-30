@@ -2,8 +2,8 @@
 
 | 項目 | 值 |
 |---|---|
-| 版本 | 0.6 |
-| 日期 | 2026-08-28（Phase 5 全部、Phase 3-A（訪談後處理＋逐字稿/問卷 ingest）程式部分落地，見各自章節；Phase 3-B（真人語音訪談員本身）仍為未解決的開放設計問題，刻意未動工，見 Phase 3 章節） |
+| 版本 | 0.7 |
+| 日期 | 2026-08-30（第一次真實 LoRA 訓練跑完成；Phase 3-B 以最小文字版訪談員取代；Phase 5 真實推論路徑落地；自陳資料 split 裁決為 train——見各自章節）。前版 2026-08-28（Phase 5 全部、Phase 3-A（訪談後處理＋逐字稿/問卷 ingest）程式部分落地，見各自章節；Phase 3-B（真人語音訪談員本身）仍為未解決的開放設計問題，刻意未動工，見 Phase 3 章節） |
 | 依據 | SPEC.md v0.4、EVAL.md v0.2、INTERVIEW.md v0.2（見附錄） |
 | 狀態 | Phase 0（護欄/套件骨架）、Phase 1（Fragment schema／split／teacher.py／最小 ingest）程式部分皆已落地；兩者各自的人工步驟（GCP/雲端帳號、使用者真實資料）仍待辦，見各自章節。§3.8 記錄了一輪跨 phase 的 interface-first 補建（L2/L3/L4/harness 的介面與 core 的支撐型別），刻意不算某個特定 phase 完成，細節仍待鎖定區塊時補上。**Phase 4（最小 L2 + 精簡軌跡集 + 第一版 LoRA）程式部分已完成**（底模定案 Qwen3-8B，`train/{formatting,model,checkpoint,reproducibility,run}.py`、根目錄 `train.py`、`launch/*`，SPEC §7.4 的 kill-9/resume CI 測試已通過，見該章節「狀態」）；LoRA rank 硬體 probe、真實資料訓練跑仍待辦。**Phase 5（Baseline B0/B1/B2 + judge harness）程式部分已完成**（`harness/{baseline,s1_run,eval_io}.py`、`eval/rubric/s1.md`、三支 `examples/*_s1_eval_round.py` 驅動腳本），`spec-auditor` 兩輪皆 PASS，詳見該章節。**Phase 3 拆成兩半**：後處理管線＋逐字稿/問卷 ingest（「Phase 3-A」）程式部分已完成，`spec-auditor`／`data-hygiene` 皆 PASS；真人語音訪談員本身（「Phase 3-B」）INTERVIEW.md 完全未指定實作機制（無 STT/TTS、無連續 session 架構），本輪刻意不解決，留待下一輪與使用者一起裁決。**Phase 2 已完成（2026-08-29）：真實 ingest 96,750 筆、題庫 70 題凍結、Wave 1 答畢，專案第 0 天 = 2026-08-29T03:58Z，Wave 2 於 2026-09-12 開放**。路線圖依 SPEC/EVAL 的既有裁決推導，未包含任何本文件自行代決的規範性內容 |
 
@@ -121,9 +121,13 @@ Phase 0（護欄）
 **審查**：`spec-auditor`（初輪 BLOCK——settings 新欄位未接線、未知區塊標籤靜默丟棄、`known_parties` 空值無防呆、`confidence` 假精確；修正後複審 PASS）、`data-hygiene`（PASS，記錄兩項非阻擋觀察：`event_time.confidence` 對訪談區塊只反映「第幾區塊」而非分鐘級精度、以及上一段記錄的 split/recall() 疊加風險）。
 **類型**：Phase 3-A 為程式（已完成）；Phase 3-B 為程式（訪談員本身，完全未動工，見下）+ 人工（102–120 分鐘場次本身，須預留緩衝，不能卡在第 13 天才做）。
 
-**Phase 3-B — 真人語音訪談員：獨立的開放設計問題，本輪刻意不解決**
+**Phase 3-B — 真人語音訪談員 → 已於 2026-08-30 裁決：以最小文字版訪談員取代（使用者裁決）**
 
-INTERVIEW.md §6 把訪談員釘死為「Teacher 模型（Gemini Flash 免費層，含多模態輸入）」、要求語音對語音、單一連續 102–120 分鐘場次，但**完全沒有指定實作機制**——沒有 STT/TTS 引擎、沒有 turn-taking 協定、沒有 session 連續性的做法。現有的 `twin.teacher.base.Teacher.generate(prompt: str, *, response_schema: type[T]) -> T` 是純文字、單次呼叫、結構化輸出，沒有音訊參數，也沒有長時間 session 的概念——不能直接拿來當即時語音迴圈用。這是一個比 Phase 3-A 整體大得多、形狀完全不同的問題（近即時的語音 agent 迴圈，含場次中即時自我檢核），INTERVIEW.md 本身沒給出足夠資訊判斷該怎麼做。留給下一輪與使用者一起確認方向（例如：Gemini 的即時多模態 API 能否真的撐住約 2 小時連續 session 並滿足 §6.1/Q5 的即時自我檢核；若不行，D34「單一連續場次」是否需要一個有紀錄的折衷做法）。Phase 3-A 的每一支模組都只處理「已經產生的逐字稿文字」，與逐字稿如何產生無關，故不受此問題阻塞。
+INTERVIEW.md §6 把訪談員釘死為語音對語音、Teacher 驅動、單一連續 102–120 分鐘場次，但完全沒有指定實作機制（無 STT/TTS、無 turn-taking、無長 session 架構）。為了讓 B1/B2 在 Wave 2（2026-09-12）前存在、kill switch（Phase 7）能合規裁決，使用者於 2026-08-30 裁決：**先以文字版訪談取代**。落地：`ingest/interview_schedule.py`（§4 四區塊、17 個必達點 A1–D2 與開放式首問，純資料）、`ingest/interviewer.py`（`TextInterviewer`：依大綱逐點提問；`required_instances > 0` 的必達點由 Teacher 依 §6.1 規則產生追問——開放式、無選項、不誘導、形容詞不算事例——每點最多 2 次；單一場次真實計時；雙方發言逐字保留為 `InterviewTranscript`；Teacher 配額耗盡時記入 `notes` 而非中斷）、`ingest/interview_ingest.py`（逐字稿 → §6.2 詞表後處理 → `fragments_from_interview_transcript`（Q8 結構性阻擋）→ 併入 fragment store（先備份、拒絕同一份逐字稿重複 ingest）→ §7 Q1–Q9 報告）、`examples/run_text_interview.py`／`examples/ingest_interview_transcript.py`。測試：`test_ingest_interviewer.py`、`test_ingest_interview_ingest.py`。
+
+**明示的偏離與代價**（INTERVIEW.md §7 將這些列為「標記低信心」而非阻擋，僅 Q8 為硬阻擋）：(1) 形式非語音（§6 形式列）；(2) 時長極可能不到 102 分鐘（Q3）、字數極可能不到 5,500（Q4）→ **整輪 S1 標低信心**，依 EVAL.md §6.4 不得用於閘門升級；(3) §5 結構化問卷未施測（SHOULD，記為待辦，`ingest_interview_transcript.py` 的報告會明列）；(4) 文字輸入無 ASR 不確定性，§6.2 步驟 4 的 `[unclear]` 標記為空集合——這是文字版唯一誠實的優勢；§6.2 步驟 2「中英混用還原」在文字版等同於詞表替換（無 ASR 近音誤寫），無條文可對，記為解讀。(5) §6.1「每區塊結束前 MUST 自我檢核必達點，未達成者 MUST 於同場次內補問」：已實作為區塊末對每個未達成點**一輪**補問（`TextInterviewer` 的 block-end probe），之後無論是否達成即進入下一區塊（D35 不補訪）——補問次數有上限是偏離，未達成點記入 `notes`，ingest 報告的 Q1/Q2 會如實反映。(6) §7 Q5「訪談員 MUST 於每區塊中段自我檢核發言占比」：已實作為區塊中點的占比檢核，低於 70% 只記 `notes`、不改變提問（文字版訪談員發言天然極短，實際失守機率低）。(7) **結構化問卷是 MUST（INTERVIEW.md §3.2、SPEC D19「同時採集」），不是 SHOULD**——本輪未施測，`ingest_interview_transcript.py` 的報告會將 Q7 記為未施測 → S1 低信心；問卷 MUST 於訪談之後另行施測（`ingest/sources/questionnaire.py` 已就位，缺題庫與驅動腳本），列為 Phase 3 待辦。(8) D9「少次、大批」：互動式追問每次一個 Teacher 呼叫（每場上限約 17 點 × 3 次 ≈ 51 次 + ingest 的 Q1/Q2 1 次），遠在 1,500 RPD 內；即時追問無法批次，記為可接受。(9) INTERVIEW.md §4「D2 的回答 MUST 被記錄為孿生的負向約束」：目前只作為區塊 D 內容存入，尚無結構化的負向約束紀錄——消費端是 S4（Phase 12），列為待辦。語音版仍是 INTERVIEW.md 的規範；本節是有紀錄的過渡，不是改寫規格。SPEC.md §10 已補 D37（自陳 split）、D38（文字版訪談員）兩條紀錄。
+
+**自陳資料的 split（2026-08-30 裁決：`train`）**：依 §4.8 現行時間規則，訪談 `event_time`（session 時鐘，2026-08-30）晚於 LINE ingest 的 `sealed_cutoff`（2026-07-24），會機械地落入 SEALED——B2 依 EVAL.md §9 讀不到 sealed、LoRA 也永遠學不到訪談內容，與 D19「自陳資料是人格保真的主要來源」直接矛盾。SPEC.md §2.2 明定自陳資料「不是歷史資料」，時間規則對它沒有意義。裁決：自陳資料（逐字稿、問卷）一律 `Split.TRAIN`，仍在 ingest 時一次決定（`ingest/split.py::decide_self_report_split`、`ingest/fragment.py::self_report_fragment`），不是訓練期覆寫；B2 與 T 因此拿到同一份資訊，正是 EVAL.md §3.4 kill switch 要的比較。`harness/baseline.py::load_self_report_transcript` 的 B2 過濾同步改為 TRAIN。選項與取捨已記錄於本輪 spec-trace 表。
 
 ### Phase 4 — 最小 L2 + 精簡軌跡集 + 第一版（精簡）LoRA（與 14 天等待平行）
 
@@ -151,11 +155,15 @@ INTERVIEW.md §6 把訪談員釘死為「Teacher 模型（Gemini Flash 免費層
 **仍待辦**：
 1. ~~`examples/probe_lora_rank.py` 在實際目標硬體上跑過~~ **已完成（2026-08-29，Modal Tesla T4 14.6 GiB，Qwen3-8B 4-bit + all-linear LoRA + 真實 AdamW step，1×512 tokens）**：r=256 **OOM**（峰值 14.40 GiB）、r=128 OK（12.39）、r=64 OK（9.16）、r=32 OK（7.51）。**§11-G 裁決：`lora_rank=64`**——r=128 只剩約 2 GiB 餘裕，真實資料序列長尾（最長 11k 字元）加上 batch 2 會踩線；r=64 留下約 5 GiB。記錄於 `launch/configs/qwen3-8b-t4-r64-v1.json`（lr 1e-4、batch 2×8=16、max_steps 1000 ≈ 一個 epoch）。第一次真實 probe 曾把四個 rung 全報成 ~14.3 GiB OOM——except 路徑沒釋放前一個模型，且未計 optimizer state；已修正並補上 `run.py` 的 gradient checkpointing（記憶體用、非 config_hash 欄位）。
 2. ~~精簡軌跡集本身（真實行為資料，非玩具/合成）。~~ 已完成 2026-08-29，見上。
-3. Phase 0 待辦的 GCP/Modal/R2/Kaggle/Lightning 帳號就緒後，第一次真實訓練跑；抽測繁簡一致性。
+3. ~~第一次真實訓練跑~~ **已完成（2026-08-29 19:43Z）**：`run_e6a366ee73958e69`，Qwen3-8B@b968826，r=64/alpha=16 all-linear，seed 42，1000 步，dataset_hash `936f0da6…`（19,976 筆軌跡），config `launch/configs/qwen3-8b-t4-r64-v1.json`。過程：Modal T4 於 step 180 被搶佔 → 等 T4 容量 7 小時 → Modal spend limit 觸頂需手動調高 → 以 `--resume auto` 續跑完成（GPU fallback 清單 T4→L4→A10G 於此加入）。最終 adapter 加密存於 `s3://twin-checkpoints/default/run_e6a366ee73958e69/final`（466 MB；2026-08-30 解密驗證：349 MB fp16 safetensors、504 tensors、無 NaN）。**已知偏離**：完成段的 loss 曲線只在 Modal app log 裡、未落地——`run.py` 尚未把 `trainer.state.log_history` 連同 manifest 上傳，待補。繁簡一致性抽測：`examples/generate_s1_candidates.py --consistency-probe`（見 Phase 5），結果由人讀 `candidates/consistency-T.jsonl` 後記錄於此。
 
 ### Phase 5 — Baseline + Judge harness（平行，等待期間完成）
 
-**狀態：程式部分已完成（2026-08-28）。`spec-auditor` 兩輪皆 PASS（初輪 BLOCK 一項需人工裁決的發現，修正後複審 PASS，見下方「審查」）。真實 GPU 推論、真實一輪 judge 對齊（EVAL.md §6.3）仍待辦，見下方「仍待辦」。**
+**狀態：程式部分已完成（2026-08-28）。`spec-auditor` 兩輪皆 PASS。2026-08-30 真實推論路徑落地：GPU 步驟與 judge 步驟解耦——`examples/generate_s1_candidates.py`（GPU：每個系統對 70 題作答，寫 `harness.s1_run.S1Candidate` JSONL 到 `<s1_root>/candidates/<label>.jsonl`；B0/B1/B2 走 `harness.baseline`，T = 底模 + 從 R2 下載並在容器記憶體解密的 adapter，**尚未接 recall()**，`model` 欄位明寫 `(no recall)`）由 `launch/modal_app.py::s1_candidates`（local entrypoint）→ `s1_candidates_fn`（GPU T4/L4/A10G）驅動；`examples/prepare_s1_eval_round.py`（CPU）改為讀候選檔配 R2 切 shard，所有路徑自 `TWIN_S1_EVAL_ROOT_URI` 推導（eval root = 其上層），不再有 checkout-relative 路徑。`examples/run_baseline_inference.py::HFBaselineBackend` 改為 4-bit（同訓練的 `build_quantization_config`，fp16 權重 16.4 GB 放不進 T4）+ chat template（`enable_thinking=False`；T 是經同一 template SFT 的，餵原始文字量到的是格式混亂而非人格）+ 可選 PEFT adapter。真實一輪 judge 對齊（EVAL.md §6.3）仍待 Wave 2。**
+
+**2026-08-30 發現並修正：`eval/rubric/s1.md` 遺失**——`eval/` 整目錄被 SPEC §8 護欄 2 gitignore，rubric 從未進版控，隨 checkout 消失。rubric 不是個資，且 EVAL.md §6.4 要求對它做 hash，MUST 版控：重建於 `src/twin/harness/rubric/s1.md`（`match`/`no_match`/`unjudgeable` 三值，對齊 `aggregate_s1` 合約），由 `harness.eval_io.rubric_uri("s1")` 解析。這與 `eval-harness` skill 的 `eval/rubric/` 樹狀圖不一致，以本節為準。
+
+**已知偏離（記錄，非悄悄發生）**：(a) B2 的逐字稿與 B1 的 persona 以 `.remote()` 函式參數送進 Modal——Modal 會序列化函式輸入並在其後端暫存（可由 call ID 回取一段時間），再進 GPU 容器的記憶體與 ephemeral `/tmp`；不進 Volume、不進 R2。這比「只在容器記憶體」寬：自陳內容確實短暫經過 Modal 的基礎設施。INTERVIEW.md §6.3 禁止的是進入「跨雲**儲存**」；本機 Jetson 無法跑 8B 推論（torch cu130 不支援 Orin CC 8.7），這是讓 B2 存在的最小暴露，使用者 2026-08-30 裁決接受，記為 SPEC §10 D39。(b) **T 的兩個限制**：第一，`label="T"` 的候選答案目前是「adapter，無 recall()」——EVAL.md §3.4 定義 T = LoRA + memory store，20% 回想題（14 題）必然失分；依 §3.5 回想題本來就分開計分，Phase 7 讀分數時 MUST 把回想題與非回想題分開看，`S1Candidate.model` 欄位明寫 `(no recall)`，且 `prepare_s1_eval_round.py` **拒絕**含 `(no recall)` 的 T 候選檔、拒絕有 T 無 B2 的 round（EVAL §12-4）——PLAN 的約束有對應的程式閘。第二，`run_e6a366ee73958e69` 訓於訪談之前的 19,976 筆 LINE 軌跡，`twin.train` 目前根本不讀 fragment store——D37 裁決理由「B2 與 T 拿到同一份資訊」在程式碼上尚不成立。**Phase 7 kill switch 前 MUST 以含自陳資料的訓練集重訓一版 T（T v2），否則 T vs B2 的比較不對等**（T v1 只能當 B0 的對照）。這需要 `train/data.py` 或軌跡建構把 SELF_REPORT 碎片納入訓練樣本——形狀未定，列為 Phase 7 前置待辦。(c) `RunManifest.adapter_hash` 對 T 填 `core.hashing.adapter_hash(adapter_model.safetensors)`（真 hash，於 GPU 容器解密後計算，隨候選檔回傳），baseline-only 輪填 `"none"`。
 
 - [x] `B0`（底模+空白）、`B1`（底模+persona 段落）、`B2`（底模+Phase 3 逐字稿注入 context）的推論 harness：`harness/baseline.py`——`InferenceBackend` Protocol（`complete(prompt) -> str`，介面先行，真實 HF/transformers 綁定留給 §「仍待辦」）、`render_b0/b1/b2_prompt()`、`generate_baseline_samples()`。每個樣本 `source_label` 固定填 `"twin"`——只是一個路由標籤，不是「這是孿生 T」的宣稱（B0/B1/B2 皆不碰 LoRA adapter，依 SPEC §2.1 定義本來就不是「孿生」）；`harness.shard.strip_source_label` 在進 `eval/in/` 前就把整個欄位砍掉，judge 從未看到它，S1 真正的 T/B0/B1/B2 歸屬由下面獨立的 side-channel 承擔。
 - [x] `harness/s1_run.py`（新模組）：`compute_self_consistency()`（R1 vs R2 純字串比對，`S1Answer.answer` 依合約恆為選項原文，不需要 judge）、`S1SampleIndexEntry` + `build_s1_raw_samples()`（每個 (item, baseline) 組合一則綁定 R2 參考答案+候選答案的樣本，供 judge 逐筆比對）、`regroup_judged_items_by_baseline()`（judge 逐筆判定回來後，靠這個 judge 看不到的 side-channel 精確地掛回哪個 baseline，任何 sample_id 對不上就 `raise`，而非靜默 `.get()`）。
@@ -169,9 +177,14 @@ INTERVIEW.md §6 把訪談員釘死為「Teacher 模型（Gemini Flash 免費層
 **類型**：程式（已完成）。
 
 **仍待辦**：
-1. `examples/run_baseline_inference.py` 在真實 GPU 上跑（同 Phase 4 的 `probe_lora_rank.py`，寫好未跑）。
+1. ~~`examples/run_baseline_inference.py` 在真實 GPU 上跑~~ → 2026-08-30 以 `modal run launch/modal_app.py::s1_candidates --labels B0,T --consistency-probe 8` 首跑；結果記於下方「真實推論紀錄」。B1/B2 待文字版訪談 ingest 與 `persona.txt` 就位後補跑。
 2. EVAL.md §6.3 的 30 筆真實對齊驗證（Phase 6，須等 Wave 2／14 天等待完成後才有真實 judge 輸出可對齊）——`score_s1_eval_round.py` 的 `--judge-agreement` 參數就是這一步的消費端。
-3. Phase 3-B（真人語音訪談員）完成、產生真實逐字稿後，B2 才有真實 `transcript_text` 可注入（目前 `prepare_s1_eval_round.py` 讀不到 `Split.HELDOUT` 自陳碎片時會跳過 B1/B2，只跑 B0）。
+3. 文字版訪談（Phase 3-B 的替代）ingest 後，B2 的 `transcript_text` 由 `harness.baseline.load_self_report_transcript`（SELF_REPORT ∧ TRAIN）取得；B1 的 persona 段落由本人寫於 `<fragment store 同目錄>/persona.txt`（`harness.baseline.default_persona_uri`）。
+
+**真實推論紀錄（2026-08-30，Modal app `ap-nVEWWMVd9LkaBjmJSprjNQ`，`--labels B0,T --consistency-probe 8`；第一次嘗試因 Modal builder 下載 torch 逾時而失敗，image 加 `UV_HTTP_TIMEOUT=600` 後重跑成功）**：
+- **B0**：70/70 有答案，中位 364 字，59/70 的回答逐字含某個選項（judge 可判）。繁簡探針：繁體輸入 8/8 繁體輸出；**簡體輸入 0/8 繁體輸出**（底模跟著輸入字體走）。檔案 `candidates/B0.jsonl`。
+- **T v1（adapter，無 recall，直接餵 S1 題目）**：**不可用於評測輪**——34/70 輸出 `<tool_call>` JSON（訓練時 reply 即 tool call 的格式，工具名為遮蔽後的隨機名 `line`/`lineNotify`/`surface`…），6/70 空白，多筆退化重複（`去去去去…`），僅 8/70 含選項原文。兩個原因：(a) 推論 prompt 形狀與訓練不同——訓練樣本是 `system: available tools: …` + 對方訊息刺激 + assistant tool_call，S1 題目以裸 user message 進去量到的是格式錯位不是人格；T 的 S1 作答 MUST 經 L4 形狀的包裝（注入工具清單、把題目當刺激、解析 tool_call 取 `content`），這是 Phase 7 前置。(b) **訓練資料缺陷**：`train/formatting.py` 的 `json.dumps(step.args)` 預設 `ensure_ascii=True`，所有中文回覆在訓練標的裡都是 `\uXXXX`，T 忠實學會了——每個中文字 6 個 ASCII token，浪費容量且不可讀。已改為 `ensure_ascii=False`（改變 dataset 表示，下一次訓練的 `dataset_hash` 會變，T v1 不受影響）。繁簡探針：繁體輸入 8/8 繁體、**簡體輸入 6/8 繁體**——LoRA 確實把輸出字體拉向本人習慣（SPEC §5.1 的「輸出字體 MUST 依本人真實使用習慣」正在被學到），這是 T v1 唯一的正向訊號。檔案改名為 `candidates/T-v1-smoke-rawformat.jsonl`、`consistency-T-v1-smoke.jsonl`，讓 `prepare_s1_eval_round.py` 不會把它當正式 T 讀入。
+- GPU 型號未從 log 取得（`generate_s1_candidates.py` 不印 device 名；待補一行）。
 
 ### Phase 6 — Wave 2 作答 + judge 對齊 + baseline 計分（**第 14 天**）
 

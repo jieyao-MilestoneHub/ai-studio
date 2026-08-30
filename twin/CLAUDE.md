@@ -14,14 +14,23 @@ get back an agent whose judgment, tool-use style, and proactivity — including
 the tendency *not* to act — resembles that person in situations they've never
 actually faced.
 
-**Status (2026-08-29): Phases 0, 1, 2, 3-A, 4 and 5 are code-complete and
+**Status (2026-08-30): the first real LoRA run is done —
+`run_e6a366ee73958e69` (Qwen3-8B, r=64, 1000 steps), final adapter on R2,
+verified; Phase 3-B's voice interviewer is replaced by a minimal text
+interviewer (`ingest/interviewer.py`, `examples/run_text_interview.py`);
+self-report fragments are always `split=train` (decided 2026-08-30,
+`ingest.split.decide_self_report_split`); S1 candidate answers are
+generated on Modal (`modal run launch/modal_app.py::s1_candidates`) and
+paired with R2 later by `examples/prepare_s1_eval_round.py`. Phases 0, 1, 2,
+3-A, 4 and 5 are code-complete and
 tested (guardrails/accounts, L1 ingest incl. the real-export driver
 `examples/ingest_line_export.py`, S1 item bank + wave collection, interview
 post-processing/ingest, LoRA training slice, baseline + judge harness).
 Real data has landed: a 96,750-fragment store, a frozen 70-item S1 bank,
 and Wave 1 answers — **project day 0 is 2026-08-29T03:58Z; Wave 2 opens
-2026-09-12** (PLAN.md Phase 2/6). Phases 3-B/4/5 real runs are next.
-Phase 3-B (the live interviewer) and Phases 6+ are spec-only. All real data
+2026-09-12** (PLAN.md Phase 2/6). Next: conduct the text interview, ingest
+it, write `~/twin-data/data/persona.txt`, generate B1/B2 candidates; then
+Wave 2 → judge alignment → Phase 7 kill switch. Phases 6+ are spec-only. All real data
 lives under `~/twin-data/` (outside every checkout — see `twin/.env`), never
 at the checkout-relative defaults.** `twin/` has its own package skeleton — `twin/pyproject.toml`,
 `src/twin/`, its own `uv.lock` and import-linter contracts, entirely

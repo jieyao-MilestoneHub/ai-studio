@@ -8,12 +8,10 @@ from datetime import datetime
 
 import pytest
 
-from twin.core.enums import Modality, Precision, SourceClass
+from twin.core.enums import Modality, Precision, SourceClass, Split
 from twin.ingest.sources import interview_transcript as it_module
 from twin.ingest.sources.interview_transcript import fragments_from_interview_transcript
 
-TRAIN_CUTOFF = datetime(2020, 1, 1)
-SEALED_CUTOFF = datetime(2030, 1, 1)
 SESSION_STARTED_AT = datetime(2026, 8, 28, 10, 0)
 
 # A real interview transcript always mentions someone — see
@@ -29,8 +27,6 @@ def _fragments(blocks: dict[str, str], known_parties: list[str] | None = None) -
             principal_id="p1",
             session_started_at=SESSION_STARTED_AT,
             known_parties=DEFAULT_KNOWN_PARTIES if known_parties is None else known_parties,
-            train_cutoff=TRAIN_CUTOFF,
-            sealed_cutoff=SEALED_CUTOFF,
         )
     )
 
@@ -121,3 +117,12 @@ def test_rejects_an_unrecognised_block_label() -> None:
 def test_rejects_empty_known_parties() -> None:
     with pytest.raises(ValueError, match="known_parties is empty"):
         _fragments(ALL_BLOCKS, known_parties=[])
+
+
+def test_self_report_split_is_train_regardless_of_session_clock() -> None:
+    """Decided 2026-08-30 (`ingest.split.decide_self_report_split`): an
+    interview held years after any LINE `sealed_cutoff` must still be
+    trainable and readable by EVAL.md §3.4's B2 — self-report is not
+    historical data (SPEC.md §2.2), so the time rule does not apply."""
+    fragments = _fragments(ALL_BLOCKS)
+    assert all(f.split == Split.TRAIN for f in fragments)
