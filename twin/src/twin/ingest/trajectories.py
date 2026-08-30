@@ -95,8 +95,24 @@ def _coalesce_counterpart(
     return out
 
 
+# LINE's export writes a media message as the bare word 貼圖/圖片/影片. Left as-is,
+# the principal's sticker replies become literal text targets and the adapter
+# learns to *say* "圖片" (T v1, 2026-08-30: "圖片\n圖片" answers). Marked the
+# same way the parser already marks recalled messages (`[已收回訊息]`): the
+# brackets separate "sent a sticker" from the word, cost 3-4 Qwen3 tokens
+# (vs 6 for `[media:sticker]`), and stay Chinese-native. SPEC.md §4.2
+# (multimodal reduced to text). Applied here, not in `sources.line`, so the
+# fragment store — whose fragment_ids the frozen S1 bank references — is
+# untouched; only trajectories (rebuilt 2026-08-30) carry the marker.
+MEDIA_PLACEHOLDERS: dict[str, str] = {"貼圖": "[貼圖]", "圖片": "[圖片]", "影片": "[影片]"}
+
+
+def _media_marked(content: str) -> str:
+    return MEDIA_PLACEHOLDERS.get(content.strip(), content)
+
+
 def _render(messages: list[LineMessage], *, principal: str) -> str:
-    return "\n".join(f"{'我' if m.sender == principal else m.sender}: {m.content}" for m in messages)
+    return "\n".join(f"{'我' if m.sender == principal else m.sender}: {_media_marked(m.content)}" for m in messages)
 
 
 def trajectories_from_line_messages(
@@ -128,7 +144,7 @@ def trajectories_from_line_messages(
         steps: list[Step]
         if replied:
             assert nxt is not None
-            steps = [ActionStep(surface="line", content="\n".join(m.content for m in nxt))]
+            steps = [ActionStep(surface="line", content="\n".join(_media_marked(m.content) for m in nxt))]
             evidence = ExposureEvidence.INFERRED
             negative = NegativeClass.NONE
         else:
