@@ -97,6 +97,16 @@ SUPPORTING_VIEW = "supporting_front"
 they appear far less, and one front reference is enough for the i2i keyframe
 mechanism that already works for the lead."""
 
+TIME_PASSING_CAPTION = "稍後"
+"""Fixed, not model-authored -- a `time_passing` cut is a weak signal on its
+own (editing.transitions downgrades everything else to a hard cut and only
+this reason survives as a dissolve); one neutral word confirms it without
+asking the screenwriter to invent a specific span it has no way to know."""
+
+TIME_PASSING_MARKER_S = 1.0
+"""How long the marker holds, taken out of the shot's first segment before
+its own line/narration cue starts -- see `write_captions`."""
+
 OnActivity = Callable[[], None] | None
 
 
@@ -440,17 +450,41 @@ def build_plan(screenplay: Screenplay, *, token: str, subshots: bool) -> DramaPl
     return DramaPlan(screenplay, token=token, subshots=subshots)
 
 
+def _first_segment_id(plan: DramaPlan, shot_index: int) -> str:
+    for seg in plan.segments:
+        if plan.clip_of[seg.segment_id] == str(shot_index) and seg.subcut_index == 0:
+            return seg.segment_id
+    raise AssertionError(f"shot {shot_index} has no first segment -- DramaPlan always creates one")
+
+
 def write_captions(
     run_dir: Path, screenplay: Screenplay, plan: DramaPlan, timeline: Timeline, *,
     font: str, play_res: tuple[int, int],
 ) -> Path:
-    """`runs/drama/<token>/captions.ass`: the title card over the hook, then
-    every sub-shot's line or narration windowed to the segment it belongs to."""
+    """`runs/drama/<token>/captions.ass`: the title card over the hook, a
+    fixed marker at every `time_passing` cut, then every sub-shot's line or
+    narration windowed to the segment it belongs to (with the marker's
+    segment shrunk to make room, first)."""
     cues = [
         CaptionCue(cue_id=c["cue_id"], segment_id=c["segment_id"], text=c["text"], kind=CaptionKind(c["kind"]))
         for c in plan.cues
     ]
-    events = [captions_ass.title_card(screenplay.title), *captions_ass.cue_events(cues, timeline)]
+    markers: list[captions_ass.AssEvent] = []
+    start_offsets: dict[str, float] = {}
+    for shot in screenplay.shots:
+        # Shot 1's cut_reason describes the cut INTO it, which does not
+        # exist -- DramaPlan.transitions already excludes it the same way.
+        if shot.index > 1 and shot.cut_reason is TransitionReason.TIME_PASSING:
+            seg_id = _first_segment_id(plan, shot.index)
+            seg = timeline.segment(seg_id)
+            duration = min(TIME_PASSING_MARKER_S, seg.duration_s)
+            markers.append(captions_ass.marker_event(TIME_PASSING_CAPTION, start_s=seg.start_s, duration_s=duration))
+            start_offsets[seg_id] = duration
+    events = [
+        captions_ass.title_card(screenplay.title),
+        *markers,
+        *captions_ass.cue_events(cues, timeline, start_offsets=start_offsets),
+    ]
     doc = captions_ass.AssDocument(
         play_res=play_res, styles=captions_ass.default_styles(font, play_res), events=tuple(events),
     )

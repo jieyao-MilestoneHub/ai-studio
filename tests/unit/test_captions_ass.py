@@ -78,3 +78,26 @@ def test_render_is_a_valid_ass_document(tmp_path: Path) -> None:
     assert "Style: Title,Noto Sans CJK TC,48,&H00FFFFFF" in text and ",3,6,0,5," in text  # boxed, centred
     assert text.count("Dialogue:") == 2
     assert ass._time(3661.239) == "1:01:01.24"
+
+
+def test_marker_event_places_a_short_caption_anywhere_on_the_timeline() -> None:
+    event = ass.marker_event("稍後", start_s=12.5, duration_s=1.0)
+    assert (event.start_s, event.end_s, event.style) == (12.5, 13.5, "Sub")
+    assert event.text == "稍後" and event.tags == "\\fad(0,200)"
+    with pytest.raises(ValueError, match="needs text"):
+        ass.marker_event("🎬", start_s=0.0, duration_s=1.0)
+    with pytest.raises(ValueError, match="positive duration"):
+        ass.marker_event("x", start_s=0.0, duration_s=0.0)
+
+
+def test_start_offsets_reserve_time_for_a_marker_before_the_cue() -> None:
+    t = _timeline()
+    cues = [CaptionCue(cue_id="c", segment_id="sg1", text="好。")]
+    plain = ass.cue_events(cues, t)[0]
+    reserved = ass.cue_events(cues, t, start_offsets={"sg1": 1.0})[0]
+    assert reserved.start_s == pytest.approx(plain.start_s + 1.0)
+    assert reserved.end_s == plain.end_s
+
+    # A reservation that swallows the whole segment still raises loudly.
+    with pytest.raises(ValueError, match="cannot hold caption"):
+        ass.cue_events(cues, t, start_offsets={"sg1": 10.0})
