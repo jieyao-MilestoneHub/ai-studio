@@ -198,11 +198,26 @@ class SubShot(BaseModel):
     action: str = Field(min_length=1, description="What the lead visibly does, ending in a holdable pose.")
     camera: str | None = Field(default=None, description="A rendered `prompts.h3.camera_phrase`, or None.")
     dialogue: tuple[DramaLine, ...] = ()
+    narration: str | None = Field(
+        default=None,
+        description="A short caption stating what the picture can't guarantee -- "
+        "a reason, a relationship, a time skip -- when this sub-shot has no line.",
+    )
 
     @model_validator(mode="after")
-    def _one_line(self) -> SubShot:
+    def _exactly_one_caption(self) -> SubShot:
         if len(self.dialogue) > 1:
             raise ValueError("at most one line per sub-shot")
+        has_line = bool(self.dialogue)
+        has_narration = bool(self.narration and self.narration.strip())
+        if has_line == has_narration:
+            # 📏 2026-08-29 (job 109): a whole drama shipped with zero dialogue
+            # and nothing else burned in but the title card -- the only text
+            # channel a viewer had was a coin flip that landed on nothing. Every
+            # sub-shot now carries exactly one of the two, never both, never
+            # neither.
+            what = "both a line and narration" if has_line else "neither a line nor narration"
+            raise ValueError(f"sub-shot {self.index}: needs exactly one of line/narration, has {what}")
         if "the lead" not in self.action.lower():
             # 📏 2026-08-29, twice: the cliffhanger came back as "the phone
             # buzzes with a new message" -- a prop shot, no lead, so the

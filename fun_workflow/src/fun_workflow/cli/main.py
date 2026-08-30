@@ -809,28 +809,36 @@ DRYRUN_SCREENPLAY: dict[str, Any] = {
     },
     "shots": [
         {"index": 1, "scene": "the stall before dawn, shutter half up, string lights off", "sub_shots": [
-            {"framing": "close-up", "action": "the lead's hand peels an envelope from under the counter", "camera": {"motion": "static_shot"}},
-            {"framing": "medium", "action": "the lead stands and turns the envelope over", "camera": {"motion": "tilt_up", "speed": "slow"}},
+            {"framing": "close-up", "action": "the lead's hand peels an envelope from under the counter", "camera": {"motion": "static_shot"},
+             "narration": "陌生的信"},
+            {"framing": "medium", "action": "the lead stands and turns the envelope over", "camera": {"motion": "tilt_up", "speed": "slow"},
+             "narration": "沒有署名"},
         ]},
         {"index": 2, "scene": "the same stall mid-evening, steam from the wok, the letter in hand", "sub_shots": [
-            {"framing": "wide", "action": "the lead serves a customer with the letter tucked under the till", "camera": {"motion": "static_shot"}},
-            {"framing": "close-up", "action": "the lead unfolds the letter and her hands go still", "camera": {"motion": "static_shot"}},
+            {"framing": "wide", "action": "the lead serves a customer with the letter tucked under the till", "camera": {"motion": "static_shot"},
+             "narration": "藏著心事"},
+            {"framing": "close-up", "action": "the lead unfolds the letter and her hands go still", "camera": {"motion": "static_shot"},
+             "narration": "市集要收了"},
         ]},
         {"index": 3, "scene": "the stall counter, a regular customer's shoulder in the foreground", "sub_shots": [
             {"framing": "over-the-shoulder", "action": "the lead answers with a small shake of the head", "camera": {"motion": "static_shot"},
              "line": "沒事,明天照常開。"},
         ]},
         {"index": 4, "scene": "the market row at night, neighbouring stalls stacking crates", "cut_reason": "time_passing", "sub_shots": [
-            {"framing": "wide", "action": "the lead stands at her counter looking down the row", "camera": {"motion": "pan_right", "speed": "slow"}},
-            {"framing": "medium close-up", "action": "the lead's face as she sees the empty stalls", "camera": {"motion": "push_in", "amplitude": "small", "speed": "slow"}},
+            {"framing": "wide", "action": "the lead stands at her counter looking down the row", "camera": {"motion": "pan_right", "speed": "slow"},
+             "narration": "攤位都收了"},
+            {"framing": "medium close-up", "action": "the lead's face as she sees the empty stalls", "camera": {"motion": "push_in", "amplitude": "small", "speed": "slow"},
+             "narration": "只剩她一攤"},
         ]},
         {"index": 5, "scene": "the counter under one work lamp, the letter face down, a pen", "sub_shots": [
             {"framing": "close-up", "action": "the lead writes on the back of the letter", "camera": {"motion": "static_shot"},
              "line": "我不走。"},
-            {"framing": "medium", "action": "the lead folds the letter and holds it", "camera": {"motion": "static_shot"}},
+            {"framing": "medium", "action": "the lead folds the letter and holds it", "camera": {"motion": "static_shot"},
+             "narration": "決定了"},
         ]},
         {"index": 6, "scene": "the stall before dawn again, shutter going up, first light", "cut_reason": "time_passing", "sub_shots": [
-            {"framing": "wide", "action": "the lead tapes the letter under the counter and lifts the shutter", "camera": {"motion": "tilt_up", "speed": "slow"}},
+            {"framing": "wide", "action": "the lead tapes the letter under the counter and lifts the shutter", "camera": {"motion": "tilt_up", "speed": "slow"},
+             "narration": "照常開市"},
         ]},
     ],
 }

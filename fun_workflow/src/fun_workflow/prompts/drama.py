@@ -155,7 +155,11 @@ pose that can hold still. Say 'the lead', never a face word.>",
             "toward": "<optional: what the camera moves toward>"
           }},
           "line": "<optional: the lead's spoken words, in the premise's language, \
-at most {MAX_LINE_CHARS} characters>"
+at most {MAX_LINE_CHARS} characters>",
+          "narration": "<required when there is no line: a short caption in the \
+premise's language, at most {MAX_LINE_CHARS} characters, stating what the \
+picture can't guarantee -- a reason, a relationship, a time skip. Not a \
+description of the visible action; the picture already shows that.>"
         }}
       ]
     }}
@@ -170,13 +174,17 @@ Rules:
   Vary between wide, medium and close so the lead is re-established each cut.
 - The camera motion push_in is reserved for the turn shot, once. Everywhere
   else use static_shot, a slow pan, a tilt or a tracking shot.
-- A line only when the beat implies speech, at most one per sub-shot, at most
-  {MAX_LINE_CHARS} characters. Otherwise omit "line" and the lead is silent.
+- Every sub-shot has exactly one of "line" or "narration", never both, never
+  neither. Use "line" only when the beat implies speech, at most one per
+  sub-shot, at most {MAX_LINE_CHARS} characters. Otherwise write "narration":
+  the one sentence a viewer needs to follow the story that the picture alone
+  cannot guarantee, not a restatement of "action".
 - The lead is on screen in every sub-shot, doing the action. A prop alone
   (a phone buzzing, a door opening) is not a shot: the lead reacts to it.
 - Never mention the lead's face, hair, age or ethnicity: the appearance is
   supplied separately and pasted in verbatim. Refer to "the lead".
-- Everything is English except "line", which stays in the premise's language.
+- Everything is English except "line"/"narration", which stay in the
+  premise's language.
 """
 
 _CUT_REASONS = {r.value: r for r in TransitionReason}
@@ -244,10 +252,13 @@ def _sub_shot(index: int, spec: Any, *, shot: int, anchor: CharacterAnchor) -> S
     if line is None and spec.get("dialogue"):  # the older per-shot shape
         first = spec["dialogue"][0] if isinstance(spec["dialogue"], list) and spec["dialogue"] else None
         line = first.get("text") if isinstance(first, dict) else None
+    narration = spec.get("narration")
+    narration = narration.strip() if isinstance(narration, str) and narration.strip() else None
     try:
         return SubShot(
             index=index, framing=framing, action=action,
             camera=camera_from_spec(spec.get("camera")), dialogue=_line(line, anchor),
+            narration=narration,
         )
     except ValidationError as exc:
         raise ScreenplayError(f"shot {shot} sub-shot {index} failed validation: {exc}") from exc

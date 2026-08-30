@@ -63,11 +63,12 @@ def _shots(indices: list[int]) -> dict:
         subs = []
         for k, framing in enumerate(FRAMINGS[i], start=1):
             sub = {"framing": framing, "action": f"the lead does thing {i}.{k}",
-                   "camera": {"motion": "static_shot"}}
+                   "camera": {"motion": "static_shot"}, "narration": f"旁白{i}.{k}"}
             if i == 4 and k == 2:
                 sub["camera"] = {"motion": "push_in", "amplitude": "small", "speed": "slow"}
             if i == 3:
                 sub["line"] = "明天就要收了嗎?"
+                del sub["narration"]
             subs.append(sub)
         shots.append({"index": i, "scene": f"the stall, beat {i}", "sub_shots": subs,
                       "cut_reason": "time_passing" if i == 4 else "default"})
@@ -259,8 +260,8 @@ def test_a_screenplay_whose_keyframe_lost_the_anchor_does_not_validate() -> None
 
 
 def test_a_shot_off_its_template_slot_does_not_validate() -> None:
-    sub = SubShot(index=1, framing=Framing.MEDIUM, action="the lead waits")
-    sub2 = SubShot(index=2, framing=Framing.WIDE, action="the lead leaves")
+    sub = SubShot(index=1, framing=Framing.MEDIUM, action="the lead waits", narration="旁白")
+    sub2 = SubShot(index=2, framing=Framing.WIDE, action="the lead leaves", narration="旁白")
     with pytest.raises(ValidationError, match="must be 158 frames"):
         DramaShot(index=1, beat=Beat.HOOK, frames=243, scene="s", sub_shots=(sub, sub2), keyframe_prompt="k")
     with pytest.raises(ValidationError, match="has 2 sub-shot"):
@@ -324,3 +325,24 @@ async def test_screenplay_payload_carries_the_beats_forward() -> None:
     payload = drama.screenplay_payload(screenplay, how)
     assert payload["screenplay"]["beats"]["turn"] == "turn beat"
     assert Screenplay.model_validate(payload["screenplay"]).beats == screenplay.beats
+
+
+def test_a_sub_shot_with_both_or_neither_caption_is_a_screenplay_error() -> None:
+    anchor = CharacterAnchor.model_validate(OUTLINE["anchor"])
+    world = WorldBible.model_validate(OUTLINE["world"])
+    both = _shots([1, 2, 3])
+    both["shots"][0]["sub_shots"][0]["line"] = "你好"
+    with pytest.raises(drama.ScreenplayError, match="both a line and narration"):
+        drama.build_shots(both, expected=[1, 2, 3], anchor=anchor, world=world)
+
+    neither = _shots([1, 2, 3])
+    del neither["shots"][0]["sub_shots"][0]["narration"]
+    with pytest.raises(drama.ScreenplayError, match="neither a line nor narration"):
+        drama.build_shots(neither, expected=[1, 2, 3], anchor=anchor, world=world)
+
+
+def test_narration_is_parsed_from_the_shots_reply() -> None:
+    anchor = CharacterAnchor.model_validate(OUTLINE["anchor"])
+    world = WorldBible.model_validate(OUTLINE["world"])
+    [shot1] = drama.build_shots({"shots": _shots([1])["shots"]}, expected=[1], anchor=anchor, world=world)
+    assert shot1.sub_shots[0].narration == "旁白1.1" and shot1.sub_shots[0].dialogue == ()

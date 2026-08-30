@@ -19,6 +19,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ai_studio.core.enums import CaptionKind
+from ai_studio.core.errors import UnknownKeyError
 from ai_studio.core.models import CaptionCue
 from ai_studio.editing.captions import break_lines, resolve_color, strip_emoji
 from ai_studio.render.timeline import Timeline
@@ -93,12 +95,17 @@ def escape(text: str) -> str:
     return text.replace("\\", "＼").replace("{", "｛").replace("}", "｝")  # noqa: RUF001
 
 
-def default_styles(font: str, play_res: tuple[int, int]) -> tuple[AssStyle, AssStyle]:
-    """White-first body captions at the bottom, a boxed title in the centre.
+_STYLE_BY_KIND = {CaptionKind.MAIN: "Main", CaptionKind.SUB: "Sub"}
+
+
+def default_styles(font: str, play_res: tuple[int, int]) -> tuple[AssStyle, AssStyle, AssStyle]:
+    """Dialogue at the bottom, narration/context at the top so the two never
+    compete for the same reading spot, a boxed title in the centre.
     Sizes scale with the height so 480p and 1080p read the same."""
     _, h = play_res
     return (
         AssStyle(name="Main", font=font, size=round(h * 0.065), margin_v=round(h * 0.06)),
+        AssStyle(name="Sub", font=font, size=round(h * 0.055), alignment=8, margin_v=round(h * 0.05)),
         AssStyle(name="Title", font=font, size=round(h * 0.10), bold=1, border_style=3, outline=6,
                  alignment=5, margin_v=0),
     )
@@ -123,7 +130,10 @@ def cue_events(cues: Sequence[CaptionCue], timeline: Timeline, *, margin_s: floa
         if end <= start:
             raise ValueError(f"segment {cue.segment_id} ({seg.duration_s:.2f}s) cannot hold caption {cue.cue_id}")
         text = "\\N".join(escape(line) for line in break_lines(strip_emoji(cue.text)))
-        events.append(AssEvent(start_s=start, end_s=end, style="Main", text=text))
+        style = _STYLE_BY_KIND.get(cue.kind)
+        if style is None:
+            raise UnknownKeyError("caption kind for ASS style", cue.kind, sorted(_STYLE_BY_KIND))
+        events.append(AssEvent(start_s=start, end_s=end, style=style, text=text))
     return events
 
 

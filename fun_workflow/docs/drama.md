@@ -8,8 +8,9 @@ for 7–12 s -- cutting to a second framing inside the longer clips itself --
 and ffmpeg levels the clips and splices them with the timeline's numbers:
 hard cuts with a short audio crossfade, a dissolve where the screenplay says
 time passed, a fade in and out, the title over the first 1.5 s and every
-spoken line burned in as a Mandarin caption. One LINE video message comes
-back.
+spoken line -- or, when a sub-shot has none, a short narration caption
+stating what the picture can't guarantee -- burned in as Mandarin text.
+One LINE video message comes back.
 
 > **Every number on this page is `[speculative]` until the first real drama has
 > run.** The per-step figures come from the single-job measurements in
@@ -43,9 +44,9 @@ real drama shows whether the keyframe chain alone holds the face.
       │
       ▼  worker.prepare()  —  gpt-oss-20b resident, json_only, 3 calls
    Screenplay  { title, logline, style, anchor{name, appearance, wardrobe, voice},
-                 world{location, light, signature_prop},
+                 world{location, light, signature_prop}, beats{hook..cliffhanger},
                  6 × shot{beat, frames, scene, cut_reason,
-                          1-2 × sub_shot{framing, action, camera, line}} }
+                          1-2 × sub_shot{framing, action, camera, line|narration}} }
       │        stored in jobs.prompt_json; ScreenplayError ⇒ job FAILED + LINE reply
       ▼  render_drama()   —  runs/drama/<token>/state.json after every artifact
    0  plan       plan.json (segments, cut reasons, cues, pacing band) →
@@ -124,7 +125,8 @@ state.json            DramaState: every artifact with path + sha256 + cost, face
 plan.json             segments, clip boundaries with their cut reasons, caption cues, the pacing band -- no times
 gates/plan_gate.json  the PRE gate's report; its one-line verdict is state.json's plan_gate and the status page's 剪接檢查
 offsets.json          the timeline: every segment's start/end, every boundary, clip offsets, total
-captions.ass          the title card and every spoken line, times copied from offsets.json
+captions.ass          the title card and one caption per sub-shot (a spoken
+                      line or a narration), times copied from offsets.json
 character/{front,three_quarter}.png
 keyframes/shot_{1..6}.png
 clips/shot_{1..6}.mp4
@@ -340,3 +342,12 @@ Record these in this file, then say 「可以測試了」:
     sentences back after a real run and confirm they still describe what
     actually got written into the shots (the outline and the shots call
     are two separate LLM turns; nothing currently checks they agree).
+11. Every segment now carries a caption (narration or a line), so the
+    dry-run's `captions.ass` surfaced something a mostly-silent track never
+    showed: across a `time_passing` dissolve, the outgoing segment's
+    caption and the incoming one's briefly overlap (~0.3 s in the fixture),
+    since the two segments share the crossfade window and `cue_events`
+    only checks a segment's own start/end, not its neighbour's. Watch a
+    real dissolve for whether the two captions actually collide on screen
+    or read fine in sequence; if it collides, the fix belongs in
+    `render.timeline`/`cue_events`, not in the screenwriter.

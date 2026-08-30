@@ -53,7 +53,7 @@ def _shots(indices: list[int]) -> dict:
         {"index": i, "scene": f"the night market stall, beat {i}",
          "cut_reason": "time_passing" if i == 4 else "default",
          "sub_shots": [{"framing": f, "action": f"the lead does thing {i}.{k}", "camera": {"motion": "static_shot"},
-                        **({"line": "沒事。"} if i == 3 else {})}
+                        **({"line": "沒事。"} if i == 3 else {"narration": f"旁白{i}.{k}"})}
                        for k, f in enumerate(FRAMINGS[i], start=1)]}
         for i in indices
     ]}
@@ -255,7 +255,13 @@ async def test_all_flux_then_all_h3_then_one_file(parsed_job, tmp_path: Path, fa
     offsets = json.loads((run_dir / "offsets.json").read_text(encoding="utf-8"))
     assert len(plan["segments"]) == 10 == len(offsets["segments"])
     assert plan["transitions"][2] == {"after_clip": "3", "reason": "time_passing", "kind": "dissolve", "downgraded_from": None}
-    assert [c["text"] for c in plan["cues"]] == ["沒事。"]
+    # Every sub-shot now carries exactly one cue -- a line or a narration --
+    # so all ten land in plan.json, not just shot 3's spoken line.
+    assert [c["text"] for c in plan["cues"]] == [
+        "旁白1.1", "旁白1.2", "旁白2.1", "旁白2.2", "沒事。",
+        "旁白4.1", "旁白4.2", "旁白5.1", "旁白5.2", "旁白6.1",
+    ]
+    assert [c["kind"] for c in plan["cues"]].count("main") == 1
     assert offsets["clip_offsets"][1] == pytest.approx(158 / 24)
     gate = json.loads((run_dir / "gates" / "plan_gate.json").read_text(encoding="utf-8"))
     assert gate["gate"] == "plan_gate" and [f["rule_id"] for f in gate["findings"]] == ["R-BAND-WARN"]
@@ -264,6 +270,7 @@ async def test_all_flux_then_all_h3_then_one_file(parsed_job, tmp_path: Path, fa
     assert "Dialogue: 0,0:00:00.00,0:00:01.50,Title,,0,0,0,,{\\fad(0,300)}夜市的信" in captions
     # Shot 3 is one 8.0 s segment starting at 158+243 frames, minus the margin.
     assert f"Dialogue: 0,0:00:{(158 + 243) / 24 + 0.1:05.2f},0:00:{(158 + 243 + 192) / 24 - 0.1:05.2f},Main,,0,0,0,,沒事。" in captions
+    assert "Style: Sub," in captions and ",Sub,,0,0,0,,旁白1.1" in captions
     assert drama.load_state(run_dir).captions is not None
 
     state = drama.load_state(tmp_path / "runs" / "drama" / job.token)
