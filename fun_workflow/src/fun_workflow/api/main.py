@@ -257,30 +257,33 @@ def state_text(job: Job) -> tuple[str, str]:
 PROJECT_REPO_URL = "https://github.com/jieyao-MilestoneHub/ai-studio"
 """Shown on every job page so a viewer can find the code that made it."""
 
-_GENERATION_MODELS: dict[JobKind, tuple[str, str]] = {
+_H3 = ("MiniMax H3 (MiniMax-H3-fl2va)", "https://huggingface.co/Comfy-Org/MiniMax-H3")
+_FLUX = ("Flux.1-dev", "https://huggingface.co/black-forest-labs/FLUX.1-dev")
+
+_GENERATION_MODELS: dict[JobKind, tuple[tuple[str, str], ...]] = {
     # The two ComfyUI-served generators name their weights by repo, not by a
     # capabilities snapshot (their `model_id` is "<model>@<w>x<h>"), so the
     # public repo is spelled out here. The weights `deploy/pod_setup.sh`
     # actually downloads: Comfy-Org's repackaging of MiniMax H3, and the
     # fp8 Flux.1-dev transformer from Comfy-Org/flux1-dev (ungated, same
     # weights as black-forest-labs/FLUX.1-dev).
-    JobKind.VIDEO: ("MiniMax H3 (MiniMax-H3-fl2va)", "https://huggingface.co/Comfy-Org/MiniMax-H3"),
-    JobKind.IMAGE: ("Flux.1-dev", "https://huggingface.co/black-forest-labs/FLUX.1-dev"),
+    JobKind.VIDEO: (_H3,),
+    JobKind.IMAGE: (_FLUX,),
     # A drama is all three: gpt-oss-20b writes, Flux paints the keyframes, H3
-    # animates them. The video model is the one named; the page's screenplay
-    # block says the rest.
-    JobKind.DRAMA: (
-        "MiniMax H3 + Flux.1-dev + gpt-oss-20b", "https://huggingface.co/Comfy-Org/MiniMax-H3",
-    ),
+    # animates them -- three links, not one.
+    JobKind.DRAMA: (_H3, _FLUX, ("gpt-oss-20b", "https://huggingface.co/openai/gpt-oss-20b")),
 }
 
 
-def model_for(kind: JobKind) -> tuple[str, str]:
-    """The open model a job of this kind runs on, and where it lives.
+def models_for(kind: JobKind) -> tuple[tuple[str, str], ...]:
+    """Every open model a job of this kind runs on, each with where it lives.
 
     Understanding and chat read the id off the provider's capabilities so
     a model swap (2026-08-27: two of the three understanding models) shows
-    up here without a second edit; the two generators are a fixed table.
+    up here without a second edit; the generators are a fixed table. A
+    capabilities `model_id` that names several models joins them with
+    ` + ` (video understanding: Qwen2.5-VL + Qwen2-Audio) -- each becomes
+    its own entry and its own link, never one URL with a plus in it.
     Raises on a kind nothing serves -- fail loudly, never a blank row.
     """
     if kind in _GENERATION_MODELS:
@@ -295,7 +298,41 @@ def model_for(kind: JobKind) -> tuple[str, str]:
         model_id = understanding_capabilities(kind.model_kind).model_id
     else:
         raise ValueError(f"no model table entry for {kind!r}")
-    return model_id, f"https://huggingface.co/{model_id}"
+    return tuple((m, f"https://huggingface.co/{m}") for m in (p.strip() for p in model_id.split("+")))
+
+
+def _models_html(kind: JobKind) -> str:
+    return " + ".join(
+        f'<a href="{html.escape(url)}" rel="noopener">{html.escape(name)}</a>'
+        for name, url in models_for(kind)
+    )
+
+
+def _seconds_zh(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.0f} 秒"
+    minutes, rest = divmod(round(seconds), 60)
+    return f"{minutes} 分 {rest:02d} 秒"
+
+
+def _usage_rows(job: Job) -> list[tuple[str, str]]:
+    """GPU / VRAM / 生成時間 / 成本 -- what this one request actually used,
+    as the provider metered it (`JobQueue.record_usage`). Each row says
+    「未量測」rather than disappearing when the backend gave no figure, so a
+    reader sees which numbers exist and which do not; none appear before
+    the job has run at all."""
+    if job.gpu_tier is None and job.gpu_seconds is None and job.cost_usd is None:
+        return []
+    unmeasured = "<em>未量測</em>"
+    gpu = f"<code>{html.escape(job.gpu_tier)}</code>" if job.gpu_tier else unmeasured
+    if job.gpu_usd_per_hr:
+        gpu += f"(租用 <code>${job.gpu_usd_per_hr:.3f}/hr</code>)"
+    return [
+        ("使用的 GPU", gpu),
+        ("VRAM 峰值", f"<code>{job.peak_vram_gb:.1f} GB</code>" if job.peak_vram_gb else unmeasured),
+        ("生成時間", f"<code>{_seconds_zh(job.gpu_seconds)}</code>" if job.gpu_seconds is not None else unmeasured),
+        ("成本", f"<code>${job.cost_usd:.4f}</code>" if job.cost_usd is not None else unmeasured),
+    ]
 
 
 def _drama_block(job: Job, plan: dict[str, Any]) -> str:
@@ -358,15 +395,13 @@ def _render(job: Job, position: int | None, base_url: str) -> str:
     rows: list[tuple[str, str]] = [("狀態", html.escape(label)), ("你的描述", desc_html)]
     if position:
         rows.append(("佇列位次", f"第 {position} 位"))
-    if job.gpu_tier:
-        rows.append(("使用的 GPU", f"<code>{html.escape(job.gpu_tier)}</code>"))
-    if job.gpu_usd_per_hr:
-        rows.append(("GPU 租用價格", f"<code>${job.gpu_usd_per_hr:.3f}/hr</code>"))
-    model_name, model_url = model_for(job.media_kind)
-    rows.append((
-        "開源模型",
-        f'<a href="{html.escape(model_url)}" rel="noopener">{html.escape(model_name)}</a>',
-    ))
+    rows += _usage_rows(job)
+    rows.append(("開源模型", _models_html(job.media_kind)))
+    if job.state is JobState.DONE and job.output_path:
+        file_url = f"{base_url.rstrip('/')}/files/{Path(job.output_path).name}"
+        rows.append(("實際結果", f'<a href="{html.escape(file_url)}" download>{html.escape(Path(job.output_path).name)}</a>'))
+    elif job.state is JobState.DONE and job.result_text:
+        rows.append(("實際結果", html.escape(job.result_text)))
     rows.append((
         "專案 REPO",
         f'<a href="{html.escape(PROJECT_REPO_URL)}" rel="noopener">{html.escape(PROJECT_REPO_URL)}</a>',

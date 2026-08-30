@@ -47,6 +47,8 @@ from ai_studio.pipeline.residency import make_room_for
 from fun_workflow.config.settings import get_fun_settings
 from fun_workflow.core.kinds import JobKind
 from fun_workflow.pipeline.convert_worker import DEFAULT_DURATION_S, snap_frames
+from fun_workflow.pipeline.drama import gpu_seconds as drama_gpu_seconds
+from fun_workflow.pipeline.drama import load_state as load_drama_state
 from fun_workflow.pipeline.drama import render_drama
 from fun_workflow.pipeline.queue import Job, JobQueue, JobState
 from fun_workflow.prompts.chat import CHAT_THOUGHT_TOO_LONG
@@ -229,19 +231,23 @@ async def drain_window(
                 await make_room_for(provider, providers)
             if job.media_kind is JobKind.IMAGE:
                 result: Any = await render_image(
-                    job, provider, caps, files_dir, window_end, poll_interval_s
+                    job, provider, queue, caps, files_dir, window_end, poll_interval_s
                 )
             elif job.media_kind is JobKind.VIDEO:
-                result = await render_clip(job, provider, caps, files_dir, window_end, poll_interval_s)
+                result = await render_clip(
+                    job, provider, queue, caps, files_dir, window_end, poll_interval_s
+                )
             elif job.media_kind is JobKind.CHAT:
                 result = await render_chat(job, provider, queue, window_end, poll_interval_s)
             elif job.media_kind is JobKind.DRAMA:
+                runs_dir = get_settings().runs_dir
                 result = await render_drama(
-                    job, providers, files_dir=files_dir, runs_dir=get_settings().runs_dir,
+                    job, providers, files_dir=files_dir, runs_dir=runs_dir,
                     deadline=window_end, poll_interval_s=poll_interval_s, on_activity=on_activity,
                 )
+                record_drama_usage(queue, job, runs_dir)
             elif job.media_kind.is_understanding:
-                result = await render_understanding(job, provider, window_end, poll_interval_s)
+                result = await render_understanding(job, provider, queue, window_end, poll_interval_s)
             else:
                 raise AIStudioError(f"no renderer for media kind {job.media_kind!r}")
         except DramaResume as exc:
@@ -294,9 +300,19 @@ def may_claim(deadline: datetime) -> bool:
     return remaining > STOP_CLAIMING_BEFORE_S
 
 
+def record_drama_usage(queue: JobQueue, job: Job, runs_dir: Path) -> None:
+    """A finished drama's usage comes off its own state file, not a single
+    asset: `spent_usd` is every metered still and clip, the seconds are the
+    GPU stages' timings. VRAM stays None -- eight stills and six clips have
+    no one peak worth quoting."""
+    state = load_drama_state(runs_dir / "drama" / job.token)
+    queue.record_usage(job.id, cost_usd=state.spent_usd, gpu_seconds=drama_gpu_seconds(state))
+
+
 async def render_clip(
     job: Job,
     provider: ClipProviderLike,
+    queue: JobQueue,
     caps: Any,
     files_dir: Path,
     window_end: datetime,
@@ -345,13 +361,17 @@ async def render_clip(
 
     dest = files_dir / f"{job.token}.mp4"
     asset = await provider.fetch(clip_job, dest)
+    seconds = time.monotonic() - _submitted
     _log.info(
         msg_for("video"),
         extra=render_record(
-            "video", seconds=time.monotonic() - _submitted, polls=_polls,
+            "video", seconds=seconds, polls=_polls,
             cost_usd=asset.cost_usd, vram_gb=asset.peak_vram_gb, gpu_tier=job.gpu_tier,
             frames=frames,
         ),
+    )
+    queue.record_usage(
+        job.id, cost_usd=asset.cost_usd, gpu_seconds=round(seconds, 1), peak_vram_gb=asset.peak_vram_gb
     )
     return dest
 
@@ -359,6 +379,7 @@ async def render_clip(
 async def render_image(
     job: Job,
     provider: ImageProviderLike,
+    queue: JobQueue,
     caps: Any,
     files_dir: Path,
     window_end: datetime,
@@ -399,12 +420,16 @@ async def render_image(
 
     dest = files_dir / f"{job.token}.{caps.output_format}"
     asset = await provider.fetch(image_job, dest)
+    seconds = time.monotonic() - _submitted
     _log.info(
         msg_for("image"),
         extra=render_record(
-            "image", seconds=time.monotonic() - _submitted, polls=_polls,
+            "image", seconds=seconds, polls=_polls,
             cost_usd=asset.cost_usd, vram_gb=asset.peak_vram_gb, gpu_tier=job.gpu_tier,
         ),
+    )
+    queue.record_usage(
+        job.id, cost_usd=asset.cost_usd, gpu_seconds=round(seconds, 1), peak_vram_gb=asset.peak_vram_gb
     )
     return dest
 
@@ -412,6 +437,7 @@ async def render_image(
 async def render_understanding(
     job: Job,
     provider: UnderstandingProviderLike,
+    queue: JobQueue,
     window_end: datetime,
     poll_interval_s: float,
 ) -> str:
@@ -462,7 +488,9 @@ async def render_understanding(
         )
 
     asset = await provider.fetch(understanding_job)
-    _log.info("fetched understanding", extra={"stage": "render", "seconds": round(time.monotonic() - _submitted, 1), "polls": _polls, "cost_usd": getattr(asset, "cost_usd", None)})
+    seconds = round(time.monotonic() - _submitted, 1)
+    _log.info("fetched understanding", extra={"stage": "render", "seconds": seconds, "polls": _polls, "cost_usd": asset.cost_usd})
+    queue.record_usage(job.id, cost_usd=asset.cost_usd, gpu_seconds=seconds)
     return compose_answer(asset)
 
 
@@ -526,9 +554,10 @@ async def render_chat(
         raise ProviderError(f"chat failed: {chat_job.error or chat_job.state.value}")
 
     asset = await provider.fetch(chat_job)
-    _log.info("fetched chat", extra={"stage": "render", "seconds": round(time.monotonic() - _submitted, 1), "polls": _polls, "cost_usd": getattr(asset, "cost_usd", None)})
+    seconds = round(time.monotonic() - _submitted, 1)
+    _log.info("fetched chat", extra={"stage": "render", "seconds": seconds, "polls": _polls, "cost_usd": asset.cost_usd})
     result = CHAT_THOUGHT_TOO_LONG if asset.reasoning_exhausted else str(asset.result_text)
-    queue.record_chat_cost(job.id, asset.cost_usd)
+    queue.record_usage(job.id, cost_usd=asset.cost_usd, gpu_seconds=seconds)
     if job.user_id:
         queue.append_chat_turn(job.user_id, job.group_id, "user", job.text)
         queue.append_chat_turn(job.user_id, job.group_id, "assistant", result)

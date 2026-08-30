@@ -687,3 +687,46 @@ async def test_a_supporting_character_gets_her_own_reference_still_and_keyframe(
     assert kf1.source_image_path.endswith("character/front.png")
     # One extra Flux still over the plain two-view sheet: 2 + 1 + 6 keyframes.
     assert sum(1 for e in ledger.events if e.startswith("image:") and "_char_" in e) == 3
+
+
+# ------------------------------------------------------------------ usage
+
+
+def test_gpu_seconds_sums_only_the_gpu_stages(tmp_path: Path) -> None:
+    """What `/q/{token}` shows as 生成時間 for a drama: character + keyframes +
+    clips, off the state file's timings. `level` and `assemble` are host
+    ffmpeg and do not count; a stage still running does not count either;
+    no GPU stage finished at all is None, not 0."""
+    from fun_workflow.core.drama_spec import DramaState, StageTiming
+
+    state = DramaState()
+    assert drama.gpu_seconds(state) is None
+
+    state.stages["character"] = StageTiming(
+        started_at="2026-08-30T01:00:00+00:00", finished_at="2026-08-30T01:01:30+00:00"
+    )
+    state.stages["keyframes"] = StageTiming(
+        started_at="2026-08-30T01:01:30+00:00", finished_at="2026-08-30T01:05:00+00:00"
+    )
+    state.stages["clips"] = StageTiming(started_at="2026-08-30T01:05:00+00:00")  # still running
+    state.stages["assemble"] = StageTiming(
+        started_at="2026-08-30T01:20:00+00:00", finished_at="2026-08-30T01:40:00+00:00"
+    )
+    assert drama.gpu_seconds(state) == 90.0 + 210.0
+
+
+async def test_a_rendered_drama_leaves_its_usage_readable(parsed_job, tmp_path: Path, fake_ffmpeg) -> None:
+    """After a full render the state file carries what the page needs:
+    every metered still and clip in `spent_usd`, and timed GPU stages."""
+    q, job = parsed_job
+    job = await _with_screenplay(q, job)
+    ledger = Ledger()
+    providers = {JobKind.IMAGE: FakeImageProvider(ledger), JobKind.VIDEO: FakeClipProvider(ledger)}
+
+    await _render(job, providers, tmp_path)
+
+    state = drama.load_state(tmp_path / "runs" / "drama" / job.token)
+    assert state.spent_usd > 0
+    assert drama.gpu_seconds(state) is not None and drama.gpu_seconds(state) >= 0.0
+    for name in drama.GPU_STAGES:
+        assert state.stages[name].started_at and state.stages[name].finished_at

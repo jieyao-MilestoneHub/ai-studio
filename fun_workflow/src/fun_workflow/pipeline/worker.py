@@ -46,6 +46,7 @@ from fun_workflow.pipeline.drain import (
     MAX_ATTEMPTS,
     MAX_CONSECUTIVE_FAILURES,
     may_claim,
+    record_drama_usage,
     render_chat,
     render_clip,
     render_image,
@@ -371,24 +372,26 @@ async def _run_one(
             await make_room_for(provider, providers)
         if job.media_kind is JobKind.IMAGE:
             result: Any = await render_image(
-                job, provider, caps, files_dir, deadline, poll_interval_s
+                job, provider, queue, caps, files_dir, deadline, poll_interval_s
             )
         elif job.media_kind is JobKind.VIDEO:
             result = await render_clip(
-                job, provider, caps, files_dir, deadline, poll_interval_s
+                job, provider, queue, caps, files_dir, deadline, poll_interval_s
             )
         elif job.media_kind is JobKind.CHAT:
             result = await render_chat(job, provider, queue, deadline, poll_interval_s)
         elif job.media_kind is JobKind.DRAMA:
+            runs_dir = get_settings().runs_dir
             result = await render_drama(
-                job, providers, files_dir=files_dir, runs_dir=get_settings().runs_dir,
+                job, providers, files_dir=files_dir, runs_dir=runs_dir,
                 deadline=deadline, poll_interval_s=poll_interval_s,
                 # Per artifact, not per job: a drama is 15-30 minutes and the
                 # reaper's grace is 10. Every fetched still or clip is activity.
                 on_activity=lambda: host.touch_activity(JobKind.DRAMA),
             )
+            record_drama_usage(queue, job, runs_dir)
         elif job.media_kind.is_understanding:
-            result = await render_understanding(job, provider, deadline, poll_interval_s)
+            result = await render_understanding(job, provider, queue, deadline, poll_interval_s)
         else:
             raise AIStudioError(f"no renderer for media kind {job.media_kind!r}")
     except DramaResume as exc:

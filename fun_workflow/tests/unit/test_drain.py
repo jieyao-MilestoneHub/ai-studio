@@ -604,7 +604,7 @@ async def test_render_chat_refuses_once_the_monthly_sub_budget_is_exhausted(
     keep working on the same shared $/month ceiling regardless."""
     with JobQueue(tmp_path / "q.sqlite3") as q:
         spent, _ = q.enqueue("evt-spent", "Cgroup", "x", media_kind=JobKind.CHAT)
-        q.record_chat_cost(spent.id, 999.0)
+        q.record_usage(spent.id, cost_usd=999.0, gpu_seconds=1.0)
 
         job, _ = q.enqueue("evt-c4", "Cgroup", "hi", media_kind=JobKind.CHAT)
         q.set_parsed(job.id, {"_built_by": "chat"})

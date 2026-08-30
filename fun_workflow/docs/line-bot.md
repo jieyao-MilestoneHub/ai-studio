@@ -545,6 +545,22 @@ The status page says the same thing independently (`api/main.py`'s `_STATE_ZH`:
 「已排入佇列,GPU 服務時段 11:00-13:00」), so a user who follows the link out of
 hours is not told something different from what the reply told them.
 
+### What the result page shows (since 2026-08-30)
+
+Once a job has run, `/q/<token>` carries what it actually used, as the
+provider metered it and `JobQueue.record_usage` persisted it right after
+`fetch()` — never a live lookup, because the pod is usually gone by the time
+anyone reads the page:
+
+| row | source |
+|---|---|
+| 使用的 GPU | `Job.gpu_tier` + `gpu_usd_per_hr`, stamped at claim time |
+| VRAM 峰值 | `Job.peak_vram_gb` — the ComfyUI backends report it; understanding, chat and a drama do not, and the row says 未量測 |
+| 生成時間 | `Job.gpu_seconds`, submit → fetched result (a drama: its GPU stages summed off `state.json`) |
+| 開源模型 | one link per model, joined by ` + ` — `/說影` is Qwen2.5-VL + Qwen2-Audio, a drama is H3 + Flux + gpt-oss-20b; never one URL with a plus in it |
+| 成本 | `Job.cost_usd`, the provider's metered figure for this request |
+| 實際結果 | the download link, or the text answer |
+
 ### The per-user daily cap
 
 `AI_STUDIO_MAX_JOBS_PER_USER_PER_DAY` (default 10, `0` disables) is checked
