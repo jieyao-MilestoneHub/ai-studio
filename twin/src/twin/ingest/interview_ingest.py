@@ -88,6 +88,7 @@ def ingest_interview_transcript(
     correction_glossary: dict[str, str],
     teacher: Teacher | None,
     questionnaire_started_at: datetime | None = None,
+    report_only: bool = False,
 ) -> InterviewIngestSummary:
     """Post-process each block (glossary correction; no unclear ranges — a
     typed transcript has no ASR uncertainty, which is the one honest
@@ -116,14 +117,22 @@ def ingest_interview_transcript(
     existing: list[Fragment] = list(read_fragments_jsonl(fragment_store_uri)) if fs.exists(path) else []
     existing_self_report = {f.content for f in existing if f.source_class == SourceClass.SELF_REPORT}
     clashes = [f for f in new_fragments if f.content in existing_self_report]
-    if clashes:
-        raise ValueError(
-            f"{len(clashes)} block(s) of this transcript are already in {fragment_store_uri} "
-            f"(identical SELF_REPORT content) — refusing to ingest the same interview twice"
-        )
-
-    backup_uri = _backup(fragment_store_uri)
-    total = write_fragments_jsonl([*existing, *new_fragments], fragment_store_uri)
+    if report_only:
+        # Re-run only the §7 report for a transcript that is already in the store
+        # (e.g. the Teacher call failed after the write); nothing is written.
+        if len(clashes) != len(new_fragments):
+            raise ValueError("report_only requires the transcript to be fully ingested already")
+        backup_uri = None
+        total = len(existing)
+        new_fragments = []
+    else:
+        if clashes:
+            raise ValueError(
+                f"{len(clashes)} block(s) of this transcript are already in {fragment_store_uri} "
+                f"(identical SELF_REPORT content) — refusing to ingest the same interview twice"
+            )
+        backup_uri = _backup(fragment_store_uri)
+        total = write_fragments_jsonl([*existing, *new_fragments], fragment_store_uri)
 
     raw_text = "\n".join(raw_blocks[label] for label in sorted(raw_blocks))
     corrected_text = "\n".join(corrected_blocks[label] for label in sorted(corrected_blocks))

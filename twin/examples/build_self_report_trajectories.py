@@ -26,6 +26,7 @@ import sys
 from datetime import UTC, datetime
 
 import fsspec
+from dotenv import load_dotenv
 
 from twin.config.settings import get_settings
 from twin.ingest.interview_trajectories import trajectories_from_interview
@@ -37,10 +38,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--transcript", required=True)
     parser.add_argument("--upload-to", default=None, help="fsspec URI to copy the merged store + manifest to")
+    parser.add_argument("--upload-only", action="store_true", help="skip the merge (already done); just copy to --upload-to")
     args = parser.parse_args()
 
+    load_dotenv()  # AWS_* for R2 reach the process env only this way (Settings never writes os.environ) — same as train.py
     settings = get_settings()
     uri = settings.trajectory_store_uri
+    manifest_uri = f"{uri}.manifest.json"
+    if args.upload_only:
+        if not args.upload_to:
+            sys.exit("--upload-only needs --upload-to")
+        _upload(uri, manifest_uri, args.upload_to)
+        return
     with fsspec.open(args.transcript, "r", encoding="utf-8") as f:
         transcript = InterviewTranscript.model_validate_json(f.read())
     new = list(trajectories_from_interview(transcript))
@@ -60,7 +69,6 @@ def main() -> None:
         print(f"backup: {backup}")
     total = write_trajectories_jsonl([*existing, *new], uri)
 
-    manifest_uri = f"{uri}.manifest.json"
     manifest: dict = {}
     mfs, mpath = fsspec.core.url_to_fs(manifest_uri)
     if mfs.exists(mpath):
@@ -76,11 +84,15 @@ def main() -> None:
     print(f"added {len(new)} self-report trajectories; store now {total} (manifest updated)")
 
     if args.upload_to:
-        for src, dst in ((uri, args.upload_to), (manifest_uri, f"{args.upload_to}.manifest.json")):
-            with fsspec.open(src, "rb") as fin, fsspec.open(dst, "wb") as fout:
-                fout.write(fin.read())
-            print(f"uploaded {dst}")
-        print("Next: uv run modal run --detach launch/modal_app.py::train_entrypoint -- --config launch/configs/qwen3-8b-t4-r64-v1.json")
+        _upload(uri, manifest_uri, args.upload_to)
+
+
+def _upload(uri: str, manifest_uri: str, target: str) -> None:
+    for src, dst in ((uri, target), (manifest_uri, f"{target}.manifest.json")):
+        with fsspec.open(src, "rb") as fin, fsspec.open(dst, "wb") as fout:
+            fout.write(fin.read())
+        print(f"uploaded {dst}")
+    print("Next: uv run modal run --detach launch/modal_app.py::train_entrypoint -- --config launch/configs/qwen3-8b-t4-r64-v1.json")
 
 
 if __name__ == "__main__":

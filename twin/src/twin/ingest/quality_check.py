@@ -95,16 +95,53 @@ class CoverageCheckResult(BaseModel):
     instance_counts: dict[str, int]  # only meaningful for B1/B2/B6
 
 
+class _PointCount(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    point_id: str
+    count: int
+
+
+class _CoveragePayload(BaseModel):
+    """Gemini's structured-output schema: the Developer API rejects `dict`
+    fields (`additionalProperties`, found on the first real call 2026-08-30),
+    so the Teacher answers in lists and `check_coverage_and_instances`
+    converts to the dict-shaped `CoverageCheckResult` the rest of the code
+    reads."""
+
+    model_config = ConfigDict(frozen=True)
+
+    covered_points: list[str]
+    uncovered_points: list[str]
+    instance_counts: list[_PointCount]
+
+
+_ALL_POINTS = ("A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "C1", "C2", "C3", "D1", "D2")
+
+
 def check_coverage_and_instances(transcript: str, *, teacher: Teacher) -> CoverageCheckResult:
     """One batched `Teacher.generate()` call, never two — merges Q1 and Q2's
     judgments (twin.teacher.Teacher, not the eval-judge/EVAL.md judge path:
     this is an ingest-time QC classification, not an EVAL suite score)."""
     prompt = (
         "以下是一份訪談逐字稿。請判斷 INTERVIEW.md §4 規定的每個必達點是否已被涵蓋"
-        "（A1-A4、B1-B8、C1-C3、D1-D2），並針對 B1、B2、B6 額外回報具體事例的數量"
-        "（規則要求各至少三個）。\n\n逐字稿：\n" + transcript
+        "（A1 三個人生轉折點含時間/選項/理由；A2 兩次選錯的事例；A3 自己與他人的差異；A4 在乎與不在乎各兩項附事例；"
+        "B1 三個想回沒回的事例；B2 三個不必回但回了的事例；B3 查/不查的分界各一例；B4 放棄點與一例；"
+        "B5 什麼會主動發言及最近一次；B6 三個有感觸但不發的事例；B7 主動推薦的東西與方式；B8 對不同對象的回覆差異；"
+        "C1 三個時期各一件事；C2 自然的時間表述；C3 表示記不清的情況；D1 未問到但必須知道的；D2 最不希望代理做的事），"
+        "把已涵蓋的必達點代號放進 covered_points、未涵蓋的放進 uncovered_points（兩者合起來必須恰好是這 17 個），"
+        "並針對 B1、B2、B6 各回報具體事例（有時間、有對象、有結果的真實事件）的數量到 instance_counts。"
+        "\n\n逐字稿：\n" + transcript
     )
-    return teacher.generate(prompt, response_schema=CoverageCheckResult)
+    payload = teacher.generate(prompt, response_schema=_CoveragePayload)
+    covered = {p: False for p in _ALL_POINTS}
+    for p in payload.covered_points:
+        if p in covered:
+            covered[p] = True
+    return CoverageCheckResult(
+        covered=covered,
+        instance_counts={pc.point_id: pc.count for pc in payload.instance_counts if pc.point_id in ("B1", "B2", "B6")},
+    )
 
 
 class InterviewQualityReport(BaseModel):

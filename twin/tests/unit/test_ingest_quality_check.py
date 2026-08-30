@@ -91,18 +91,27 @@ def test_check_q6_passes_when_time_expressions_are_untouched() -> None:
 
 
 def test_check_coverage_and_instances_calls_teacher_exactly_once() -> None:
-    response = CoverageCheckResult(covered={"A1": True}, instance_counts={"B1": 3})
+    """The Teacher answers in Gemini-safe lists (`_CoveragePayload` — the
+    Developer API rejects dict fields); the result is the dict shape."""
+    from twin.ingest.quality_check import _CoveragePayload, _PointCount
+
+    response = _CoveragePayload(
+        covered_points=["A1"], uncovered_points=[], instance_counts=[_PointCount(point_id="B1", count=3)]
+    )
     teacher = _FakeTeacher(response=response)
 
     result = check_coverage_and_instances("逐字稿內容", teacher=teacher)
 
     assert len(teacher.calls) == 1
-    assert result.covered == {"A1": True}
+    assert isinstance(result, CoverageCheckResult)
+    assert result.covered["A1"] is True and result.covered["B6"] is False and len(result.covered) == 17
     assert result.instance_counts == {"B1": 3}
 
 
 def test_check_coverage_and_instances_prompt_contains_the_transcript() -> None:
-    response = CoverageCheckResult(covered={}, instance_counts={})
+    from twin.ingest.quality_check import _CoveragePayload
+
+    response = _CoveragePayload(covered_points=[], uncovered_points=[], instance_counts=[])
     teacher = _FakeTeacher(response=response)
 
     check_coverage_and_instances("一段獨特的逐字稿內容標記", teacher=teacher)

@@ -41,6 +41,7 @@ def main() -> None:
     parser.add_argument("--known-party", action="append", dest="known_parties", default=[])
     parser.add_argument("--glossary", type=Path, default=None, help='JSON {"wrong": "right"} corrections')
     parser.add_argument("--no-teacher", action="store_true", help="skip Q1/Q2 (saves one Teacher call)")
+    parser.add_argument("--report-only", action="store_true", help="transcript already ingested: only re-run the §7 report")
     args = parser.parse_args()
 
     settings = get_settings()
@@ -66,6 +67,7 @@ def main() -> None:
         known_parties=known_parties,
         correction_glossary=glossary,
         teacher=teacher,
+        report_only=args.report_only,
     )
     print(summary.render())
     print("\nNext: write a one-paragraph persona for B1 (EVAL.md §3.4) at the persona URI, then")
