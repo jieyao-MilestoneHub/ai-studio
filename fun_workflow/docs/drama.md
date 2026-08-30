@@ -307,8 +307,11 @@ human review step (`review_loop.py`) instead. Five decisions followed:
    across an internal cut — applied to a second person, not a new mechanism.
    Any relationship, any story: the mechanism carries no assumption about
    who the second character is or why they appear.
-4. **A fixed-template caption on a `time_passing` cut** (not model-authored)
-   — the dissolve itself is a weak signal on its own.
+4. **A fixed-template caption on a `time_passing` cut** (implemented — see
+   below), not model-authored — the dissolve itself is a weak signal on its
+   own (§6's evidence-downgrade rule already means every other reason falls
+   back to a hard cut, so `time_passing` is the *only* dissolve that ever
+   reaches the screen).
 5. **Cross-shot semantic contradiction (job 109's "screen remains off" while
    "watches it buzz with a new message") is not automatically detected.**
    Confirmed there is no known public solution to this in the reference
@@ -341,6 +344,26 @@ the reverse) works the same way the lead's own continuity into an internal
 cut already does — text-only restatement, no second image — because that
 mechanism was already trusted for one person and this reuses it for a
 second, not a new one.
+
+### The time-passing marker (decision 4, implemented)
+
+A shot whose `cut_reason` is `time_passing` (index > 1, since shot 1 has no
+incoming cut) gets a fixed one-word marker — `稍後` ("later"), a rule
+template in `pipeline.drama.TIME_PASSING_CAPTION`, never written by the
+screenwriter — burned in for the first `TIME_PASSING_MARKER_S` (1.0 s) of
+its first segment. `render.captions_ass.marker_event()` is `title_card()`
+generalized to anywhere on the timeline rather than only `t=0`; `cue_events()`
+takes a `start_offsets: Mapping[segment_id, float]` so that segment's own
+line/narration cue starts 1.0 s later than usual, giving up exactly the time
+the marker holds rather than fighting it for the same window. Both functions
+stay generic — neither knows what a marker or an offset is *for* — so the
+mechanism could carry a different fixed phrase for a different reason without
+touching `captions_ass.py` again.
+
+This sits on the same segment the dissolve itself shrinks: `render.timeline`
+pulls a `time_passing` cut's incoming segment start back by `DISSOLVE_S`
+(0.5 s), so the marker's window opens 0.5 s before the naive frame-sum would
+put it, inside the crossfade rather than after it.
 
 ## What to measure on the next real run
 
@@ -387,3 +410,8 @@ Record these in this file, then say 「可以測試了」:
     consistent people, or does the model blend them? This is the part of
     decision 3 with the least precedent -- our own or upstream's -- so it
     is the first thing to watch, not an afterthought.
+13. **The `time_passing` marker (decision 4).** Does 「稍後」 read clearly
+    against the crossfade it opens inside, or does it fight the dissolve's
+    own motion for attention? Confirm the following line/narration caption
+    (now starting 1.0 s later) does not feel delayed relative to what's on
+    screen.

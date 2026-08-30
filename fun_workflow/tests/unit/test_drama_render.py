@@ -271,6 +271,12 @@ async def test_all_flux_then_all_h3_then_one_file(parsed_job, tmp_path: Path, fa
     # Shot 3 is one 8.0 s segment starting at 158+243 frames, minus the margin.
     assert f"Dialogue: 0,0:00:{(158 + 243) / 24 + 0.1:05.2f},0:00:{(158 + 243 + 192) / 24 - 0.1:05.2f},Main,,0,0,0,,沒事。" in captions
     assert "Style: Sub," in captions and ",Sub,,0,0,0,,旁白1.1" in captions
+    # Shot 4 (index 4) is the time_passing cut: a fixed marker holds the
+    # first 1.0s of its first segment, and that segment's own cue starts
+    # 1.0s later than the usual margin to make room for it.
+    shot4_start = (158 + 243 + 192) / 24 - 0.5  # the dissolve into shot 4 pulls its start back
+    assert f"Dialogue: 0,0:00:{shot4_start:05.2f},0:00:{shot4_start + 1.0:05.2f},Sub,,0,0,0,,{{\\fad(0,200)}}稍後" in captions
+    assert f"Dialogue: 0,0:00:{shot4_start + 1.1:05.2f}," in captions  # 0.1 margin + 1.0 reserved
     assert drama.load_state(run_dir).captions is not None
 
     state = drama.load_state(tmp_path / "runs" / "drama" / job.token)

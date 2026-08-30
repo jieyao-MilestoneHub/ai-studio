@@ -15,7 +15,7 @@ Pure text in, text out. `media.assemble` burns the file in.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -118,15 +118,35 @@ def title_card(title: str, *, until_s: float = TITLE_UNTIL_S, fade_ms: int = 300
     return AssEvent(start_s=0.0, end_s=until_s, style="Title", text=text, tags=f"\\fad(0,{fade_ms})")
 
 
-def cue_events(cues: Sequence[CaptionCue], timeline: Timeline, *, margin_s: float = CUE_MARGIN_S) -> list[AssEvent]:
-    """One event per cue, windowed to its segment. Raises when a segment is
-    too short to hold a caption after the margins -- that is a planning
-    error, and the plan gate should have said so."""
+def marker_event(text: str, *, start_s: float, duration_s: float, style: str = "Sub", fade_ms: int = 200) -> AssEvent:
+    """A short caption at an arbitrary point on the timeline -- `title_card`
+    generalized to anywhere, not just t=0. The caller decides what the
+    marker means and supplies the text; this only formats it, the same
+    "pure text in, text out" rule as the rest of this module."""
+    body = escape(strip_emoji(text))
+    if not body:
+        raise ValueError("a marker needs text")
+    if duration_s <= 0:
+        raise ValueError(f"a marker needs positive duration, got {duration_s}")
+    return AssEvent(start_s=start_s, end_s=start_s + duration_s, style=style, text=body, tags=f"\\fad(0,{fade_ms})")
+
+
+def cue_events(
+    cues: Sequence[CaptionCue], timeline: Timeline, *, margin_s: float = CUE_MARGIN_S,
+    start_offsets: Mapping[str, float] | None = None,
+) -> list[AssEvent]:
+    """One event per cue, windowed to its segment. `start_offsets` reserves
+    extra time at the start of one segment for something else on the same
+    timeline (a marker_event, say) -- generic on purpose, this module has
+    no notion of what the reservation is for. Raises when a segment is too
+    short to hold a caption after the margins and any reservation -- that
+    is a planning error, and the plan gate should have said so."""
+    offsets = start_offsets or {}
     events: list[AssEvent] = []
     for cue in cues:
         resolve_color(cue.color_key)  # raises on an unknown key; only white renders today
         seg = timeline.segment(cue.segment_id)
-        start, end = seg.start_s + margin_s, seg.end_s - margin_s
+        start, end = seg.start_s + margin_s + offsets.get(cue.segment_id, 0.0), seg.end_s - margin_s
         if end <= start:
             raise ValueError(f"segment {cue.segment_id} ({seg.duration_s:.2f}s) cannot hold caption {cue.cue_id}")
         text = "\\N".join(escape(line) for line in break_lines(strip_emoji(cue.text)))
