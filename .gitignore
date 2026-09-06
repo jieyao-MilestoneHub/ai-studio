@@ -81,3 +81,29 @@ twin/data/
 twin/adapters/
 twin/transcripts/
 twin/eval/
+
+# --- everything that is not GPU testing: local only ------------------------
+# This repository publishes one thing: what a rented GPU costs and delivers.
+# The digital-twin side quest is a separate project with its own stack, its own
+# spec and its own personal data; the tooling below serves only it, and
+# published beside a directory that is not here it would point at files nobody
+# can read. Earlier commits still contain twin/ -- history is not rewritten,
+# this only stops publishing further changes to it.
+twin/
+.claude/agents/data-hygiene.md
+.claude/agents/eval-judge.md
+.claude/agents/spec-auditor.md
+.claude/skills/data-contract/
+.claude/skills/eval-harness/
+.claude/skills/spec-trace/
+
+# --- application layer: local only ----------------------------------------
+# The request side (LINE/社群 webhook, queue, worker, delivery) and its
+# Square bridge sidecar are deliberately not published: this repository is
+# about what one rented GPU costs and delivers, and an application built on
+# it is a different project with different concerns (chat credentials,
+# member ids, a live service someone operates). Both directories stay on the
+# working machine. Earlier commits still contain fun_workflow/ — history is
+# not rewritten, this only stops publishing further changes to it.
+fun_workflow/
+square_bridge/

@@ -14,7 +14,8 @@ from typing import Any
 import pytest
 
 from ai_studio.config.settings import get_settings
-from ai_studio.core.errors import PodError
+from ai_studio.core.errors import CostCeilingExceeded, PodError
+from ai_studio.runtime import hours
 from ai_studio.runtime import session as sess
 
 
@@ -574,3 +575,90 @@ def test_provision_ships_extras_into_pod_setup_d(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(PodError):
         sess.provision(live, script=script, inference_script=server, extras=[tmp_path / "nope.py"])
+
+
+# ------------------------------------------------------- straddling midnight
+
+
+def test_only_the_part_of_an_open_session_after_midnight_counts_today() -> None:
+    """A pod opened 23:40 and still running at 00:20 has been up for forty
+    minutes, but only twenty of them belong to today.
+
+    Charging the whole session to both days would refuse tomorrow because of
+    yesterday's spending.
+    """
+    tpe = timezone(timedelta(hours=8))
+    opened = datetime(2026, 9, 6, 23, 40, tzinfo=tpe)
+    now = datetime(2026, 9, 7, 0, 20, tzinfo=tpe)
+    s = sess.Session(
+        pod_id="p", gpu="g", datacenter="d", cloud="SECURE", cost_per_hr=0.754,
+        opened_at=opened.isoformat(), window_end=now.isoformat(),
+        tier_label="RTX 4090/SECURE", vram_gb=24, low_vram=True, quantisation="int8",
+    )
+    assert s.spent_usd(now) == pytest.approx(0.754 * 2 / 3, abs=0.001)  # 40 min
+    assert s.spent_since(hours.day_start(now), now) == pytest.approx(0.754 / 3, abs=0.001)
+
+
+def test_a_session_that_opened_after_the_boundary_is_counted_whole() -> None:
+    """`since` earlier than the open must not invent spending before the pod."""
+    tpe = timezone(timedelta(hours=8))
+    opened = datetime(2026, 9, 7, 10, 0, tzinfo=tpe)
+    now = datetime(2026, 9, 7, 11, 0, tzinfo=tpe)
+    s = sess.Session(
+        pod_id="p", gpu="g", datacenter="d", cloud="SECURE", cost_per_hr=0.754,
+        opened_at=opened.isoformat(), window_end=now.isoformat(),
+        tier_label="RTX 4090/SECURE", vram_gb=24, low_vram=True, quantisation="int8",
+    )
+    assert s.spent_since(hours.day_start(now), now) == s.spent_usd(now)
+
+
+# ----------------------------------------------------------- ensure_pod gates
+
+
+def test_ensure_pod_refuses_when_today_is_spent_even_though_the_month_is_not(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A guard that is wired but never consulted is a guard with a hole in it
+    (`tests/unit/test_drain_wiring.py` exists for the same reason).
+
+    The month here has plenty left; only the day is gone. No pod may be
+    created, and crucially no `pod create` argv may be sent.
+    """
+    from ai_studio.runtime.budget import SpendLedger
+
+    tpe = timezone(timedelta(hours=8))
+    now = datetime(2026, 9, 10, 12, tzinfo=tpe)
+    ledger = SpendLedger(tmp_path / "ledger.json")
+    # Today's allowance is (24 - spent)/21; burn it all today.
+    ledger.record_session(23.0, when=now)
+    monkeypatch.setattr(sess, "SpendLedger", lambda: ledger)
+    seen, fake = _calls_recorder([{"items": []}, {"id": "pod1", "costPerHr": 0.74}])
+    monkeypatch.setattr(sess, "_runpodctl", fake)
+
+    with pytest.raises(CostCeilingExceeded) as caught:
+        sess.ensure_pod(now=now, candidates=(sess.Tier("g", "EUR-IS-1", "SECURE", 24, 0.754),))
+
+    assert "today's GPU allowance" in str(caught.value)
+    assert not [c for c in seen if c[:2] == ["pod", "create"]], "a pod was created anyway"
+
+
+def test_ensure_pod_shrinks_the_lease_to_todays_allowance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The day's allowance normally binds before the month's, so a typical
+    lease is well under LEASE_HOURS."""
+    from ai_studio.runtime.budget import SpendLedger
+
+    tpe = timezone(timedelta(hours=8))
+    now = datetime(2026, 9, 10, 12, tzinfo=tpe)
+    monkeypatch.setattr(sess, "SpendLedger", lambda: SpendLedger(tmp_path / "ledger.json"))
+    seen, fake = _calls_recorder([{"items": []}, {"id": "pod1", "costPerHr": 0.74}])
+    monkeypatch.setattr(sess, "_runpodctl", fake)
+
+    sess.ensure_pod(now=now, candidates=(sess.Tier("g", "EUR-IS-1", "SECURE", 24, 0.754),))
+
+    create = next(c for c in seen if c[:2] == ["pod", "create"])
+    stamp = create[create.index("--terminate-after") + 1]
+    ends = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    full_lease = now + timedelta(hours=hours.LEASE_HOURS)
+    assert ends < full_lease, "the daily allowance did not shorten the lease"

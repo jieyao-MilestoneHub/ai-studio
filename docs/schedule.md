@@ -233,27 +233,62 @@ $7/month `[reported]`, against $0.18 and fifteen minutes per open without it.
 
 ### What `ensure_pod` checks before it creates anything
 
-Three gates, cheapest first, all of them before a pod exists:
+Four gates, cheapest first, all of them before a pod exists:
 
-1. **Business hours.** Outside them it raises `OutsideBusinessHours` — its own
-   type, because the caller's answer to it is specific and cheap: leave the
-   request in the queue for tomorrow. A generic failure would be
-   indistinguishable from "the ladder is empty", which *is* worth retrying.
-2. **Opens per day.** `AI_STUDIO_MAX_POD_OPENS_PER_DAY` (default 2: the day's
-   window, plus one more if the reaper closed it and a later request needs the
-   shop reopened), counted in `runs/.pod_opens.json` (`runtime.opens.PodOpenLedger`) on
-   the Asia/Taipei day. This is the failure the monthly guard cannot see — a
-   worker that crash-loops opens a fresh pod on every restart, and every one
-   of them is individually inside budget.
-3. **Monthly budget guard.** `runtime.budget.MonthlyBudgetGuard` reads
-   `AI_STUDIO_MAX_MONTH_USD` (default $50) and `AI_STUDIO_VPS_MONTHLY_USD`
-   (default $5, reserved off the top) against a running ledger
-   (`runs/.spend_ledger.json`, rolled over on the Asia/Taipei calendar month).
-   If what's left this month can't cover even a ~20-minute session at the
-   ladder's *priciest* rung, it refuses outright. If there's *some* budget but
-   not enough for the full window at the worst-case rate, the guard shrinks
-   the lease instead of refusing, so a few expensive early-month days degrade
-   the window length gracefully rather than blow the cap on day three.
+1. **Opens per day.** `AI_STUDIO_MAX_POD_OPENS_PER_DAY` (default 15), counted
+   in `runs/.pod_opens.json` (`runtime.opens.PodOpenLedger`) on the Asia/Taipei
+   day. This is the failure the money guards cannot see — a worker that
+   crash-loops opens a fresh pod on every restart, and every one of them is
+   individually inside budget. A pure count, so it is checked first: no ledger
+   read, no arithmetic.
+2. **Monthly budget guard.** `runtime.budget.MonthlyBudgetGuard` reads
+   `AI_STUDIO_MAX_MONTH_USD` (default $50) against a running ledger
+   (`runs/.spend_ledger.json`, rolled over on the Asia/Taipei calendar month),
+   with two fixed costs reserved off the top: `AI_STUDIO_VPS_MONTHLY_USD`
+   (default $5) and `AI_STUDIO_STORAGE_MONTHLY_USD` (default $21). That leaves
+   **$24/month for GPU**, not $45 — the network volume bills 📏 $0.70/day
+   whether or not a pod exists, and until 2026-09-07 no guard could see it.
+   The guard also counts whatever a currently-open pod has already spent, which
+   the ledger cannot know until `close_session()`.
+3. **Today's budget.** `runtime.budget.DailyBudgetGuard` spreads what the month
+   has left over the days it has left:
+   `max(0, month_left) / max(days_left, MIN_SPREAD_DAYS)` with
+   `MIN_SPREAD_DAYS = 4`. On a fresh month that is $24/30 = **$0.80/day** ≈ 1.06
+   GPU-hours ≈ 11 clips. Derived rather than configured, because a hand-set
+   daily number never reconciles with the month: idle days would forfeit their
+   share and a burnt day would be left for the monthly guard to punish three
+   weeks later. The floor of four days stops the 30th from dumping the whole
+   remainder in one surge.
+
+   📏 Backtested against the real ledger (10 days with usage, mean $1.49/day,
+   max $4.57): a flat $0.80/day would have refused 6 of those 10 days. The
+   derived form gives $4.00/day when the month is young and untouched.
+
+Gates 2 and 3 both refuse outright only when what is left cannot cover even a
+~20-minute session at the ladder's *priciest* rung — below that an open buys no
+output at all, since the fixed cost is spent before a frame renders. With
+*some* budget but not enough for a full window, they shrink the lease instead,
+and the two throttles chain (`throttle` only ever shortens, so chaining is
+`min()`). **The day's allowance is normally the binding one, so a typical lease
+is about 64 minutes rather than the full `LEASE_HOURS = 2.0`.** That is fine —
+a clip is 📏 5.6 minutes and the reaper closes a quiet pod after 10 — but it is
+why `ai-studio session status` now prints a `today` row: a short lease is
+otherwise unexplainable.
+
+### What a cold start costs
+
+📏 **4 min 10 s** from `pod create` to the first claimed job on a provisioned
+volume (pod `9bqzor4wk8mav0`, 2026-09-04): 2 s to create, ~79 s before SSH
+answers and the two files land, ~55 s for ComfyUI to come up, ~6 s to cache the
+gpt-oss MXFP4 kernels, ~4 s for the inference server.
+
+A further 92 s used to go to a *second* full ComfyUI restart, done by the
+`face_repair` extension so Impact-Pack's nodes would register. It ran after the
+host's `wait_ready` had already seen `/object_info` answer, so besides being
+37% of the cold start it tore down a ComfyUI the worker had been told was ready
+(job 133, `502 Bad Gateway`, 2026-09-04). Extensions now install *before*
+`pod_setup.sh`'s single restart and only verify after it, so there is one
+restart and the readiness probe tells the truth.
 
 Same guard and same pessimistic arithmetic as before; it has moved from the
 CLI's `session open` onto the path that actually creates pods. The old demand

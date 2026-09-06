@@ -280,7 +280,7 @@ dl_repo Qwen/Qwen2.5-VL-7B-Instruct
 dl_repo openai/gpt-oss-20b
 dl_repos_start
 
-# ── 4. wait for the weights, then restart ComfyUI ─────────────────────────
+# ── 4. wait for the weights ────────────────────────────────────────────────
 while pgrep -f 'hf download' >/dev/null; do
   log "  weights: $(du -sh "$M" 2>/dev/null | cut -f1), $(df -h /workspace | awk 'NR==2{print $4}') free"
   sleep 30
@@ -344,10 +344,39 @@ find "$M" \( -name '*minimax*.safetensors' -o -name 'flux1-dev.safetensors' \
   -printf '%s %p\n' \
   | awk '{printf "[setup]   %7.2f GB  %s\n", $1/1073741824, $2}'
 
-log "restarting ComfyUI"
-pkill -f 'main.py --listen'; sleep 3
+# ── 5. host-shipped extensions, INSTALL phase: /workspace/pod_setup.d/*.sh ─
+# Deposited by `runtime.session.provision(extras=...)` before this script
+# runs: whatever the caller wants on the pod that this script has no business
+# knowing about (a node pack for one workflow, a model for one feature).
+#
+# **They install before the restart below, on purpose.** A node pack only
+# registers its nodes when ComfyUI starts, so an extension that installed
+# after the restart had to restart ComfyUI a second time -- 📏 92 s of a
+# 4 min 10 s cold start, and worse than slow: it happened *after* the host's
+# `wait_ready` had already seen /object_info answer, so it tore down a
+# ComfyUI the worker had been told was ready (job 133, 502 Bad Gateway,
+# 2026-09-04). One restart, placed after everything that adds nodes, is both
+# faster and the only way the readiness probe can tell the truth.
+#
+# Each script is invoked as `<script> install` now and `<script> verify`
+# after ComfyUI is up; it must dispatch on that argument and do nothing on a
+# phase it does not implement. Run on every open, not gated by FAST_PATH or
+# the marker, so each must be idempotent; and nothing in one may `die` -- a
+# failed extension is logged and the pod stays usable for everything above.
 PY="$CU/.venv-cu128/bin/python"
 [ -x "$PY" ] || PY=$(command -v python3)
+EXTRA=""
+export CU M PY EXTRA VRAM_GB QUANT
+export -f log
+for ext in /workspace/pod_setup.d/*.sh; do
+  [ -f "$ext" ] || continue
+  log "extension install: $(basename "$ext")"
+  bash "$ext" install || log "  extension $(basename "$ext") install failed (best effort); continuing"
+done
+
+# ── 6. restart ComfyUI -- the only restart, so /object_info is final ───────
+log "restarting ComfyUI"
+pkill -f 'main.py --listen'; sleep 3
 cd "$CU" || die "cannot cd $CU"
 # Ask which flags exist rather than assuming. This script upgrades ComfyUI a
 # few steps earlier, so the flag set is whatever that version supports -- and
@@ -393,7 +422,7 @@ for i in $(seq 1 60); do
     && { log "ComfyUI ready after $((i * 5))s"; break; }
 done
 
-# ── 5. prove the nodes we need are actually registered ────────────────────
+# ── 7. prove the nodes we need are actually registered ────────────────────
 curl -s -m 30 http://127.0.0.1:8188/object_info | "$PY" -c '
 import json, sys
 info = json.load(sys.stdin)
@@ -404,7 +433,15 @@ for n in need:
 sys.exit(1 if missing else 0)
 ' || die "required H3 nodes are not registered"
 
-# ── 6. start the understanding server -- a second, separate process ───────
+# ── 8. extensions, VERIFY phase: ComfyUI is up and will not restart again ─
+# Split from the install phase above so an extension can report whether its
+# nodes actually registered without being the thing that restarts ComfyUI.
+for ext in /workspace/pod_setup.d/*.sh; do
+  [ -f "$ext" ] || continue
+  bash "$ext" verify || log "  extension $(basename "$ext") verify failed (best effort); continuing"
+done
+
+# ── 9. start the understanding server -- a second, separate process ───────
 # deploy/inference_server.py is deposited at /workspace/inference_server.py
 # by runtime.session.provision() *before* this script runs -- see that
 # function's docstring for why it travels as a second file over the same
@@ -446,22 +483,6 @@ for i in $(seq 1 30); do
 done
 curl -sf -m 5 http://127.0.0.1:8189/healthz >/dev/null 2>&1 \
   || die "inference server did not answer /healthz -- check /workspace/inference.log"
-
-# ── 7. host-shipped extensions: /workspace/pod_setup.d/*.sh -- BEST EFFORT ─
-# Deposited by `runtime.session.provision(extras=...)` before this script
-# runs: whatever the caller wants on the pod that this script has no
-# business knowing about (a node pack for one workflow, a model for one
-# feature). Run on every open, not gated by FAST_PATH or the marker, so each
-# must be idempotent; and nothing in one may `die` -- a failed extension is
-# logged and the pod stays usable for everything above. They inherit this
-# script's paths through the environment.
-export CU M PY EXTRA VRAM_GB QUANT
-export -f log
-for ext in /workspace/pod_setup.d/*.sh; do
-  [ -f "$ext" ] || continue
-  log "extension: $(basename "$ext")"
-  bash "$ext" || log "  extension $(basename "$ext") failed (best effort); continuing"
-done
 
 touch "$MARKER"
 log "done. quantisation=${QUANT} vram=${VRAM_GB}GB marker=$MARKER"

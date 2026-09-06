@@ -59,6 +59,20 @@ def window_end_for(now: datetime | None = None) -> datetime:
     return (_local(now) + timedelta(hours=LEASE_HOURS)).astimezone(timezone.utc)
 
 
+def month_start(now: datetime | None = None) -> datetime:
+    """Midnight Taipei on the 1st of the month `now` falls in, UTC-aware.
+
+    Here rather than in `runtime.budget` for the same reason `day_start` is:
+    the boundary may have exactly one definition. `budget.LEDGER_TZ` and `TZ`
+    are pinned equal by a test precisely so a session and its ledger entry
+    cannot land in different months.
+    """
+    local = _local(now)
+    return local.replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+
+
 def day_start(now: datetime | None = None) -> datetime:
     """Midnight Taipei on the day `now` falls in, UTC-aware.
 

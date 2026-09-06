@@ -110,6 +110,12 @@ class ComfyUIProvider:
         self.client = ComfyClient(
             base_url or settings.comfy_url, timeout_s=settings.comfy_timeout_s
         )
+        # Kept, not just forwarded. `fetch` used to meter with the module
+        # constant, so a clip's recorded cost ignored whatever rate the live
+        # session was actually paying -- and that number is not decoration: it
+        # is what `record_usage()` writes, what /q/{token} shows, and what
+        # `chat_spent_this_month_usd()` sums against a budget.
+        self._hourly_usd = hourly_usd
         self._caps = h3_capabilities(width, height, hourly_usd=hourly_usd)
 
     def capabilities(self) -> ProviderCapabilities:
@@ -186,7 +192,7 @@ class ComfyUIProvider:
             provider=self.name,
             job_id=job.job_id,
             # Billed by wall clock: what this clip actually occupied the GPU for.
-            cost_usd=round(DEFAULT_HOURLY_USD * elapsed / 3600.0, 6),
+            cost_usd=round(self._hourly_usd * elapsed / 3600.0, 6),
             peak_vram_gb=round(peak_vram_bytes / 2**30, 3) if peak_vram_bytes else None,
         )
 

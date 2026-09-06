@@ -43,7 +43,7 @@ from ai_studio.config.settings import get_settings
 from ai_studio.core.errors import CostCeilingExceeded, PodError
 from ai_studio.core.observability import utc_now_iso
 from ai_studio.runtime import hours
-from ai_studio.runtime.budget import MonthlyBudgetGuard, SpendLedger
+from ai_studio.runtime.budget import DailyBudgetGuard, MonthlyBudgetGuard, SpendLedger
 from ai_studio.runtime.opens import PodOpenLedger
 
 TEMPLATE_COMFYUI_STANDARD = "cw3nka7d08"
@@ -252,6 +252,20 @@ class Session:
         """What this session has cost so far at its tier's hourly rate."""
         return round(self.cost_per_hr * self.elapsed_hours(now), 4)
 
+    def spent_since(self, since: datetime, now: datetime | None = None) -> float:
+        """What this session has cost since `since` — or since it opened, if
+        that is later.
+
+        The daily guard needs the part of a straddling window that belongs to
+        *today*: a pod opened 23:40 and still running at 00:40 has spent an
+        hour, but only twenty minutes of it are today's. Charging the whole
+        session to both days would refuse tomorrow for yesterday's spending.
+        """
+        started = datetime.fromisoformat(self.opened_at)
+        start = max(started, since)
+        now = now or datetime.now(timezone.utc)
+        return round(self.cost_per_hr * max(0.0, (now - start).total_seconds() / 3600), 4)
+
     def past_window(self, now: datetime | None = None) -> bool:
         """True once the lease has ended: the pod is about to terminate itself and
         must not be handed new work.
@@ -415,6 +429,41 @@ def _seconds_left(window_end: datetime) -> float:
 # -------------------------------------------------------------- request-driven
 
 
+def open_spend_since(since: datetime, now: datetime | None = None) -> float:
+    """What the pod that is open *right now* has spent since `since`, or 0.0.
+
+    The gap the ledger cannot close: a session is recorded only at
+    `close_session()`, so a pod that is billing this minute is invisible to
+    every guard until it is gone. Passed into the guards as a callable rather
+    than imported by them — this module imports `runtime.budget`, so the
+    reverse would be a cycle.
+    """
+    live = load_state()
+    return 0.0 if live is None else live.spent_since(since, now)
+
+
+def budget_guards(
+    now: datetime | None = None,
+) -> tuple[MonthlyBudgetGuard, DailyBudgetGuard]:
+    """The month guard and the day guard, wired to settings, the ledger and
+    the pod that is open right now.
+
+    The single wiring point on purpose: `ensure_pod` and the CLI's manual
+    `session open` both create pods, and a guard that only one of them
+    consults is a guard with a hole in it.
+    """
+    settings = get_settings()
+    monthly = MonthlyBudgetGuard(
+        SpendLedger(),
+        cap_usd=settings.max_month_usd,
+        vps_monthly_usd=settings.vps_monthly_usd,
+        storage_monthly_usd=settings.storage_monthly_usd,
+        open_spend_usd=open_spend_since,
+        now=now,
+    )
+    return monthly, DailyBudgetGuard(monthly)
+
+
 def ensure_pod(
     *,
     name: str = "ai-studio-window",
@@ -451,7 +500,16 @@ def ensure_pod(
        the last render this is a real count, hence the cap of fifteen rather
        than two.
     2. **Monthly budget.** Same guard, same pessimistic worst-rung arithmetic,
-       on the path that actually creates pods.
+       on the path that actually creates pods. It now also sees the network
+       volume's fixed monthly cost and whatever a currently-open pod has
+       already spent -- both were invisible to it before 2026-09-07.
+    3. **Today's budget.** The month's remainder spread over the days it has
+       left (`runtime.budget.DailyBudgetGuard`), so a surge degrades on the
+       day it happens instead of silently eating the month and hitting the
+       wall in week three. Ordinarily this shortens the lease rather than
+       refusing -- half a window is worth more than none -- and refuses only
+       when the day cannot cover `MIN_SESSION_MINUTES`, below which an open
+       buys no output at all.
 
     There is no clock gate any more (see `runtime.hours`). The lease is
     `LEASE_HOURS` from now; the reaper is expected to close the pod long
@@ -476,17 +534,25 @@ def ensure_pod(
             "is billing."
         )
 
-    guard = MonthlyBudgetGuard(
-        SpendLedger(),
-        cap_usd=settings.max_month_usd,
-        vps_monthly_usd=settings.vps_monthly_usd,
+    monthly, daily = budget_guards(now)
+    monthly.refuse_if_broke(candidates)
+    daily.refuse_if_broke(candidates)
+    opened_at = now or datetime.now(timezone.utc)
+    worst_hourly = max(tier.usd_per_hr for tier in candidates)
+    # Chaining is min() by construction: `throttle` only ever shrinks. The
+    # day's allowance is normally the binding one, so a typical lease is well
+    # under LEASE_HOURS -- see docs/schedule.md.
+    window_end = daily.throttle(
+        monthly.throttle(hours.window_end_for(now), opened_at, worst_hourly),
+        opened_at,
+        worst_hourly,
     )
-    guard.refuse_if_broke(candidates)
-    window_end = guard.throttle(
-        hours.window_end_for(now),
-        now or datetime.now(timezone.utc),
-        max(tier.usd_per_hr for tier in candidates),
-    )
+    if window_end < hours.window_end_for(now):
+        _log.info(
+            "lease shortened by budget",
+            extra={"reason": "daily allowance", "allowance": daily.allowance_usd(),
+                   "spent_today": daily.spent_today_usd(), "days_left": daily.days_left()},
+        )
 
     _log.info(
         "opening pod", extra={"reason": "queue has work", "opened_today": opened,
