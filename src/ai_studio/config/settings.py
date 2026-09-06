@@ -153,6 +153,18 @@ class Settings(BaseSettings):
         description="The always-on host's own monthly cost, reserved out of "
         "max_month_usd before computing what's left for GPU compute.",
     )
+    storage_monthly_usd: float = Field(
+        default=21.0,
+        ge=0,
+        alias="AI_STUDIO_STORAGE_MONTHLY_USD",
+        description="The network volume's own monthly cost, reserved out of "
+        "max_month_usd like the VPS is. 300GB in EUR-IS-1 bills 0.70 USD/day = "
+        "21.00 USD/month, measured against RunPod's billing API 2026-09-06. It "
+        "is charged whether or not a pod exists, and the guard was blind to it "
+        "until then -- it believed 45 of a 50 dollar cap was available for GPU "
+        "when the real figure was 24. Set to 0 when no network volume is "
+        "configured (AI_STUDIO_NETWORK_VOLUME_ID unset).",
+    )
 
     max_pod_opens_per_day: int = Field(
         default=15,

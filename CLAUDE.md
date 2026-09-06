@@ -5,17 +5,22 @@ code in this repository.
 
 ## What this is
 
-This repository is a monorepo of three independent packages. This file covers
-the root package, **ai-studio**. The other two live in their own directories
-with their own `pyproject.toml`, `uv.lock`, tests and `CLAUDE.md`:
+This file covers **ai-studio**, the only package this repository publishes:
+the GPU side.
+
+**Two more packages exist on the working machine and are gitignored** — they
+are not in a clone, and nothing here may depend on them:
 
 | directory | what | read |
 |---|---|---|
-| `fun_workflow/` | the LINE group's playground built *on* ai-studio: webhook, request queue, GPU worker, `/短劇`, `/himonkey`, the status page users open. Installs ai-studio editable from `..`. | [`fun_workflow/CLAUDE.md`](fun_workflow/CLAUDE.md) |
-| `twin/` | a personal digital-twin agent framework, unrelated to ai-studio's code or stack | [`twin/CLAUDE.md`](twin/CLAUDE.md) |
+| `fun_workflow/` | the request side built *on* ai-studio: webhook, request queue, GPU worker, `/短劇`, `/himonkey`, the status page, and `../square_bridge/`. Installs ai-studio editable from `..`. | `fun_workflow/CLAUDE.md` |
+| `twin/` | a personal digital-twin agent framework, unrelated to ai-studio's code or stack | `twin/CLAUDE.md` |
 
 When working under either directory, read its `CLAUDE.md`; nothing below
-applies there except the platform traps.
+applies there except the platform traps. When either is absent — a fresh
+clone — everything in this file still holds, and `uv run pytest tests` still
+passes: that independence is the point, and `tests/unit/test_deploy_scripts.py`
+skips rather than breaks when the request side's installers are not there.
 
 ### ai-studio
 
@@ -254,6 +259,19 @@ Every expensive mistake here is a quiet one.
   cover even a minimal session at the ladder's priciest rung, or shrinks the
   window if it can only partly cover the full one. `session open` is the
   manual path and goes through the same guard and the same daily cap.
+- **Two fixed costs are reserved off that ceiling before any GPU spend**:
+  `AI_STUDIO_VPS_MONTHLY_USD` ($5) and `AI_STUDIO_STORAGE_MONTHLY_USD` ($21,
+  📏 the 300 GB volume's $0.70/day, billed whether or not a pod exists). That
+  leaves **$24/month for GPU, not $45** — the storage cost was invisible to
+  the guard until 2026-09-07. The guards also count what a currently-open pod
+  has spent, which the ledger only learns at `close_session()`.
+- **`runtime.budget.DailyBudgetGuard`** spreads the month's remainder over the
+  days it has left (`max(days_left, MIN_SPREAD_DAYS=4)`) — ~$0.80/day on a
+  fresh month, ~11 clips. Derived, never configured: a hand-set daily number
+  forfeits idle days and lets a burnt day hide until the monthly wall. It
+  shrinks the lease rather than refusing (so a typical lease is ~64 min, not
+  `LEASE_HOURS`), and refuses only when the day cannot cover a minimal
+  session.
 - **`AI_STUDIO_MAX_POD_OPENS_PER_DAY`** (15) is counted in
   `runs/.pod_opens.json` — the backstop for a crash-looping worker, which
   the monthly guard cannot see. See `docs/schedule.md`.

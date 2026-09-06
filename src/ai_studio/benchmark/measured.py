@@ -89,4 +89,12 @@ MEASURED: tuple[Measured, ...] = (
     # ---- the pod itself
     Measured("RunPod pod", "any", "disk overhead, 80 GB volume + 20 GB container", 0.014, "USD/hr", "2026-08",
              "docs/model-h3.md, Measured on our own account", "a $0.74/hr pod bills $0.754"),
+    Measured("RunPod network volume", "any", "300 GB standard, EUR-IS-1", 0.70, "USD/day", "2026-09-06",
+             "docs/schedule.md, RunPod billing API /v2/billing/network-volumes",
+             "$21.00/month, billed whether or not a pod exists; the figure behind "
+             "AI_STUDIO_STORAGE_MONTHLY_USD"),
+    Measured("ai-studio cold start", RTX4090, "pod create to first claimed job, provisioned volume",
+             250, "s", "2026-09-04",
+             "docs/schedule.md, from logs/worker/2026-09-04.jsonl (pod 9bqzor4wk8mav0)",
+             "92 s of it was a second ComfyUI restart by the face_repair extension, removed 2026-09-07"),
 )

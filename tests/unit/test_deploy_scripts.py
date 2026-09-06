@@ -19,15 +19,29 @@ REPO = Path(__file__).resolve().parents[2]
 # The pod's own bootstrap stays here; the always-on host's installers moved
 # with the request side. Both are shell that runs as root somewhere, so both
 # get the same scrutiny.
-DEPLOY_DIRS = (REPO / "deploy", REPO / "fun_workflow" / "deploy")
+DEPLOY_DIRS = tuple(
+    d for d in (REPO / "deploy", REPO / "fun_workflow" / "deploy") if d.is_dir()
+)
+"""Only the directories that exist. The request side is not part of the
+published tree (see README), so its installers are scrutinised on a working
+machine and simply absent everywhere else — which must skip these checks, not
+break collection for the pod script's."""
 SCRIPTS = sorted(p for d in DEPLOY_DIRS for p in d.glob("*.sh"))
 
 
-def _deploy(name: str) -> Path:
+def _find(name: str) -> Path | None:
     for d in DEPLOY_DIRS:
         if (d / name).is_file():
             return d / name
-    raise FileNotFoundError(name)
+    return None
+
+
+def _requires(name: str) -> Path:
+    """The script, or a skip when this checkout does not carry it."""
+    found = _find(name)
+    if found is None:
+        pytest.skip(f"{name} is not in this checkout")
+    return found
 
 
 def _unquoted(line: str) -> str:
@@ -355,7 +369,6 @@ def test_the_flags_are_never_passed_unconditionally() -> None:
 # while the next-steps text said "three timers armed" -- so the numbers are now
 # derived and compared rather than trusted.
 
-VPS_SETUP = _deploy("vps_setup.sh")
 
 REMOVAL_LOOP = ["open", "drain", "reap", "close", "gc"]
 """Every unit this script has ever installed, which is what it must remove."""
@@ -369,7 +382,7 @@ def _phase_loops() -> list[list[str]]:
     """
     import re
 
-    body = VPS_SETUP.read_text(encoding="utf-8")
+    body = _requires("vps_setup.sh").read_text(encoding="utf-8")
     return [m.split() for m in re.findall(r"^for phase in (.+?); do$", body, re.M)]
 
 
@@ -383,7 +396,7 @@ def test_the_script_removes_every_unit_it_has_ever_installed() -> None:
     that leaves the thing it replaced still running is worse than no upgrade.
     """
     loops = _phase_loops()
-    body = VPS_SETUP.read_text(encoding="utf-8")
+    body = _requires("vps_setup.sh").read_text(encoding="utf-8")
 
     assert loops, "no `for phase in` loop at all"
     assert loops[0] == REMOVAL_LOOP, f"the removal loop is {loops[0]}"
@@ -405,7 +418,7 @@ def test_the_generate_and_enable_loops_use_the_same_unit_list() -> None:
 
 
 def test_the_next_steps_text_matches_how_many_timers_are_created() -> None:
-    body = VPS_SETUP.read_text(encoding="utf-8")
+    body = _requires("vps_setup.sh").read_text(encoding="utf-8")
     count = len(_phase_loops()[1])
     words = {1: "one", 2: "two", 3: "three", 4: "four"}
 
@@ -418,7 +431,7 @@ def test_nothing_on_a_timer_can_open_a_pod() -> None:
     """The whole point of the request-driven worker. A scheduled `session open`
     bills whether or not anybody asked for anything."""
     generate = _phase_loops()[1]
-    body = VPS_SETUP.read_text(encoding="utf-8")
+    body = _requires("vps_setup.sh").read_text(encoding="utf-8")
 
     assert "open" not in generate, f"a timer still runs `session open`: {generate}"
     assert "drain" not in generate, "draining is the worker's job now, not a timer's"
@@ -426,7 +439,7 @@ def test_nothing_on_a_timer_can_open_a_pod() -> None:
 
 
 def test_both_long_running_services_are_created_and_enabled() -> None:
-    body = VPS_SETUP.read_text(encoding="utf-8")
+    body = _requires("vps_setup.sh").read_text(encoding="utf-8")
 
     for unit in ("ai-studio.service", "ai-studio-worker.service"):
         assert f"/etc/systemd/system/{unit}" in body, f"{unit} is never written"
@@ -437,7 +450,7 @@ def test_the_worker_is_enabled_after_the_removal_loop() -> None:
     """The removal loop disables `ai-studio-<phase>` units by name. If the
     worker were enabled before it ran, ordering alone would be enough to leave
     the box with nothing that renders."""
-    body = VPS_SETUP.read_text(encoding="utf-8")
+    body = _requires("vps_setup.sh").read_text(encoding="utf-8")
 
     assert body.index("for phase in open drain reap close gc") < body.index(
         "systemctl enable --now ai-studio-worker.service"
@@ -447,14 +460,14 @@ def test_the_worker_is_enabled_after_the_removal_loop() -> None:
 def test_the_worker_restarts_itself() -> None:
     """It is the only thing that turns a queued request into a pod. If it dies
     at 11:02 and nothing restarts it, the window is silently lost."""
-    body = VPS_SETUP.read_text(encoding="utf-8")
+    body = _requires("vps_setup.sh").read_text(encoding="utf-8")
     unit = body[body.index("ai-studio-worker.service") : body.index('say "removing')]
 
     assert "Restart=always" in unit
 
 
 def test_caddy_reverse_proxies_to_the_loopback_port_the_app_binds() -> None:
-    body = VPS_SETUP.read_text(encoding="utf-8")
+    body = _requires("vps_setup.sh").read_text(encoding="utf-8")
 
     assert "reverse_proxy 127.0.0.1:8000" in body
     assert "--host 127.0.0.1 --port 8000" in body, "the app binds a different port"
@@ -464,7 +477,7 @@ def test_the_app_port_is_never_opened_to_the_internet() -> None:
     """Only Caddy on loopback should reach 8000; it is what terminates TLS, and
     LINE will not talk to a plain-HTTP webhook. Previously guaranteed by a
     comment alone."""
-    body = VPS_SETUP.read_text(encoding="utf-8")
+    body = _requires("vps_setup.sh").read_text(encoding="utf-8")
 
     assert "allow 8000" not in body
     for port in ("22/tcp", "80/tcp", "443/tcp"):
@@ -474,7 +487,7 @@ def test_the_app_port_is_never_opened_to_the_internet() -> None:
 def test_a_missed_close_does_not_fire_late() -> None:
     """`Persistent=true` would run a queued job at boot. Closing is idempotent,
     so this is noise rather than spend -- but it was set deliberately."""
-    assert "Persistent=false" in VPS_SETUP.read_text(encoding="utf-8")
+    assert "Persistent=false" in _requires("vps_setup.sh").read_text(encoding="utf-8")
 
 
 def test_daily_timers_name_their_zone() -> None:
@@ -483,7 +496,7 @@ def test_daily_timers_name_their_zone() -> None:
     and terminated a live render (2026-08-27). Only the every-minute reaper
     is zone-free."""
     for script in ("jetson_setup.sh", "vps_setup.sh"):
-        body = _deploy(script).read_text(encoding="utf-8")
+        body = _requires(script).read_text(encoding="utf-8")
         assert 'when="04:05 Asia/Taipei"' in body, script
         assert 'when="02:30 Asia/Taipei"' in body, script
         assert 'when="03:00 Asia/Taipei"' in body, script  # the daily archive
@@ -492,7 +505,7 @@ def test_daily_timers_name_their_zone() -> None:
 def test_the_jetson_script_bounds_journald() -> None:
     """journald defaults to 4 GiB and no time bound; the JSONL trace is the
     durable record, so the journal only needs the hot window."""
-    body = _deploy("jetson_setup.sh").read_text(encoding="utf-8")
+    body = _requires("jetson_setup.sh").read_text(encoding="utf-8")
     assert "/etc/systemd/journald.conf.d/ai-studio.conf" in body
     assert "SystemMaxUse=1G" in body and "MaxRetentionSec=30day" in body
 
@@ -513,24 +526,58 @@ def test_renamed_flux_files_are_not_redownloaded_when_present() -> None:
         assert setup.count(target.strip('"').replace("$M/", "")) >= 2
 
 
-def test_extensions_run_last_best_effort_and_never_gate_on_the_marker() -> None:
-    """Whatever a caller ships to /workspace/pod_setup.d/ runs after every
-    step this script owns is up, on every open, and cannot take the pod
-    down: a failed extension is logged, and the marker is still written."""
+def _all_indexes(haystack: str, needle: str) -> list[int]:
+    out, i = [], haystack.find(needle)
+    while i != -1:
+        out.append(i)
+        i = haystack.find(needle, i + 1)
+    return out
+
+
+def test_extensions_install_before_the_one_restart_and_verify_after() -> None:
+    """The cold start pays for exactly one ComfyUI restart.
+
+    A node pack registers its nodes only when ComfyUI starts, so an extension
+    that installed *after* the restart had to restart ComfyUI again -- 📏 92 s
+    of a 4 min 10 s cold start, and it landed after the host's `wait_ready`
+    had already seen /object_info answer, tearing down a ComfyUI the worker
+    had been told was ready (job 133, 502 Bad Gateway, 2026-09-04). Install
+    first, restart once, verify after.
+    """
     body = POD_SETUP.read_text(encoding="utf-8")
-    loop = body.index("for ext in /workspace/pod_setup.d/*.sh")
-    assert body.index("inference server did not answer /healthz") < loop < body.index('touch "$MARKER"')
-    assert loop > body.index("fi  # FAST_PATH"), "extensions are not inside the fast-path gate"
-    block = body[loop : body.index('touch "$MARKER"')]
-    assert "die" not in block and "|| log" in block
+    install = body.index('bash "$ext" install')
+    restart = body.index('log "restarting ComfyUI"')
+    proof = body.index("required H3 nodes are not registered")
+    verify = body.index('bash "$ext" verify')
+    assert install < restart < proof < verify, "install/restart/verify are out of order"
+    assert body.count("pkill -f 'main.py --listen'") == 1, "more than one ComfyUI restart"
+    assert body.index("fi  # FAST_PATH") < install, "extensions are inside the fast-path gate"
     assert "export CU M PY EXTRA" in body and "export -f log" in body
     assert "face_repair" not in body and "Impact-Pack" not in body, "FaceDetailer is the request side's extension now"
+
+
+def test_a_failing_extension_can_never_take_the_pod_down() -> None:
+    """Both phases are best effort: logged, never fatal.
+
+    Scoped to the two `for ext in ...` loops rather than to the span between
+    them -- the restart and the node proof sit in between and are pod_setup's
+    own steps, which *are* allowed to `die`.
+    """
+    body = POD_SETUP.read_text(encoding="utf-8")
+    loops = [
+        body[i : body.index("done", i) + 4]
+        for i in _all_indexes(body, "for ext in /workspace/pod_setup.d/*.sh")
+    ]
+    assert len(loops) == 2, "expected an install loop and a verify loop"
+    for loop in loops:
+        assert "die" not in loop, loop
+        assert "|| log" in loop, loop
 def test_every_service_unit_names_its_syslog_identifier() -> None:
     """Every unit's ExecStart is `uv run ... funapp|ai-studio ...`, so without this
     journald tags them all SYSLOG_IDENTIFIER=uv and `journalctl -t` cannot
     tell the worker from the webhook (📏 2026-08-28)."""
     for script in ("jetson_setup.sh", "vps_setup.sh"):
-        body = _deploy(script).read_text(encoding="utf-8")
+        body = _requires(script).read_text(encoding="utf-8")
         blocks = re.findall(
             r"cat > /etc/systemd/system/(ai-studio[^\s]*)\.service <<UNIT\n(.*?)^UNIT\n", body, re.S | re.M
         )

@@ -101,7 +101,20 @@ def doctor() -> None:
     table.add_row("comfy url", "-", settings.comfy_url)
     table.add_row("providers", "-", ", ".join(available()))
     table.add_row("cost ceiling", "-", f"${settings.max_cost_usd:.2f} per run")
-    table.add_row("month ceiling", "-", f"${settings.max_month_usd:.2f} (VPS ${settings.vps_monthly_usd:.2f})")
+    from ai_studio.runtime.session import budget_guards
+
+    _monthly, _daily = budget_guards()
+    table.add_row(
+        "month ceiling", _mark(_monthly.gpu_month_usd() > 0, warn_only=True),
+        f"${settings.max_month_usd:.2f} (VPS ${settings.vps_monthly_usd:.2f} + storage "
+        f"${settings.storage_monthly_usd:.2f} -> ${_monthly.gpu_month_usd():.2f} GPU), "
+        f"${_monthly.remaining_usd():.2f} left",
+    )
+    table.add_row(
+        "today", "-",
+        f"${_daily.spent_today_usd():.2f} of ${_daily.allowance_usd():.2f} "
+        f"(${_daily.remaining_usd():.2f} left, {_daily.days_left()} day(s) in the month)",
+    )
 
     log_dir, archive_dir = settings.log_dir, settings.archive_dir
     log_bytes = sum(p.stat().st_size for p in log_dir.rglob("*") if p.is_file()) if log_dir.is_dir() else 0
@@ -648,17 +661,15 @@ def session_open(
     from datetime import timezone
 
     from ai_studio.runtime import session as sess
-    from ai_studio.runtime.budget import MonthlyBudgetGuard, SpendLedger
 
-    settings = get_settings()
-    guard = MonthlyBudgetGuard(
-        SpendLedger(),
-        cap_usd=settings.max_month_usd,
-        vps_monthly_usd=settings.vps_monthly_usd,
-    )
+    # The same two guards `ensure_pod` uses, from the same wiring point: this
+    # is the other path that creates a pod, and it must not be the cheap way
+    # around the day's allowance.
+    monthly, daily = sess.budget_guards()
     try:
         candidates, network_volume_id = sess.placement()
-        guard.refuse_if_broke(candidates)
+        monthly.refuse_if_broke(candidates)
+        daily.refuse_if_broke(candidates)
     except AIStudioError as exc:
         console.print(f"[red]window did not open:[/red] {exc}")
         raise typer.Exit(1) from None
@@ -667,7 +678,10 @@ def session_open(
 
     end = _window_end(until, tz) if until else hours.window_end_for()
     worst_case_hourly = max(tier.usd_per_hr for tier in candidates)
-    end = guard.throttle(end, datetime.now(timezone.utc), worst_case_hourly)
+    opened_at = datetime.now(timezone.utc)
+    end = daily.throttle(
+        monthly.throttle(end, opened_at, worst_case_hourly), opened_at, worst_case_hourly
+    )
 
     try:
         s = sess.open_session(
@@ -727,6 +741,15 @@ def session_status() -> None:
     table.add_row("rate", f"${s.cost_per_hr:.2f}/hr")
     table.add_row("elapsed", f"{s.elapsed_hours():.2f} h")
     table.add_row("spent", f"${s.spent_usd():.2f}")
+    # Why this pod got the lease it did. The daily allowance moves day to day,
+    # so a 40-minute window is otherwise a mystery.
+    _monthly, _daily = sess.budget_guards()
+    table.add_row(
+        "today", f"${_daily.spent_today_usd():.2f} of ${_daily.allowance_usd():.2f}"
+    )
+    table.add_row(
+        "month", f"${_monthly.spent_this_month_usd():.2f} of ${_monthly.gpu_month_usd():.2f} GPU"
+    )
     table.add_row("closes", s.window_end)
     table.add_row("past window", "yes" if s.past_window() else "no")
     table.add_row("comfy", s.comfy_url)

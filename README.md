@@ -1,11 +1,9 @@
 # ai-studio
 
-**What can one rented GPU do, and what can free compute do after that?**
+**What can one rented GPU actually do, and what does it cost?**
 
 Open-weight video, image, vision-language and chat models on a single
-24 GB card, deployed with hard money guards and measured on our own runs —
-plus a side quest: can a person, in August 2026, fine-tune a usable digital
-twin of themselves on free-tier compute alone?
+24 GB card, deployed with hard money guards and measured on our own runs.
 
 ## Why
 
@@ -14,10 +12,10 @@ twin of themselves on free-tier compute alone?
   and prompt rewriting) share one RTX 4090, one model resident at a time.
   The question is what that card actually delivers — seconds, VRAM, dollars —
   not what a model card says.
-- **Free compute next.** `twin/` takes the same discipline to the other end
-  of the budget: Qwen3-8B + LoRA on the free tiers of Modal, Kaggle and
-  Lightning, judged by a spec with acceptance criteria written before the
-  first training run.
+- **The money is guarded before it is spent, not reported after.** A
+  calendar-month ceiling, a derived daily allowance and a per-day cap on pod
+  creations are all checked before a pod exists — see
+  [pod lifecycle & money](docs/schedule.md).
 - **Numbers are graded.** 📏 measured by us, `[reported]` quoted,
   `[speculative]` inferred. Only the first kind is exported, with a
   timestamp, to [`assets/metrics/`](assets/metrics/README.md).
@@ -27,12 +25,27 @@ twin of themselves on free-tier compute alone?
 | package | what it does |
 |---|---|
 | **`ai-studio`** (root) | The GPU side. Opens a RunPod pod on demand, provisions ComfyUI and a small inference server over SSH, serves the six models behind one `submit / poll / fetch / cancel` protocol, guards spend before a pod exists, records every render. Knows nothing about who asked. |
-| [**`fun_workflow/`**](fun_workflow/README.md) | The request side, built on it: a LINE group's webhook, queue and worker; `/himonkey` chat; a status page per result showing which GPU rendered it and what it rents for. |
-| [**`twin/`**](twin/README.md) | The side quest: a personal digital-twin agent framework — one person's history and interviews in, an agent with their judgment and restraint out. Spec-first, with hard guardrails around the personal data it ingests. |
 
-Three independent Python packages in one repository, each with its own
-lockfile, tests and layering contracts. `fun_workflow` depends on
-`ai-studio`; nothing depends on `twin`.
+One Python package, with its own lockfile, tests and layering contracts.
+
+### What is deliberately not published
+
+Two other things live on the working machine and are **not** in this
+repository:
+
+- **The request side** — a chat webhook, a queue, a worker and a delivery
+  path that let a group trigger any model this repo serves. An application
+  built on top of the GPU work is a different project, with concerns this one
+  does not want: service credentials, member identifiers, an operator on call.
+- **A digital-twin side quest** — a separate framework with its own stack, its
+  own spec, and a real person's history as training data.
+
+This repository publishes one thing: what a rented GPU costs and delivers.
+Commits before September 2026 still contain both, and that history is not
+rewritten — removing them from the published tree stops them going further,
+and pretending they were never there would be the dishonest version. The seam
+is real either way: ai-studio exposes plain functions and never imports back,
+so the GPU side stands alone and is tested that way.
 
 ## Quick start
 
@@ -43,8 +56,6 @@ uv sync --group dev
 uv run ai-studio doctor                                   # python, ffmpeg + filters, credentials, disk
 uv run ai-studio generate "a baker opening the shutters" --provider stub
 uv run ai-studio understand photo.jpg --kind image
-
-cd fun_workflow && uv sync --group dev
 ```
 
 With a RunPod key in `.env` (`.env.example` lists every name):
@@ -74,8 +85,7 @@ uv run ai-studio bench               # this month's measurements per GPU tier
 [architecture](docs/architecture.md) · [pod lifecycle & money](docs/schedule.md) ·
 [RunPod runbook](docs/runpod.md) · [observability](docs/observability.md) ·
 [measurements](assets/metrics/README.md) · one doc per model under
-[`docs/`](docs/) · [the bot](fun_workflow/docs/line-bot.md) ·
-[the twin spec](twin/reference/SPEC.md)
+[`docs/`](docs/)
 
 ## Licence
 
